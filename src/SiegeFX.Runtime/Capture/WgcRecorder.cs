@@ -64,6 +64,14 @@ public sealed class WgcRecorder
     long _lastVideoTicks;
     volatile bool _stopping;
     Stopwatch? _clock;
+    // SC-RECORD-AUDIT F1 — samples handed to the encoder that still
+    // reference POOL-owned surfaces. Cleanup must not dispose the pool or
+    // the D3D device until this drains (or leak them): Media Foundation's
+    // worker threads read those surfaces asynchronously, and disposing
+    // underneath them is a native use-after-free — a traceless process
+    // death, no managed exception, no Event Log.
+    int _samplesInFlight;
+    int _poolWidth, _poolHeight;
 
     // ---- audio state ----------------------------------------------------
 
@@ -103,6 +111,9 @@ public sealed class WgcRecorder
             var size = _item.Size;
             if (size.Width < 32 || size.Height < 32)
                 throw new InvalidOperationException("window too small to record");
+            _poolWidth = size.Width;
+            _poolHeight = size.Height;
+            _samplesInFlight = 0;
             _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
                 _d3dDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, size);
             _framePool.FrameArrived += OnFrameArrived;
@@ -145,9 +156,14 @@ public sealed class WgcRecorder
         if (!IsRecording || _stopping) return;
         _stopping = true;
         _frameReady.Set();
-        try { _audioQueue?.CompleteAdding(); } catch { }
+        // SC-RECORD-AUDIT F4 — stop the producers BEFORE completing the
+        // queue: TryAdd on a completed BlockingCollection THROWS (it does
+        // not return false), and the capture callbacks race this method.
+        // The producers' TryAdd is guarded too — reordering alone cannot
+        // close the mid-flight window.
         try { _loopback?.StopRecording(); } catch { }
         try { _procLoopback?.Stop(); } catch { }
+        try { _audioQueue?.CompleteAdding(); } catch { }
     }
 
     // ---- capture plumbing -----------------------------------------------
@@ -159,8 +175,25 @@ public sealed class WgcRecorder
         {
             var frame = sender.TryGetNextFrame();
             if (frame is null) return;
+            // SC-RECORD-AUDIT F6 — the pool and encoder profile are fixed at
+            // the start size; a mid-recording window resize (display-mode
+            // switch, borderless re-rect) would deliver cropped/padded
+            // frames from here on. Stop cleanly with a receipt instead.
+            if (frame.ContentSize.Width != _poolWidth || frame.ContentSize.Height != _poolHeight)
+            {
+                Console.WriteLine($"[record] window size changed mid-recording " +
+                    $"({_poolWidth}x{_poolHeight} -> {frame.ContentSize.Width}x{frame.ContentSize.Height}) — stopping clip");
+                StatusLines.Enqueue("Recording stopped (window size changed) — start a new clip.");
+                try { frame.Dispose(); } catch { }
+                Stop();
+                return;
+            }
             lock (_frameLock)
             {
+                // SC-RECORD-AUDIT F10 — re-check under the lock: cleanup's
+                // own lock block may have already run, and a frame stored
+                // after it would leak a pool surface.
+                if (_stopping) { try { frame.Dispose(); } catch { } return; }
                 _latestFrame?.Dispose(); // encoder missed it — keep newest
                 _latestFrame = frame;
             }
@@ -217,7 +250,10 @@ public sealed class WgcRecorder
         catch (Exception ex)
         {
             // No render device / exclusive-mode session — record video-only.
+            // F9 — the strip line scrolls away; the session log keeps the
+            // real exception.
             StatusLines.Enqueue($"Recording without audio ({ex.Message}).");
+            Console.WriteLine($"[record] device loopback failed: {ex}");
             try { _loopback?.Dispose(); } catch { }
             _loopback = null;
             _audioQueue = null;
@@ -231,7 +267,8 @@ public sealed class WgcRecorder
     {
         var q = _audioQueue;
         if (q is null || _stopping || chunk.Length == 0) return;
-        q.TryAdd(chunk);
+        // F4 — guarded: Stop() can complete the queue mid-flight.
+        try { q.TryAdd(chunk); } catch (InvalidOperationException) { }
     }
 
     /// <summary>Loopback callback → interleaved 16-bit PCM chunks. The mix
@@ -268,8 +305,25 @@ public sealed class WgcRecorder
             outBuf = new byte[e.BytesRecorded];
             Buffer.BlockCopy(e.Buffer, 0, outBuf, 0, e.BytesRecorded);
         }
+        else if (wf.Encoding == WaveFormatEncoding.Pcm && wf.BitsPerSample == 16)
+        {
+            // SC-RECORD-AUDIT F11 — 16-bit MULTICHANNEL endpoint: take the
+            // front L/R instead of recording silence.
+            int frames = e.BytesRecorded / (2 * srcCh);
+            outBuf = new byte[frames * dstCh * 2];
+            for (int f = 0; f < frames; f++)
+            for (int c = 0; c < dstCh; c++)
+            {
+                int sIdx = (f * srcCh + c) * 2;
+                int dIdx = (f * dstCh + c) * 2;
+                outBuf[dIdx] = e.Buffer[sIdx];
+                outBuf[dIdx + 1] = e.Buffer[sIdx + 1];
+            }
+        }
         else return; // exotic mix format — skip rather than corrupt the track
-        q.TryAdd(outBuf); // bounded: drop under pressure instead of stalling WASAPI
+        // F4 — Stop() can complete the queue between our _stopping check
+        // and this add; TryAdd on a completed collection THROWS.
+        try { q.TryAdd(outBuf); } catch (InvalidOperationException) { }
     }
 
     void BuildMediaSource(int w, int h)
@@ -317,8 +371,16 @@ public sealed class WgcRecorder
                     var sample = MediaStreamSample.CreateFromDirect3D11Surface(frame.Surface, ts);
                     // The surface is pool-owned; the frame must outlive the
                     // encoder's read. Processed fires when the sample is
-                    // consumed — dispose there, never eagerly.
-                    sample.Processed += (_, _) => frame.Dispose();
+                    // consumed — dispose there, never eagerly. F1/F2: count
+                    // it in flight so cleanup can drain, and guard the
+                    // dispose — Processed arrives on an MF worker thread
+                    // where an escaped exception kills the process.
+                    Interlocked.Increment(ref _samplesInFlight);
+                    sample.Processed += (_, _) =>
+                    {
+                        try { frame.Dispose(); } catch { }
+                        Interlocked.Decrement(ref _samplesInFlight);
+                    };
                     request.Sample = sample;
                     Interlocked.Exchange(ref _lastVideoTicks, ts.Ticks);
                     return;
@@ -451,8 +513,12 @@ public sealed class WgcRecorder
         finally
         {
             var length = _clock?.Elapsed ?? TimeSpan.Zero;
-            CleanupCapture();
+            // SC-RECORD-AUDIT F5 — flip the flag BEFORE cleanup and never
+            // let a cleanup fault wedge the recorder: an escaped exception
+            // here left IsRecording=true forever (toggle could only Stop).
             IsRecording = false;
+            try { CleanupCapture(); }
+            catch (Exception cx) { Console.WriteLine($"[record] cleanup failed: {cx}"); }
             if (finishedPath is not null)
             {
                 OutputPath = finishedPath;
@@ -467,15 +533,32 @@ public sealed class WgcRecorder
         _stopping = true;
         try { _session?.Dispose(); } catch { }
         _session = null;
+        // Latest frame first — it belongs to the pool and must be disposed
+        // BEFORE the pool (the old order threw ObjectDisposedException out
+        // of cleanup: the F5 wedge).
+        lock (_frameLock) { try { _latestFrame?.Dispose(); } catch { } _latestFrame = null; }
+        // SC-RECORD-AUDIT F1 — drain gate. MF worker threads may still be
+        // reading pool surfaces referenced by in-flight samples; disposing
+        // the pool/device under them is a native use-after-free (the
+        // traceless crash class). Wait bounded for Processed to drain; on
+        // timeout LEAK the pool and device — a bounded leak beats taking
+        // the process down.
+        long drainDeadline = Environment.TickCount64 + 2000;
+        while (Volatile.Read(ref _samplesInFlight) > 0
+               && Environment.TickCount64 < drainDeadline)
+            Thread.Sleep(10);
+        bool drained = Volatile.Read(ref _samplesInFlight) == 0;
+        if (!drained)
+            Console.WriteLine($"[record] cleanup: {Volatile.Read(ref _samplesInFlight)} sample(s) " +
+                "still in flight after the drain window — leaking pool/device to stay safe");
         if (_framePool is not null)
         {
             try { _framePool.FrameArrived -= OnFrameArrived; } catch { }
-            try { _framePool.Dispose(); } catch { }
+            if (drained) { try { _framePool.Dispose(); } catch { } }
             _framePool = null;
         }
-        lock (_frameLock) { _latestFrame?.Dispose(); _latestFrame = null; }
         _item = null;
-        try { _d3dDevice?.Dispose(); } catch { }
+        if (drained) { try { _d3dDevice?.Dispose(); } catch { } }
         _d3dDevice = null;
         if (_loopback is not null)
         {

@@ -168,18 +168,33 @@ public sealed class ProcessLoopbackCapture : IDisposable
     public void Stop()
     {
         _stopping = true;
-        _samplesReady?.Set();
-        try { _reader?.Join(500); } catch { }
+        // SC-RECORD-AUDIT F3 — stop the client FIRST so a reader blocked in
+        // GetBuffer drains instead of pulling fresh packets through the
+        // whole join window.
         try { (_audioClient as IAudioClient)?.Stop(); } catch { }
+        _samplesReady?.Set();
+        try { _reader?.Join(1000); } catch { }
     }
 
     public void Dispose()
     {
         Stop();
-        if (_captureClient is not null) { try { Marshal.FinalReleaseComObject(_captureClient); } catch { } _captureClient = null; }
-        if (_audioClient is not null) { try { Marshal.FinalReleaseComObject(_audioClient); } catch { } _audioClient = null; }
-        _samplesReady?.Dispose();
-        _samplesReady = null;
+        // F3 — never FinalRelease an RCW a live thread may still be inside:
+        // a forced release under an executing native call is a use-after-
+        // free. If the reader failed to exit, LEAK the COM objects and the
+        // event (bounded, once per bad stop) and say so.
+        bool readerExited = _reader is null || !_reader.IsAlive;
+        if (readerExited)
+        {
+            if (_captureClient is not null) { try { Marshal.FinalReleaseComObject(_captureClient); } catch { } }
+            if (_audioClient is not null) { try { Marshal.FinalReleaseComObject(_audioClient); } catch { } }
+            _samplesReady?.Dispose();
+            _samplesReady = null;
+        }
+        else
+            Console.WriteLine("[record] loopback reader still alive at dispose — leaking audio COM objects to stay safe");
+        _captureClient = null;
+        _audioClient = null;
     }
 
     // ---- interop ---------------------------------------------------------
