@@ -255,6 +255,10 @@ public sealed class SfxRuntime
     public bool Spawn(string scriptName, in SfxContext ctx, IReadOnlyList<string>? callerArgs = null)
     {
         if (!_store.TryGet(scriptName, out var script)) return false;
+        // SC-SPELL-CAST-WINDOW — remembered per spawn so DispatchStart (and
+        // delayed dispatches, via DelayedStart.CastWindow) can clamp bolt
+        // life to the cast clip's arm-extended window.
+        _spawnCastWindow = ctx.CastWindowSec;
 
         // Compile lazily; SfxProgram is non-mutating so a future cache here is
         // free, but the price-of-freshness is negligible (~1ms for the longest
@@ -363,7 +367,7 @@ public sealed class SfxRuntime
             d.Remaining -= dt;
             if (d.Remaining > 0f) { _delayed[i] = d; continue; }
             _delayed.RemoveAt(i);
-            DispatchStart(d.H, d.SelfName);
+            DispatchStart(d.H, d.SelfName, d.CastWindow);
         }
 
         // follow a motion read the just-updated Position.
@@ -1211,7 +1215,7 @@ public sealed class SfxRuntime
                 held.HoldSec = h.DelaySec;
                 _motionHandles[h.MotionId] = held;
             }
-            _delayed.Add(new DelayedStart { Remaining = h.DelaySec, H = h, SelfName = selfName });
+            _delayed.Add(new DelayedStart { Remaining = h.DelaySec, H = h, SelfName = selfName, CastWindow = _spawnCastWindow });
             StartAttachedChildren(rs, h.MotionId, 0);
             return;
         }
@@ -1241,7 +1245,7 @@ public sealed class SfxRuntime
                 child.Started = true;
                 rs.NamedHandles[key] = child;
                 if (child.DelaySec > 0.0001f)
-                    _delayed.Add(new DelayedStart { Remaining = child.DelaySec, H = child, SelfName = key });
+                    _delayed.Add(new DelayedStart { Remaining = child.DelaySec, H = child, SelfName = key, CastWindow = _spawnCastWindow });
                 else
                     DispatchStart(child, key);
                 StartAttachedChildren(rs, child.MotionId, depth + 1);
@@ -1255,7 +1259,7 @@ public sealed class SfxRuntime
             anon.Started = true;
             rs.AnonAttached[i] = anon;
             if (anon.DelaySec > 0.0001f)
-                _delayed.Add(new DelayedStart { Remaining = anon.DelaySec, H = anon, SelfName = null });
+                _delayed.Add(new DelayedStart { Remaining = anon.DelaySec, H = anon, SelfName = null, CastWindow = _spawnCastWindow });
             else
                 DispatchStart(anon, null);
             StartAttachedChildren(rs, anon.MotionId, depth + 1);
@@ -1267,8 +1271,10 @@ public sealed class SfxRuntime
         public float   Remaining;
         public Handle  H;
         public string? SelfName;
+        public float   CastWindow;
     }
     readonly List<DelayedStart> _delayed = new();
+    float _spawnCastWindow;
 
     /// <summary>Phase 23d-2a — build the caster-frame world offset for
     /// `offset(x,y,z)`: forward = source→target flattened to XZ (a caster
@@ -1289,7 +1295,9 @@ public sealed class SfxRuntime
     /// persistent emitter mode), so this never clips a legitimate effect.</summary>
     private const float OneShotBoltMaxSeconds = 0.15f;
 
-    void DispatchStart(Handle h, string? selfName)
+    void DispatchStart(Handle h, string? selfName) => DispatchStart(h, selfName, _spawnCastWindow);
+
+    void DispatchStart(Handle h, string? selfName, float castWindow)
     {
         switch (h.Mode)
         {
@@ -1319,6 +1327,11 @@ public sealed class SfxRuntime
                 _particles.SpawnLightning(h.OtherEnd, h.Anchor, h.Color,
                     MathF.Min(authoredLife, OneShotBoltMaxSeconds),
                     minD, h.Displace, subd, msub);
+                // SC-SPELL-CAST-WINDOW — a caster-context spawn caps the
+                // re-strike life at the cast clip's remaining arm-extended
+                // window: retail's zap dies when the hand drops. Ambient /
+                // region scripts (window 0) keep the authored 3s cap.
+                float boltLifeCap = castWindow > 0.05f ? castWindow : 3f;
                 if (authoredLife > 0.2f)
                     _emitters.Add(new PersistentEmitter
                     {
@@ -1326,7 +1339,7 @@ public sealed class SfxRuntime
                         Position  = h.OtherEnd,
                         BoltTo    = h.Anchor,
                         Color     = h.Color,
-                        Duration  = MathF.Min(authoredLife, 3f),
+                        Duration  = MathF.Min(authoredLife, boltLifeCap),
                         BoltMinD  = minD,
                         BoltMaxD  = h.Displace,
                         BoltSubd  = subd,

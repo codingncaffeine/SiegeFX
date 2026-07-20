@@ -36,6 +36,14 @@ public readonly record struct SfxContext(
     /// so sustained clouds (acid gas) live as long as their gameplay effect.</summary>
     public float DefaultEmitterDuration { get; init; }
 
+    /// <summary>SC-SPELL-CAST-WINDOW — the caster's remaining cast-clip
+    /// window in seconds at the FIRE moment (0 = unknown). Bolt/line
+    /// effects clamp their re-strike life to it: retail's zap exists only
+    /// while the arm is extended, but the authored bolt_life (zap: 1s)
+    /// outlived the hand-drop and read as fake. Region/ambient spawns
+    /// leave it 0 and keep the authored duration cap.</summary>
+    public float CastWindowSec { get; init; }
+
     /// <summary>SC-TARGET-BONES — bone resolver for the spell's TARGET
     /// skeleton (the caster-side <see cref="Resolver"/> counterpart), wired
     /// at cast time from the live target actor. Null = the per-bone height

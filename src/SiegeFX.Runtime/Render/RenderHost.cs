@@ -17855,6 +17855,12 @@ void main()
                 foreach (var ga in _actors)
                 {
                     if (ga.Actor.Instance.Scid != cmd.Target1 || ga.IsDead) continue;
+                    // SC-NIS-PIN-GUARD — a pinned long-hold pose (Norick's
+                    // infinite "dead" collapse) must not be clobbered by a
+                    // choreography beat; replacing it with a finite clip
+                    // dropped him back into the looping-modulo anim path
+                    // (field report: death animation replaying on loop).
+                    if (ga.Actor.Host.PinnedOverrideAnim >= 0) break;
                     if (ga.Actor.GetClipIndex("fgt") >= 0) ga.Actor.PlayChoreOnce("fgt", 2.5f);
                     else if (ga.Actor.GetClipIndex("fidget") >= 0) ga.Actor.PlayChoreOnce("fidget", 2.5f);
                     Console.WriteLine($"[cmd] fidget 0x{scid:X8}: actor 0x{cmd.Target1:X8}");
@@ -17902,6 +17908,11 @@ void main()
                     foreach (var na in _actors)
                     {
                         if (na.IsDead || na.IsPlayer || na.Hidden) continue;
+                        // SC-NIS-PIN-GUARD — never choreograph an actor
+                        // holding a pinned pose (Norick's infinite "dead"
+                        // collapse): a 4s gesture here replaced the hold and
+                        // the death anim looped until the NIS settled him.
+                        if (na.Actor.Host.PinnedOverrideAnim >= 0) continue;
                         var nv = na.CurrentTransform.Translation - cmd.Pos;
                         float d2 = nv.X * nv.X + nv.Z * nv.Z;
                         if (d2 < nd2) { nd2 = d2; nearest = na; }
@@ -24186,7 +24197,20 @@ void main()
                         // window then catches any pin the streak lets through
                         // (net displacement < 0.3u → stand, not moonwalk).
                         s.MoveStreak = tickMoved ? s.MoveStreak + 1 : 0;
-                        if (s.MoveStreak >= 4) s.PinnedStanding = false;
+                        // The streak alone must NOT clear the pin: a mob
+                        // nudging every tick with zero net progress (seam
+                        // oscillation) keeps tickMoved true continuously,
+                        // which re-opened the walk one tick after every
+                        // window verdict — the surviving "walking in place"
+                        // mobs. Sustained ticks only count as real walking
+                        // when they've also covered ground since the anchor.
+                        if (s.MoveStreak >= 4)
+                        {
+                            float sdx = posXZ.X - s.MoveWindowAnchor.X;
+                            float sdz = posXZ.Z - s.MoveWindowAnchor.Z;
+                            if (sdx * sdx + sdz * sdz > 0.3f * 0.3f)
+                                s.PinnedStanding = false;
+                        }
                         s.MoveWindowTimer += (float)stepSec;
                         if (s.MoveWindowTimer >= 0.6f)
                         {
@@ -36140,6 +36164,10 @@ void main()
                     {
                         DefaultEmitterDuration = SpellEffectDurationSec(brain.CastSpell, null),
                         TargetResolver = castVictim is not null ? MakeActorBoneResolver(castVictim) : null,
+                        // SC-SPELL-CAST-WINDOW — NPC bolts die with the arm
+                        // too; the brain's schedule isn't reachable here, so
+                        // the retail-flash default stands in.
+                        CastWindowSec = 0.3f,
                     };
                     int partsBefore = _particles?.LiveParticleCount ?? 0;
                     int boltsBefore = _particles?.LiveBoltCount ?? 0;
@@ -36777,6 +36805,14 @@ void main()
                                 // SC-TARGET-BONES — bone-on-target anchors
                                 // resolve on the victim's LIVE skeleton.
                                 TargetResolver = MakeActorBoneResolver(best),
+                                // SC-SPELL-CAST-WINDOW — the bolt dies with
+                                // the arm: remaining cast-anim time after
+                                // the FIRE note (retail zap is exactly that
+                                // flash); clip-less releases get the brief
+                                // default.
+                                CastWindowSec = _playerCast is { } pcw
+                                    ? Math.Clamp(pcw.Sched.ClipLength - pcw.Sched.Elapsed, 0.15f, 0.6f)
+                                    : 0.3f,
                             };
                             int boltsBefore       = _particles?.LiveBoltCount ?? 0;
                             int particlesBefore   = _particles?.LiveParticleCount ?? 0;
