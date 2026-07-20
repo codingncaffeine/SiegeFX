@@ -125,6 +125,19 @@ public sealed class ProcessLoopbackCapture : IDisposable
 
     void ReadLoop()
     {
+        // SC-CRASH-CAPTURE — a fault on this background thread must never
+        // take the process silently; log it and let recording continue
+        // video-only (the silence-fill keeps the mux fed).
+        try { ReadLoopCore(); }
+        catch (Exception ex)
+        {
+            Console.WriteLine("[record] process-loopback reader died: " +
+                $"{ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
+        }
+    }
+
+    void ReadLoopCore()
+    {
         var capture = (IAudioCaptureClient)_captureClient!;
         int blockAlign = Channels * 2;
         while (!_stopping)

@@ -8,13 +8,32 @@ var crashLogPath = System.IO.Path.Combine(AppContext.BaseDirectory, "siegefx_cra
 try { System.IO.File.Delete(crashLogPath); } catch { }
 AppDomain.CurrentDomain.UnhandledException += (_, e) =>
 {
+    var text = "UnhandledException at " + DateTime.Now.ToString("o") + Environment.NewLine +
+               (e.ExceptionObject?.ToString() ?? "<no exception object>") + Environment.NewLine;
+    try { System.IO.File.WriteAllText(crashLogPath, text); } catch { }
+    // SC-CRASH-CAPTURE — the bin-dir copy is deleted on the NEXT launch, so
+    // a crash inspected after a relaunch left no evidence (field case: the
+    // creator crash). Keep a timestamped copy beside the session logs,
+    // where triage already looks, and push it through the console tee too.
     try
     {
-        System.IO.File.WriteAllText(crashLogPath,
-            "UnhandledException at " + DateTime.Now.ToString("o") + Environment.NewLine +
-            (e.ExceptionObject?.ToString() ?? "<no exception object>") + Environment.NewLine);
+        var dir = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "SiegeFX", "logs");
+        System.IO.Directory.CreateDirectory(dir);
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(dir, $"crash-{DateTime.Now:yyyyMMdd-HHmmss}.log"), text);
     }
     catch { }
+    try { Console.WriteLine(text); Console.Out.Flush(); } catch { }
+};
+// SC-CRASH-CAPTURE — background task faults (the recorder's transcode and
+// audio pipelines run on pool threads) must surface in the session log
+// instead of dying silently with the finalizer.
+System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (_, e) =>
+{
+    try { Console.WriteLine($"[task-exception] {e.Exception}"); } catch { }
+    e.SetObserved();
 };
 
 // Console tee — ALWAYS mirror Console.Out into a rotating session log at

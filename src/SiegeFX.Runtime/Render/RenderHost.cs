@@ -15049,7 +15049,16 @@ void main()
         {
             var img = SiegeFX.Core.Assets.RawImage.Load(bytes);
             w = img.Width; h = img.Height;
-            return img.GetSurfaceRgba(0);
+            var rgba = img.GetSurfaceRgba(0);
+            // Corrupt / mip-mismatched RAW: surface 0 shorter than the
+            // header dims claim. The composite math and the GL upload both
+            // assume w*h*4; fall back to the authored texture instead.
+            if (rgba.Length < w * h * 4)
+            {
+                Console.WriteLine($"[cc] '{baseName}.raw' surface underruns header dims {w}x{h} — skipped");
+                return null;
+            }
+            return rgba;
         }
         catch { return null; }
     }
