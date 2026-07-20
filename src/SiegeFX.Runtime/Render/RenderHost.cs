@@ -26458,9 +26458,40 @@ void main()
         int x, int y, int cx, int cy, uint uFlags);
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern nint GetWindowLongPtrW(nint hWnd, int nIndex);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool GetWindowRect(nint hWnd, out Win32Rect rect);
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct Win32Rect { public int Left, Top, Right, Bottom; }
     private const uint SwpNoSizeNoMoveNoActivate = 0x0001 | 0x0002 | 0x0010;
     private const int GwlExStyle = -20;
     private const long WsExTopmost = 0x8;
+
+    // SC-DISPLAY-MODE-TASKBAR round 3 — field logs proved the window HOLDS
+    // WS_EX_TOPMOST and the Win11 taskbar still draws above it: explorer
+    // re-raises the taskbar inside the topmost band, an arms race z-order
+    // can't win. The way modern apps win is the documented shell contract:
+    // ITaskbarList2::MarkFullscreenWindow (Chromium's mechanism) — explorer
+    // itself demotes the taskbar below a marked foreground window.
+    [System.Runtime.InteropServices.ComImport,
+     System.Runtime.InteropServices.Guid("56FDF344-FD6D-11d0-958A-006097C9A090"),
+     System.Runtime.InteropServices.ClassInterface(System.Runtime.InteropServices.ClassInterfaceType.None)]
+    private class TaskbarListCom { }
+
+    [System.Runtime.InteropServices.ComImport,
+     System.Runtime.InteropServices.Guid("602D4995-B13A-429B-A66E-1935E44F4317"),
+     System.Runtime.InteropServices.InterfaceType(System.Runtime.InteropServices.ComInterfaceType.InterfaceIsIUnknown)]
+    private interface ITaskbarList2
+    {
+        void HrInit();
+        void AddTab(nint hwnd);
+        void DeleteTab(nint hwnd);
+        void ActivateTab(nint hwnd);
+        void SetActiveAlt(nint hwnd);
+        void MarkFullscreenWindow(nint hwnd, [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)] bool fullscreen);
+    }
+
+    private ITaskbarList2? _taskbarList;
+    private bool _taskbarListFailed;
 
     private bool _windowFocused = true;
     private double _topmostWatchdog;
@@ -26493,7 +26524,27 @@ void main()
         bool ok = SetWindowPos(hwnd, on ? (nint)(-1) : (nint)(-2), // HWND_TOPMOST / HWND_NOTOPMOST
             0, 0, 0, 0, SwpNoSizeNoMoveNoActivate);
         bool has = ((long)GetWindowLongPtrW(hwnd, GwlExStyle) & WsExTopmost) != 0;
-        Console.WriteLine($"[display] borderless topmost -> {on} (setpos={ok} exTopmost={has})");
+        GetWindowRect(hwnd, out var wr);
+        Console.WriteLine($"[display] borderless topmost -> {on} (setpos={ok} exTopmost={has} " +
+            $"rect={wr.Left},{wr.Top}..{wr.Right},{wr.Bottom})");
+        // The load-bearing piece: explorer demotes its taskbar below a
+        // window marked fullscreen while that window is foreground — the
+        // same contract every modern borderless title rides.
+        try
+        {
+            if (_taskbarList is null && !_taskbarListFailed)
+            {
+                _taskbarList = (ITaskbarList2)new TaskbarListCom();
+                _taskbarList.HrInit();
+            }
+            _taskbarList?.MarkFullscreenWindow(hwnd, on);
+            Console.WriteLine($"[display] shell fullscreen mark -> {on}");
+        }
+        catch (Exception ex)
+        {
+            _taskbarListFailed = true;
+            Console.WriteLine($"[display] MarkFullscreenWindow failed: {ex.GetType().Name} 0x{ex.HResult:X8} {ex.Message}");
+        }
     }
 
     private void OnWindowFocusChanged(bool focused)
