@@ -27380,7 +27380,7 @@ void main()
             "About SiegeFX",
             "",
             "Open-source Dungeon Siege 1 reimplementation.",
-            "MIT-licensed; ships no copyrighted assets.",
+            "GPLv3-licensed; ships no copyrighted assets.",
             "Requires the original Dungeon Siege game data.",
             "",
             "Dungeon Siege © 2002 Gas Powered Games / Microsoft.",

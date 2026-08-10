@@ -78,7 +78,7 @@ See [Building and Running](https://github.com/codingncaffeine/SiegeFX/wiki/Build
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+SiegeFX is licensed under the [GNU General Public License v3.0](LICENSE) (`GPL-3.0-only`).
 
 ## Third-party software
 
