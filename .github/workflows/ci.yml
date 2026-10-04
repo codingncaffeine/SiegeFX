@@ -18,9 +18,9 @@ jobs:
     # The runtime targets net11.0-windows and SiegeSmith is WPF.
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 11.0.x
           # net11.0 is a preview SDK until .NET 11 ships.
