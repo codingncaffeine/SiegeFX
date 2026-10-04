@@ -45,6 +45,8 @@ src/
   SiegeFX.Browser    WPF asset explorer
   SiegeFX.Runtime    game / engine host (Silk.NET)
   SiegeSmith         modding studio & world builder built on the same parsers
+tests/
+  SiegeFX.Core.Tests unit tests that need no game data
 ```
 
 ## SiegeSmith
@@ -68,6 +70,14 @@ dotnet run -c Release
 ```
 
 See [Building and Running](https://github.com/codingncaffeine/SiegeFX/wiki/Building-and-Running) for game-data setup and controls.
+
+### Tests
+
+```
+dotnet test
+```
+
+runs the unit tests in `tests/`, which use synthetic inputs and need no Dungeon Siege install; CI runs them on every push and pull request. The data-driven audits that check SiegeFX against the shipped game files live in `test-all.bat` (pass `--ds1=PATH` to point it at your install).
 
 ## Credits & prior art
 

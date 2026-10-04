@@ -1,0 +1,33 @@
+# Builds the whole solution and runs the data-free unit tests. The audits in
+# test-all.bat need a Dungeon Siege install, so they stay a local step.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    # The runtime targets net11.0-windows and SiegeSmith is WPF.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+          # net11.0 is a preview SDK until .NET 11 ships.
+          dotnet-quality: preview
+
+      - name: Build
+        run: dotnet build SiegeFX.sln -c Release --nologo
+
+      - name: Test
+        run: dotnet test SiegeFX.sln -c Release --no-build --nologo --logger "console;verbosity=normal"
