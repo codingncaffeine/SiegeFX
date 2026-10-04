@@ -1000,11 +1000,9 @@ public sealed class RenderHost : IDisposable
     // Lazy: -1 means "not yet aligned with current Primary"; the first cycle
     // input snaps it to whichever slot the active spell already occupies.
     private int _spellCycleIdx = -1;
-    // 9-SC-3: DS1 spellbooks are pcontent-rolled containers (book_glb_magic_01
-    // has pcontent_level=0, no authored spell names). These two names are a
-    // SiegeFX stand-in so 'Q'/'W' have something to fire while pcontent
-    // (9-SC-16) is unimplemented. Once pcontent lands, the spellbook walked
-    // off es_spellbook by 9-SC-12 will provide real spells and these go away.
+    // 9-SC-3: fallback names for the SIEGEFX_DEBUG_SPELLS test roster. Normal
+    // play no longer slots them: the hero starts with no spells (Phase 22
+    // authentic start) and spellbooks fill from pcontent-rolled pickups.
     private const string DefaultPrimarySpellName   = "spell_zap";
     private const string DefaultSecondarySpellName = "spell_healing_wind";
     // Phase 17a — short-lived floating world-anchored text (cast feedback like
@@ -27887,10 +27885,8 @@ void main()
         // template authoring (DS1 PCs always start fresh).
         if (_formulas is not null)
             _progression = new SiegeFX.Core.Actors.PlayerProgression(player, _formulas);
-        // Phase 17a — slot the canonical spell_zap into the player's primary
-        // book slot. Future inventory/learn UI will populate this from the
-        // spellbook items in the PC's [inventory][equipment]; for now zap is
-        // the always-on starter so 'Q' has something to fire.
+        // Phase 17a — the spellbook starts empty (see the Phase 22 note below);
+        // only a SIEGEFX_DEBUG_SPELLS roster pre-slots spells.
         //
         // Phase 21-SC-SPELL-VFX-AUDIT follow-up — `SIEGEFX_DEBUG_SPELLS=primary
         // [,secondary]` overrides the hardcoded defaults so the SC-SPELL-VFX-3

@@ -21,9 +21,9 @@ namespace SiegeFX.Runtime.Render.Hud;
 /// y=520 — past the 480-line reference screen — so its bottom edge clips
 /// off-screen exactly like it did in DS1.
 ///
-/// "Show Dialogue" renders per the authored layout but is a logged stub —
-/// the dialogue-chronicle view (journal.gas's <c>textbox_dialogues</c> /
-/// <c>quest_dialogues</c> group) lands in a later slice.
+/// "Show Dialogue" (SC-QUEST-UI-D) swaps the listbox for the selected
+/// quest's recorded conversation — journal.gas's <c>textbox_dialogues</c> /
+/// <c>quest_dialogues</c> group — and flips its caption to "Show Quests".
 /// </summary>
 public sealed class QuestLogPanel
 {
@@ -170,7 +170,7 @@ public sealed class QuestLogPanel
     /// click-to-move through journal chrome); false lets it fall through.
     /// Row clicks select (portrait + description retarget on next Draw),
     /// arrows scroll one element, Close/X raise the close request, and
-    /// Show Dialogue is the logged stub.</summary>
+    /// Show Dialogue toggles the dialogue chronicle.</summary>
     public bool OnMouseDown(int mx, int my, int viewportW, int viewportH, QuestJournal journal)
     {
         Layout(viewportW, viewportH);

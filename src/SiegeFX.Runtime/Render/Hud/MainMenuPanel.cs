@@ -6,7 +6,10 @@ namespace SiegeFX.Runtime.Render.Hud;
 /// Phase 24-MAINMENU step 5+6 — the seven-button main menu the FrontendScene
 /// drops into after the splash → logo-drop sequence completes.
 ///
-/// <para><b>Phase 24 splinters parked at the end of this slice:</b></para>
+/// <para><b>Phase 24 splinters parked at the end of this slice.</b> Since
+/// landed: NEWGAME (Phase 27-SP-FLYOUT), CONTINUE, MULTIPLAYER (SC-MP-MENU),
+/// LOGO-EXIT, NIS, BUTTONS-RAW. Still open: CREDITS (the button logs and
+/// does nothing), BINK, ABOUT-RAW; CHROME-LINEUP unverified.</para>
 /// <list type="bullet">
 ///   <item><b>SC-MAINMENU-NEWGAME</b> — wire SinglePlayer click to a region
 ///         launch path that doesn't require <c>--play-region</c> CLI args

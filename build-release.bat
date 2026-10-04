@@ -12,5 +12,5 @@ if errorlevel 1 (
 )
 echo.
 echo Build OK.
-echo   Game:       src\SiegeFX.Runtime\bin\Release\net11.0\SiegeFX.exe
+echo   Game:       src\SiegeFX.Runtime\bin\Release\net11.0-windows10.0.22621.0\SiegeFX.exe
 echo   SiegeSmith: src\SiegeSmith\bin\Release\net11.0-windows\SiegeSmith.exe

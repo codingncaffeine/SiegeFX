@@ -16,7 +16,7 @@ Most of the groundwork is other people's — see [Credits & prior art](#credits-
 
 ## Current state of development
 
-**First playable alpha available:** [**v0.0.1**](https://github.com/codingncaffeine/SiegeFX/releases/tag/v0.0.1) — a self-contained Windows x64 build. Unzip, run `SiegeFX.Runtime.exe` (standard GOG/Steam/Microsoft installs are auto-detected; otherwise set `SIEGEFX_DS1` to your Dungeon Siege folder), and see how far you can take the campaign. Please report what breaks via GitHub issues.
+**Latest alpha:** [**v0.4.0**](https://github.com/codingncaffeine/SiegeFX/releases/tag/v0.4.0) — a self-contained Windows x64 build (the first playable alpha was v0.0.1; every build is on the [Releases](https://github.com/codingncaffeine/SiegeFX/releases) page). Unzip, run `SiegeFX.exe` (standard GOG/Steam/Microsoft installs are auto-detected; otherwise set `SIEGEFX_DS1` to your Dungeon Siege folder), and see how far you can take the campaign. Please report what breaks via GitHub issues.
 
 *Versioning note:* earlier tags tracked internal engine milestones and outpaced the project's playable maturity; the scheme was reset at the first playable build and now tracks progress toward **1.0 = a complete Farmhouse → Castle Ehb campaign**. The retired milestone notes live on the wiki's [Release Archive](https://github.com/codingncaffeine/SiegeFX/wiki/Release-Archive).
 
@@ -29,10 +29,10 @@ Most of the groundwork is other people's — see [Credits & prior art](#credits-
 - **Combat & spells** — melee, ranged, and spellcasting enemies with template-driven spawners, pack alerts, and patrol routes; the full authored spell universe firing its own DS1 sfx effects.
 - **Presentation & UX** — a DS1-faithful character creator, scripted intro cinematics (a non-interactive-sequence engine + storyteller narration), a rotating compass, a quest journal and HUD tracker, in-world vendors with retail store chrome, clickable doors, breakable props with authored loot, lossless quicksave/quickload, and streaming mood-driven music.
 - **Options & comfort** — a fully wired options menu in authentic DS1 chrome (resolution, fullscreen/windowed with remembered window size, shadows, texture filtering, gamma, object detail) plus a modern Advanced tab (VSync, frame cap, anisotropy, MSAA, point-light budget, UI scale); Shift+drag HUD rearrangement with snapping; everything persists between sessions.
-- **Weather & atmosphere** — the full mood system: per-location scripted rain and snow (the opening-farmland storm, the Glacern blizzards) with authored densities that drift like retail, linear mood fog on every region, wind-sheared precipitation, lightning with thunder, and the placed sound-emitter layer (trigger-activated rain loops, wind beds, waterwheels).
+- **Weather & atmosphere** — a day/night world clock tinting the sun through the authored hourly palette (night ambience like the crickets only sounds after dark), and the full mood system: per-location scripted rain and snow (the opening-farmland storm, the Glacern blizzards) with authored densities that drift like retail, linear mood fog on every region, wind-sheared precipitation, lightning with thunder, and the placed sound-emitter layer (trigger-activated rain loops, wind beds, waterwheels).
 - **World mechanics** — the moving-node elevator system (216 lifts across 32 regions, lever- and stand-activated, riding the party between floors); openable chests and trapped containers; life/mana shrines that heal and revive; scripted progression gates (stuck doors that open on quest events, key-locked mechanisms, message-broken rubble); the boolean/counter logic-gizmo network quests gate on; and a campaign-wide completability audit whose "unhandled component" table now reads empty across all 81 regions.
 
-**Under construction:** the end-to-end campaign, time-of-day (mood `[sun]` tables + hour-gated cricket emitters are parsed but parked), interior lighting fidelity, level-up feedback, and combat balance.
+**Under construction:** campaign polish (v0.4.0 is completable through the final boss; alpha playthroughs are finding what still breaks), interior lighting fidelity, and combat balance.
 
 The full per-phase development log, roadmap, and what's queued live on the [**wiki**](https://github.com/codingncaffeine/SiegeFX/wiki) — start at [Status](https://github.com/codingncaffeine/SiegeFX/wiki/Status), [Architecture](https://github.com/codingncaffeine/SiegeFX/wiki/Architecture), [Building and Running](https://github.com/codingncaffeine/SiegeFX/wiki/Building-and-Running), or [Engine Quirks and Stumbles](https://github.com/codingncaffeine/SiegeFX/wiki/Engine-Quirks-and-Stumbles).
 
@@ -40,10 +40,11 @@ The full per-phase development log, roadmap, and what's queued live on the [**wi
 
 ```
 src/
-  SiegeFX.Core       class library — file format parsers, no UI
-  SiegeFX.Tools      unified `siegefx` CLI (tank info/list/extract, raw info/decode)
-  SiegeFX.Browser    WPF asset explorer
+  SiegeFX.Core       class library — file format parsers, gameplay rules, no UI
+  SiegeFX.Audio      OpenAL audio engine + streaming music
+  SiegeFX.Tools      unified `siegefx` CLI (tank/raw tools and the headless audits)
   SiegeFX.Runtime    game / engine host (Silk.NET)
+  SiegeFX.Net.Eos    Epic Online Services provider (needs Epic's SDK; not in the solution)
   SiegeSmith         modding studio & world builder built on the same parsers
 ```
 

@@ -16,7 +16,7 @@ How the original game behaves here, if you know it.
 Region / landmark (e.g. "farmlands, bridge by the stream"), and roughly what you were doing.
 
 **Version**
-The release zip name or the version shown in the log (e.g. `v0.0.3`).
+The release zip name or the version shown in the log (e.g. `v0.4.0`).
 
 **Your DS1 data source**
 GOG / Steam / original discs.
