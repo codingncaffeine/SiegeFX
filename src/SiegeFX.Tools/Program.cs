@@ -1049,22 +1049,10 @@ static int CmdRegionCmdAudit(string[] a)
     var mapReader = new TankReader(mapTank);
     string filter = a.Length >= 2 ? a[1].Trim() : "all";
 
-    // Verbs the runtime actually dispatches (RenderHost.ActivateAiCommand /
-    // BuildCommandRoute / the NIS engine). Everything else logs "recognized but
-    // not yet implemented" and is effectively inert.
-    var handled = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-    {
-        "cmd_ai_c_move", "cmd_ai_c_move_orient", "cmd_ai_t_move", "cmd_ai_t_move_orient",
-        "cmd_enter_nis", "cmd_camera_command", "cmd_camera_waypoint", "cmd_leave_nis",
-    };
-    // "route" verbs aren't message-dispatched, but their positions ARE consumed by
-    // BuildCommandRoute -> AssignPatrolRoutes: an actor whose [mind] initial_command
-    // points at one of these walks the chain as a patrol. So the 105 scripted
-    // patrollers DO move; the verb-specific nuance (orient/face-on-arrival) is lost.
-    var routeVerbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-    {
-        "cmd_ai_c_patrol", "cmd_ai_c_patrol_orient",
-    };
+    // Which verbs the runtime acts on (and how) lives in one table shared with
+    // RenderHost.ActivateAiCommand — see SiegeFX.Core.Assets.AiCommandCoverage.
+    // Anything it doesn't list logs "recognized but not yet implemented" at
+    // runtime and is effectively inert.
 
     var regionPaths = new List<string>();
     {
@@ -1127,9 +1115,14 @@ static int CmdRegionCmdAudit(string[] a)
     int stubbed = 0, stubPlacements = 0;
     foreach (var kv in verbCount.OrderByDescending(k => k.Value))
     {
-        string status = handled.Contains(kv.Key) ? "handled"
-                      : routeVerbs.Contains(kv.Key) ? "route"
-                      : "STUB";
+        string status = SiegeFX.Core.Assets.AiCommandCoverage.Classify(kv.Key) switch
+        {
+            SiegeFX.Core.Assets.AiCommandCoverage.Kind.Dispatched => "handled",
+            SiegeFX.Core.Assets.AiCommandCoverage.Kind.Nis        => "nis",
+            SiegeFX.Core.Assets.AiCommandCoverage.Kind.Indexed    => "indexed",
+            SiegeFX.Core.Assets.AiCommandCoverage.Kind.Route      => "route",
+            _                                                     => "STUB",
+        };
         if (status == "STUB") { stubbed++; stubPlacements += kv.Value; }
         int rc = verbRegions.TryGetValue(kv.Key, out var s) ? s.Count : 0;
         Console.WriteLine($"  {kv.Value,5} {status,-8} {kv.Key}  ({rc} region{(rc == 1 ? "" : "s")})");

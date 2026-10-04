@@ -17660,6 +17660,9 @@ void main()
     private void ActivateAiCommand(uint scid, (string Type, uint Next, Vector3 Pos, uint Target1) cmd)
     {
         var t = cmd.Type.ToLowerInvariant();
+        // A case added or removed here must be mirrored in
+        // SiegeFX.Core.Assets.AiCommandCoverage.Dispatched (cmd-audit reads it;
+        // AiCommandCoverageTests fails the build when the two drift).
         switch (t)
         {
             case "cmd_ai_c_move":
