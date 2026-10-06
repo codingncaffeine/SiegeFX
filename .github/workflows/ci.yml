@@ -1,9 +1,12 @@
 name: CI
 
 # Every push to main and every pull request: build the whole solution on Linux
-# and on Windows with warnings as errors, then run the data-free unit tests.
-# The checks that need a Dungeon Siege install (the engine's self-tests and the
-# parity ledger) run locally before a push: tools/receipts.sh.
+# and on Windows with warnings as errors and run the data-free unit tests; and
+# build the release artifacts (publish.sh), launch the Linux tarball as shipped
+# (packaging/smoke-test.sh) and keep the artifacts for a week. The checks that
+# need a Dungeon Siege install (the parity ledger, the effect traces, the menu
+# rendered from the tarball) run locally: tools/receipts.sh and the smoke test
+# with --ds1.
 on:
   push:
     branches: [main]
@@ -57,5 +60,41 @@ jobs:
         with:
           name: test-results-${{ matrix.os }}
           path: TestResults
+          retention-days: 7
+          if-no-files-found: ignore
+
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props', 'global.json') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      # The Linux tarball and both Windows zips, as a release builds them.
+      - name: Build the release artifacts
+        run: ./publish.sh dev
+
+      - name: Launch the tarball as shipped
+        run: packaging/smoke-test.sh publish/SiegeFX-dev-linux-x64.tar.gz
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: siegefx-${{ github.sha }}
+          path: |
+            publish/*.tar.gz
+            publish/*.zip
           retention-days: 7
           if-no-files-found: ignore

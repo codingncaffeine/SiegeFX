@@ -41,19 +41,22 @@
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
 
-  <!-- .NET 11 preview SDK bug: a self-contained publish omits ijwhost.dll, the
-       mixed-mode "IJW" host shim that WPF's DirectWriteForwarder.dll imports.
-       Without it a self-contained SiegeSmith crashes at startup with a
-       DirectWriteForwarder FileNotFoundException ("module could not be
-       found"). The framework-dependent dev build works because ijwhost.dll
-       lives in the shared WindowsDesktop runtime. Add it to the publish set
-       (so it also rides inside the single-file bundle and extracts alongside
-       DirectWriteForwarder) straight from the host pack. -->
+  <!-- The SDK (the .NET 11 previews, and still 10.0.112) leaves ijwhost.dll
+       out of a self-contained publish: the mixed-mode "IJW" host shim that
+       WPF's DirectWriteForwarder.dll imports. Without it a self-contained
+       SiegeSmith crashes at startup with a DirectWriteForwarder
+       FileNotFoundException ("module could not be found"). The
+       framework-dependent dev build works because ijwhost.dll lives in the
+       shared WindowsDesktop runtime. Add it to the publish set (so it also
+       rides inside the single-file bundle and extracts alongside
+       DirectWriteForwarder) from the app host pack the SDK resolved: the
+       SDK's packs folder on Windows, the NuGet cache when another OS
+       publishes for Windows. -->
   <Target Name="IncludeIjwHostForSelfContained"
           BeforeTargets="ComputeResolvedFilesToPublishList;_ComputeFilesToBundle"
           Condition=" '$(RuntimeIdentifier)' != '' and '$(SelfContained)' == 'true' ">
     <PropertyGroup>
-      <_IjwHostPath>$(NetCoreRoot)packs\Microsoft.NETCore.App.Host.$(RuntimeIdentifier)\$(BundledNETCoreAppPackageVersion)\runtimes\$(RuntimeIdentifier)\native\ijwhost.dll</_IjwHostPath>
+      <_IjwHostPath>$([System.IO.Path]::Combine($([System.IO.Path]::GetDirectoryName('$(AppHostSourcePath)')), 'ijwhost.dll'))</_IjwHostPath>
     </PropertyGroup>
     <Error Condition=" !Exists('$(_IjwHostPath)') "
            Text="ijwhost.dll not found at $(_IjwHostPath) — a self-contained WPF publish will crash. Check the host pack version." />

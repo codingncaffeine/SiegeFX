@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=SiegeFX
+GenericName=Role-Playing Game
+Comment=Play Dungeon Siege on an open-source engine (needs your own copy of the game)
+Exec=siegefx
+Icon=siegefx
+Terminal=false
+Categories=Game;RolePlaying;
+Keywords=Dungeon Siege;RPG;
+StartupWMClass=SiegeFX
