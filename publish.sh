@@ -37,9 +37,11 @@ echo "=== EOS module (optional; a LAN and direct-IP build without it) ==="
 eos_sdk=${EOS_SDK_ROOT:-$(dirname "$repo")/EOS/SDK}
 creds=${EOS_CONFIG:-${XDG_DATA_HOME:-$HOME/.local/share}/SiegeFX/Saves/eos_config.txt}
 eos=false
+# The module is stamped with the game's version: it binds to the SiegeFX.Core
+# the game carries, and inside the single-file Windows exe no other copy exists.
 eos_build() {   # eos_build <EosPlatform> <output folder>
     "$dotnet" build "$repo/src/SiegeFX.Net.Eos" -c Release --nologo -p:EosSdkRoot="$eos_sdk" \
-        -p:EosPlatform="$1" -o "$2" >> "$out/eos-build.log" 2>&1
+        -p:EosPlatform="$1" "${stamp[@]}" -o "$2" >> "$out/eos-build.log" 2>&1
 }
 if [ ! -d "$eos_sdk/Source" ]; then
     echo "  no EOS SDK at $eos_sdk - shipping LAN/direct-IP only."

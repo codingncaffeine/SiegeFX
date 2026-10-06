@@ -19,7 +19,9 @@ public static class EosSelfTest
         bool ok = true;
         void Assert(bool cond, string what)
         {
-            if (!cond) { Console.Error.WriteLine($"[selftest-eos] FAIL: {what}"); ok = false; }
+            // Failures go to the console too, so the session log keeps them (a
+            // program run under Wine has no visible stderr).
+            if (!cond) { Console.WriteLine($"[selftest-eos] FAIL: {what}"); ok = false; }
             else Console.WriteLine($"[selftest-eos] ok: {what}");
         }
 
@@ -42,7 +44,7 @@ public static class EosSelfTest
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[selftest-eos] FAIL: loading the module: {ex.GetBaseException().Message}");
+            Console.WriteLine($"[selftest-eos] FAIL: loading the module: {ex.GetBaseException()}");
             return false;
         }
         Assert(platform is not null, "the EOS platform starts with these credentials");

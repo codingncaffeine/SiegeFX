@@ -71,11 +71,14 @@ fi
 if ls "$logs"/crash-*.log > /dev/null 2>&1; then
     echo "FAIL  a crash log was written"; failed=1
 fi
-tr -d '\r' < "$work/eos.txt" 2> /dev/null | grep 'selftest-eos\] ' | sed 's/^/      /'
-if tr -d '\r' < "$work/eos.txt" 2> /dev/null | grep -q 'selftest-eos\] internet play works'; then
+# Under Proton the game's stdout is not relayed: its session log carries the
+# self-test (the newest log, the EOS run).
+eoslog=$(ls -t "$logs"/session-*.log 2> /dev/null | head -1)
+tr -d '\r' < "$eoslog" 2> /dev/null | grep 'selftest-eos\] ' | sed 's/^/      /'
+if [ "$eoslog" != "$log" ] && tr -d '\r' < "$eoslog" 2> /dev/null | grep -q 'selftest-eos\] internet play works'; then
     echo "PASS  internet play (EOS)"
 else
-    echo "FAIL  internet play (EOS) - see $work/eos.txt"; failed=1
+    echo "FAIL  internet play (EOS) - see $eoslog"; failed=1
 fi
 [ -s "$work/screen.png" ] && echo "      screen: $work/screen.png"
 exit $failed
