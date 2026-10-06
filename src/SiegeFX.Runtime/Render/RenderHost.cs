@@ -4364,12 +4364,10 @@ public sealed class RenderHost : IDisposable
     /// while the condition holds; AddActive/MarkCompleted are edge-stable so
     /// we log only on actual transitions.</summary>
     /// <summary>SC-ENDGAME — conversation nodes can author multiple
-    /// activate/complete/deactivate_quest values; the store ';'-joins them
-    /// and every consumer splits here.</summary>
+    /// activate/complete/deactivate_quest values; the store ';'-joins them.
+    /// One splitter in Core serves the engine and the quest audit.</summary>
     private static string[] SplitQuestKeys(string? joined) =>
-        string.IsNullOrEmpty(joined)
-            ? Array.Empty<string>()
-            : joined.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        SiegeFX.Core.Assets.DialogueNode.SplitQuestKeys(joined);
 
     internal void OnTriggerChangeQuestState(IReadOnlyList<string> args)
     {

@@ -15,6 +15,14 @@ public sealed class DialogueNode
     public string? VoiceSample { get; init; }
     public string Choice { get; init; } = "";   // "more" advances; "" = continue/end
     public string? ActivateQuest { get; init; } // emit on accept; Phase 20b consumes
+
+    /// <summary>SC-ENDGAME — a node can author several activate/complete/
+    /// deactivate_quest values; the store ';'-joins them and every consumer
+    /// (the engine and the audits) splits them here.</summary>
+    public static string[] SplitQuestKeys(string? joined) =>
+        string.IsNullOrEmpty(joined)
+            ? Array.Empty<string>()
+            : joined.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     /// <summary>SC-QUEST-TURNIN — authored <c>complete_quest*</c>: playing this
     /// node IS the quest turn-in (4 quests author it: apprentice_books,
     /// open_gate, water_dungeon + fort_kroth's deactivate).</summary>

@@ -48,6 +48,7 @@ try
         "tsd"       => DispatchTsd(args[1..]),
         "quests"    => DispatchQuests(args[1..]),
         "weapons"   => DispatchWeapons(args[1..]),
+        "parity"    => ParityLedger.Dispatch(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -82,6 +83,7 @@ static void PrintUsage()
     Console.WriteLine("SiegeFX CLI");
     Console.WriteLine();
     Console.WriteLine("Usage:");
+    Console.WriteLine("  siegefx parity ledger <install> [--engine=DIR] [--out=DIR] [--baseline=FILE] [--write-baseline=FILE]");
     Console.WriteLine("  siegefx tank info    <tank>");
     Console.WriteLine("  siegefx tank list    <tank> [--prefix=PATH] [--ext=.EXT]");
     Console.WriteLine("  siegefx tank extract <tank> <resource-path> [dest-file]");
@@ -9854,7 +9856,7 @@ static int CmdSfxParamAudit(string[] a)
 
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var keys = new List<(string Key, string Kind)>();
-        WalkParamStrings(script.Name, script.Body, sfx, visited, keys, ref paramStrings);
+        SiegeFX.Core.Sfx.SfxParamInventory.WalkParamStrings(script.Name, script.Body, sfx, visited, keys, ref paramStrings);
 
         foreach (var (key, kind) in keys)
         {
@@ -9909,78 +9911,6 @@ static int CmdSfxParamAudit(string[] a)
     return 0;
 }
 
-// Walks a compiled sfx script (recursing one level into `call <sub>` like
-// WalkAuditScript) collecting every param key from every statement that
-// carries a quoted param string, tagged with the create-kind (or verb)
-// it was authored on.
-static void WalkParamStrings(string scriptName, string body, SfxScriptStore store,
-    HashSet<string> visited, List<(string Key, string Kind)> keys, ref int paramStrings)
-{
-    if (!visited.Add(scriptName)) return; // cycle / mutual-call guard
-    SiegeFX.Core.Sfx.SfxProgram prog;
-    try { prog = SiegeFX.Core.Sfx.SfxScriptCompiler.Compile(scriptName, body); }
-    catch { return; }
-
-    foreach (var stmt in prog.Statements)
-    {
-        if (!string.IsNullOrEmpty(stmt.ParamString))
-        {
-            paramStrings++;
-            var kind = stmt.Kind == SiegeFX.Core.Sfx.StatementKind.SfxCreate && stmt.Tokens.Count > 0
-                ? stmt.Tokens[0].ToLowerInvariant()
-                : "(" + stmt.Verb + ")";
-            foreach (var key in ExtractParamKeys(stmt.ParamString!))
-                keys.Add((key, kind));
-        }
-        if (stmt.Kind == SiegeFX.Core.Sfx.StatementKind.Call && stmt.Tokens.Count > 0)
-        {
-            var callName = stmt.Tokens[0].Trim('"').Trim();
-            int sp = callName.IndexOf(' ');
-            if (sp >= 0) callName = callName.Substring(0, sp);
-            if (!string.IsNullOrEmpty(callName) && store.TryGet(callName, out var sub))
-                WalkParamStrings(sub.Name, sub.Body, store, visited, keys, ref paramStrings);
-        }
-    }
-}
-
-// Tokenizes a DS1 param string (`key(args)key2(args)...[0][1]`) into its
-// key names. A key is an identifier followed by `(`; paren contents are
-// skipped flat (no shipped DS1 value nests parens — same limitation as
-// ExtractAuditTextures, documented there). Bare identifiers outside parens
-// are also yielded — shipped strings author flag-style keys both ways.
-// `[N]` caller-arg slots and `$var` leftovers are not keys.
-static IEnumerable<string> ExtractParamKeys(string raw)
-{
-    int i = 0;
-    while (i < raw.Length)
-    {
-        char c = raw[i];
-        if (c == '$')
-        {
-            i++;
-            while (i < raw.Length && (char.IsLetterOrDigit(raw[i]) || raw[i] == '_')) i++;
-        }
-        else if (char.IsLetter(c) || c == '_')
-        {
-            int start = i;
-            while (i < raw.Length && (char.IsLetterOrDigit(raw[i]) || raw[i] == '_')) i++;
-            var name = raw.Substring(start, i - start);
-            int j = i;
-            while (j < raw.Length && char.IsWhiteSpace(raw[j])) j++;
-            if (j < raw.Length && raw[j] == '(')
-            {
-                yield return name;
-                int close = raw.IndexOf(')', j + 1);
-                i = close < 0 ? raw.Length : close + 1;
-            }
-            else
-            {
-                yield return name; // bare flag-style key
-            }
-        }
-        else i++;
-    }
-}
 
 // Phase 23b — deterministic cast-timeline dump. One spell prints to
 // stdout; --all writes one file per spell into --out (default
@@ -11903,11 +11833,14 @@ static int CmdQuestsAudit(string[] a)
         {
             foreach (var node in conv.Nodes)
             {
-                var key = node.ActivateQuest;
-                if (string.IsNullOrWhiteSpace(key)) continue;
-                if (!perKey.TryGetValue(key, out var sites))
-                    perKey[key] = sites = new List<(string, string)>();
-                sites.Add((regionPath, convKey));
+                // A node can activate several quests ('King' grants two); split
+                // them exactly as the engine does.
+                foreach (var key in SiegeFX.Core.Assets.DialogueNode.SplitQuestKeys(node.ActivateQuest))
+                {
+                    if (!perKey.TryGetValue(key, out var sites))
+                        perKey[key] = sites = new List<(string, string)>();
+                    sites.Add((regionPath, convKey));
+                }
             }
         }
     }

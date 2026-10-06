@@ -1,0 +1,12 @@
+# siegefx parity ledger baseline: section, authored, handled (a run that handles fewer fails)
+commands	43	40
+trigger-verbs	24	23
+quests	31	30
+skrit-components	152	95
+ai-jobs	118	3
+template-sections	170	114
+template-fields	934	397
+mood-fields	26	21
+ui-interfaces	125	13
+effect-keys	136	136
+animation-skrit-api	31	17
