@@ -18,6 +18,10 @@ public sealed class EosPlatform : IDisposable
     public bool LoggedIn => LocalUser != null;
 
     static bool _initialized;
+    // The platform this process created. EOS must be shut down before the process
+    // ends: its worker threads otherwise run on while exit() destroys the SDK's
+    // statics, which crashed every Linux exit after multiplayer was used.
+    static EosPlatform? _live;
 
     public sealed record Config(string ProductId, string SandboxId, string DeploymentId,
                                 string ClientId, string ClientSecret);
@@ -36,7 +40,7 @@ public sealed class EosPlatform : IDisposable
                 var t = line.Trim();
                 if (t.Length == 0 || t.StartsWith('#')) continue;
                 int eq = t.IndexOf('=');
-                if (eq > 0) kv[t[..eq].Trim()] = t[(eq + 1)..].Trim();
+                if (eq > 0) kv[t[..eq].Trim()] = Unwrap(t[(eq + 1)..].Trim());
             }
             string? G(string k) => kv.TryGetValue(k, out var v) && v.Length > 0 ? v : null;
             var p = G("product_id"); var s = G("sandbox_id"); var d = G("deployment_id");
@@ -51,6 +55,12 @@ public sealed class EosPlatform : IDisposable
         catch (Exception ex) { NetLog.Error($"eos config read: {ex.Message}"); return null; }
     }
 
+    /// <summary>A value pasted with the placeholder's brackets or quotes around it
+    /// ("&lt;id&gt;", "\"id\""): no EOS id or secret contains them, so one
+    /// surrounding pair is dropped.</summary>
+    static string Unwrap(string v) =>
+        v.Length >= 2 && (v[0] == '<' && v[^1] == '>' || v[0] == '"' && v[^1] == '"') ? v[1..^1].Trim() : v;
+
     public bool Init(Config cfg, string cacheDir)
     {
         try
@@ -62,6 +72,11 @@ public sealed class EosPlatform : IDisposable
                 if (ir != Result.Success && ir != Result.AlreadyConfigured)
                 { NetLog.Error($"EOS Initialize failed: {ir}"); return false; }
                 _initialized = true;
+                AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+                {
+                    _live?.Dispose();
+                    PlatformInterface.Shutdown();
+                };
             }
             Directory.CreateDirectory(cacheDir);
             var opts = new Options
@@ -76,6 +91,7 @@ public sealed class EosPlatform : IDisposable
             };
             Platform = PlatformInterface.Create(ref opts);
             if (Platform == null) { NetLog.Error("EOS Platform.Create returned null (bad credentials?)"); return false; }
+            _live = this;
             NetLog.Info($"EOS platform up (product {cfg.ProductId[..Math.Min(8, cfg.ProductId.Length)]}...)");
             return true;
         }
@@ -119,5 +135,6 @@ public sealed class EosPlatform : IDisposable
     {
         Platform?.Release();
         Platform = null;
+        if (ReferenceEquals(_live, this)) _live = null;
     }
 }
