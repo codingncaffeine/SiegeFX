@@ -22,7 +22,7 @@ AppDomain.CurrentDomain.UnhandledException += (_, e) =>
     try
     {
         var dir = System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify),
             "SiegeFX", "logs");
         System.IO.Directory.CreateDirectory(dir);
         System.IO.File.WriteAllText(
@@ -45,12 +45,13 @@ System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (_, e) =>
 // now a closed window took its console output with it, so live bug reports
 // had no evidence trail). Newest 8 sessions are kept. SIEGEFX_DEBUG_LOG_FILE
 // still overrides the target path for directed diagnosis. Auto-flush on every
-// write so a forced quit still leaves a valid log.
+// write so a forced quit still leaves a valid log. The per-user folders are
+// looked up with DoNotVerify (see SaveStore.DefaultSaveDirectory).
 var teePath = System.Environment.GetEnvironmentVariable("SIEGEFX_DEBUG_LOG_FILE");
 if (string.IsNullOrWhiteSpace(teePath))
 {
     var logDir = System.IO.Path.Combine(
-        System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData),
+        System.Environment.GetFolderPath(System.Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify),
         "SiegeFX", "logs");
     teePath = System.IO.Path.Combine(logDir, $"session-{DateTime.Now:yyyyMMdd-HHmmss}.log");
     try

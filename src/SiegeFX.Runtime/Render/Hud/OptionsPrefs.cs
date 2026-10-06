@@ -17,7 +17,7 @@ internal static class OptionsPrefs
     };
 
     public static string PrefsPath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify),
         "SiegeFX", "prefs.json");
 
     public static OptionsMenuPanel.Settings? Load()

@@ -91,10 +91,14 @@ public static class SaveStore
     /// <summary>Default per-user save directory. Uses LocalApplicationData
     /// so saves survive uninstalls of the dev build but stay out of the
     /// roaming profile (the data isn't worth syncing). Same scheme on
-    /// Linux/Mac via the .NET cross-platform special-folder mapping.</summary>
+    /// Linux/Mac via the .NET cross-platform special-folder mapping
+    /// (~/.local/share). DoNotVerify: on a new Linux account that folder may
+    /// not exist yet, and the verifying lookup then returns "", which made
+    /// every path relative to the working directory; the writers create the
+    /// folders they write into.</summary>
     public static string DefaultSaveDirectory()
         => Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify),
             "SiegeFX", "Saves");
 
     /// <summary>Quicksave path under <see cref="DefaultSaveDirectory"/>.

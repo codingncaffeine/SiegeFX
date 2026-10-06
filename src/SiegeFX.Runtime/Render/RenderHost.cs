@@ -5427,7 +5427,7 @@ public sealed class RenderHost : IDisposable
     /// tab, or the default under %LOCALAPPDATA%\SiegeFX.</summary>
     private static string CaptureDir(string custom, string defaultLeaf)
         => custom.Length > 0 ? custom
-         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify),
                         "SiegeFX", defaultLeaf);
 
     private void ToggleRecording()
@@ -33259,7 +33259,7 @@ void main()
         try
         {
             var dir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify),
                 "SiegeFX", "bugreports");
             Directory.CreateDirectory(dir);
             var stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");

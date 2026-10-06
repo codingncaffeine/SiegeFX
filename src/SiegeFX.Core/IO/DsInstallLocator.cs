@@ -50,7 +50,7 @@ public static class DsInstallLocator
     /// on Linux, <c>%APPDATA%\siegefx\ds1path.txt</c> on Windows. Its first
     /// non-empty, non-# line is the install (or its Resources) folder.</summary>
     public static string UserPathFile => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "siegefx", "ds1path.txt");
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData, Environment.SpecialFolderOption.DoNotVerify), "siegefx", "ds1path.txt");
 
     /// <summary>The first candidate that is an install, or null.</summary>
     public static string? Locate()
@@ -171,7 +171,7 @@ public static class DsInstallLocator
 
     static IEnumerable<string> LinuxCandidates()
     {
-        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile, Environment.SpecialFolderOption.DoNotVerify);
         if (string.IsNullOrEmpty(home)) yield break;
 
         // Steam (native, Flatpak, Snap): every library's common/Dungeon Siege* folder.
