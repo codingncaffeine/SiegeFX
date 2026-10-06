@@ -21,7 +21,7 @@ depends=('openal' 'libgl' 'libxkbcommon' 'openssl' 'gcc-libs' 'glibc')
 optdepends=('xdg-desktop-portal: choosing a screenshots folder in Options')
 options=('!strip' '!debug')   # a self-contained .NET bundle: stripping breaks it
 source=("$url/releases/download/v$pkgver/SiegeFX-v$pkgver-linux-x64.tar.gz")
-sha256sums=('a5e2a5ec9fb854122600af293fc4d90afe3f37ea4eddc2dad7c4a743f654fb50')
+sha256sums=('f6f5530c787ca5f937e371b2415803476e285ec00679de4250df84fb64c12eec')
 
 package() {
     local _src="$srcdir/SiegeFX-v$pkgver-linux-x64"
