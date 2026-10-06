@@ -1,0 +1,61 @@
+name: CI
+
+# Every push to main and every pull request: build the whole solution on Linux
+# and on Windows with warnings as errors, then run the data-free unit tests.
+# The checks that need a Dungeon Siege install (the engine's self-tests and the
+# parity ledger) run locally before a push: tools/receipts.sh.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    # A hung test ends the job here, not at GitHub's six-hour limit.
+    timeout-minutes: 30
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props', 'global.json') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Build (warnings are errors)
+        run: dotnet build SiegeFX.sln -c Release -warnaserror
+
+      # Every test is named as it passes; one that hangs is stopped after two
+      # minutes with a dump.
+      - name: Unit tests
+        run: dotnet test tests/SiegeFX.Tests -c Release --no-build --blame-hang --blame-hang-timeout 2m --logger "console;verbosity=normal" --results-directory TestResults
+
+      - name: Keep the hang dumps
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-${{ matrix.os }}
+          path: TestResults
+          retention-days: 7
+          if-no-files-found: ignore
