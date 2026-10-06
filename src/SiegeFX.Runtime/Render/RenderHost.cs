@@ -9502,6 +9502,7 @@ void main()
             WindowBorder = winBorder,
             Samples = msaa > 0 ? msaa : null,
         };
+        WindowIdentity.ApplyHints();
         _window = Window.Create(opts);
         if (winPos is { } borderlessPos) _window.Position = borderlessPos;
         _window.Load    += OnLoad;
