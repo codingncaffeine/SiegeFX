@@ -6,7 +6,7 @@
 pkgname=siegefx-bin
 pkgver=0.5.0
 pkgrel=1
-pkgdesc="Open-source reimplementation of the Dungeon Siege engine (needs the original game data)"
+pkgdesc="Open-source reimplementation of the Dungeon Siege engine, in alpha (needs the original game data)"
 arch=('x86_64')
 url="https://github.com/codingncaffeine/SiegeFX"
 license=('GPL-3.0-only')
@@ -21,7 +21,7 @@ depends=('openal' 'libgl' 'libxkbcommon' 'openssl' 'gcc-libs' 'glibc')
 optdepends=('xdg-desktop-portal: choosing a screenshots folder in Options')
 options=('!strip' '!debug')   # a self-contained .NET bundle: stripping breaks it
 source=("$url/releases/download/v$pkgver/SiegeFX-v$pkgver-linux-x64.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('a5e2a5ec9fb854122600af293fc4d90afe3f37ea4eddc2dad7c4a743f654fb50')
 
 package() {
     local _src="$srcdir/SiegeFX-v$pkgver-linux-x64"
