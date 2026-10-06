@@ -76,6 +76,10 @@ try
     Console.WriteLine($"[log] session log: {teePath}");
 }
 catch (Exception ex) { Console.WriteLine($"  tee log: failed to open '{teePath}': {ex.Message}"); }
+// Which build ran, and where: the line a bug report quotes.
+Console.WriteLine($"[log] SiegeFX {SiegeFX.Core.Net.MpDiag.BuildString()} on " +
+                  $"{System.Runtime.InteropServices.RuntimeInformation.OSDescription} " +
+                  $"({System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier})");
 
 // Invocation shapes:
 //   SiegeFX.Runtime                                          → boot to main menu (Phase 24)

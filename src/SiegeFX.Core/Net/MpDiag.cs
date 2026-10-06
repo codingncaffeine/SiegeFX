@@ -41,7 +41,7 @@ public static class MpDiag
 
     /// <summary>Best-effort build identity — informational version if the build
     /// stamped one (git describe / CI), else the assembly version.</summary>
-    static string BuildString()
+    public static string BuildString()
     {
         var asm = Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly();
         var info = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
