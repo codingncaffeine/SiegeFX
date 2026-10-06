@@ -1714,6 +1714,25 @@ static int CmdWorldCampaignAudit(string[] a)
     foreach (var g in regionPaths.GroupBy(Depth).OrderBy(g => g.Key))
         Console.WriteLine($"  {(g.Key == int.MaxValue ? "unreached" : g.Key.ToString()),9} : {string.Join(", ", g.Select(ShortName))}");
 
+    // Triage check: the curated lists above against the names in the built
+    // engine (EngineVocabulary). A "handled" section or dispatched verb the
+    // engine never names is a stale claim; a "benign" section it does name may
+    // be implemented by now and wants re-triage. Names are a ceiling, not
+    // proof of faithful behaviour, so this is a review list, not a verdict.
+    Console.WriteLine();
+    var vocab = ParityLedger.LoadEngineVocabulary();
+    if (vocab is null)
+    {
+        Console.WriteLine("triage check skipped: no built engine (build src/SiegeFX.Runtime)");
+        return 0;
+    }
+    var scaffolding = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "placement", "gizmo", "template" };
+    static string List(IEnumerable<string> items) { var s = string.Join(", ", items.Order(StringComparer.Ordinal)); return s.Length == 0 ? "(none)" : s; }
+    Console.WriteLine("TRIAGE CHECK against the built engine (review list; names are a ceiling, not proof):");
+    Console.WriteLine($"  listed handled, never named by the engine : {List(handled.Where(h => !scaffolding.Contains(h) && !vocab.Names(h)))}");
+    Console.WriteLine($"  listed benign, named by the engine now    : {List(benign.Keys.Where(vocab.Names))}");
+    Console.WriteLine($"  listed dispatched, never named            : {List(dispatchedConditions.Concat(dispatchedActions).Where(v => !vocab.Names(v)))}");
+
     return 0;
 }
 

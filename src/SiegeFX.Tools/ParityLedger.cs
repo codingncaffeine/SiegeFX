@@ -82,14 +82,12 @@ static class ParityLedger
             return 1;
         }
         engineDir ??= FindEngineDir();
-        if (engineDir is null || !File.Exists(Path.Combine(engineDir, "SiegeFX.dll")))
+        var vocab = LoadEngineVocabulary(engineDir);
+        if (engineDir is null || vocab is null)
         {
             Console.Error.WriteLine("no built engine found (SiegeFX.dll); build src/SiegeFX.Runtime or pass --engine=DIR");
             return 1;
         }
-        var vocab = EngineVocabulary.Load(
-            new[] { "SiegeFX.dll", "SiegeFX.Core.dll", "SiegeFX.Audio.dll" }
-                .Select(f => Path.Combine(engineDir, f)).Where(File.Exists));
 
         using var logicTank = TankFile.Open(logicPath);
         using var worldTank = TankFile.Open(worldPath);
@@ -385,6 +383,18 @@ static class ParityLedger
     }
 
     // ---- helpers -----------------------------------------------------------
+
+    /// <summary>The built engine's vocabulary (SiegeFX, Core, Audio assemblies)
+    /// from <paramref name="engineDir"/> or the repo's Runtime build; null when
+    /// there is no build.</summary>
+    internal static EngineVocabulary? LoadEngineVocabulary(string? engineDir = null)
+    {
+        engineDir ??= FindEngineDir();
+        if (engineDir is null || !File.Exists(Path.Combine(engineDir, "SiegeFX.dll"))) return null;
+        return EngineVocabulary.Load(
+            new[] { "SiegeFX.dll", "SiegeFX.Core.dll", "SiegeFX.Audio.dll" }
+                .Select(f => Path.Combine(engineDir, f)).Where(File.Exists));
+    }
 
     static string? FindEngineDir()
     {
