@@ -9,6 +9,11 @@
 # Exit status is the compositor's (124 = timed out). KWin does not pass the
 # session's exit code on, so scripts write their results to files. KWin's
 # output goes to <work dir>/kwin.log.
+#
+# Never unset WAYLAND_DISPLAY inside the session: libwayland then falls back
+# to "wayland-0", the REAL desktop, and a Wayland-first client (GLFW 3.4)
+# opens its window there. To test an app's X11 path, keep WAYLAND_DISPLAY and
+# set XDG_SESSION_TYPE=x11 (GLFW then connects to X11 only).
 set -uo pipefail
 [ $# -eq 3 ] || { sed -n '2,11p' "$0"; exit 2; }
 work=$1; secs=$2; script=$3
