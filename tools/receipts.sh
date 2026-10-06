@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 # The pre-push gate: build with warnings as errors, the data-free unit tests,
-# the engine's self-tests, and the parity ledger against its committed
-# baseline (goldens/parity-ledger.baseline.txt). Exit 0 only when every step
-# passes. Needs a Dungeon Siege install for the self-tests and the ledger.
+# the engine's self-tests, the parity ledger against its committed baseline
+# (goldens/parity-ledger.baseline.txt) and every spell's effect trace against
+# goldens/sfx-timelines. Exit 0 only when every step passes. Needs a Dungeon
+# Siege install for everything after the unit tests.
 #
 #   tools/receipts.sh [--ds1=PATH] [--update-baseline]
 #
 # The install comes from --ds1, else SIEGEFX_DS1, else the first line of
 # ${XDG_CONFIG_HOME:-~/.config}/siegefx/ds1path.txt. DOTNET picks the dotnet
-# executable (default: dotnet on PATH). --update-baseline records this run's
-# ledger as the new baseline after every other step has passed; commit it with
-# the change that moved it. Logs and gap lists land in scratch/receipts/.
+# executable (default: dotnet on PATH). --update-baseline skips the trace
+# comparison and, after every other step has passed, records this run's ledger
+# and effect traces as the new baselines; commit them with the change that
+# moved them. Logs and gap lists land in scratch/receipts/.
 set -uo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 dotnet=${DOTNET:-dotnet}
@@ -63,7 +65,29 @@ step parity-ledger "$cli" parity ledger "$ds1" --out="$work/parity" --baseline="
 sed -n '/^  section/,/^$/p' "$work/parity-ledger.log"
 sed -n '/^against baseline/,$p' "$work/parity-ledger.log" | sed 's/^/  /'
 
+# Every spell's cast effect, run through the sfx VM with a fixed seed, must
+# reproduce its committed trace byte for byte: none changed, missing or new.
+goldens="$repo/goldens/sfx-timelines"
+logic="$ds1/Resources/Logic.dsres"
+sfx_goldens() {
+    "$cli" sfx timeline "$logic" --all --out="$work/sfx-timelines" || return 1
+    diff -r "$goldens" "$work/sfx-timelines" && return 0
+    echo "effect traces that differ from goldens/sfx-timelines:"
+    diff -rq "$goldens" "$work/sfx-timelines" | sed "s#$work/##g; s#$repo/##g"
+    return 1
+}
+if $update; then
+    echo "SKIP  sfx-goldens  (--update-baseline regenerates them)"
+else
+    step sfx-goldens sfx_goldens
+fi
+
 if $update && [ $failed -eq 0 ]; then
     "$cli" parity ledger "$ds1" --write-baseline="$baseline" > /dev/null && echo "baseline updated: $baseline"
+    rm -rf "$work/sfx-timelines"
+    if "$cli" sfx timeline "$logic" --all --out="$work/sfx-timelines" > /dev/null; then
+        rm -f "$goldens"/*.txt && cp "$work/sfx-timelines"/*.txt "$goldens"/
+        echo "effect goldens regenerated: $(git -C "$repo" status --short -- goldens/sfx-timelines | wc -l) files changed"
+    fi
 fi
 exit $failed
