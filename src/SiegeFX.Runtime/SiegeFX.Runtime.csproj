@@ -41,6 +41,11 @@
          separately at runtime (RenderHost.ApplyWindowIcon) because GLFW does
          not pick up ApplicationIcon for its window. -->
     <ApplicationIcon>Assets\siegefx.ico</ApplicationIcon>
+    <!-- One culture on every machine, as in the English original: under a
+         German or French locale the save dialog printed "Okt. 6, 2026" and
+         "10.6" in an English game. Also leaves ICU out of the Linux
+         requirements. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <!-- The Windows build: the WGC video recorder, its WASAPI loopback audio

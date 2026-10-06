@@ -17,6 +17,9 @@
     <LangVersion>latest</LangVersion>
     <AssemblyName>siegefx</AssemblyName>
     <RootNamespace>SiegeFX.Tools</RootNamespace>
+    <!-- Reports and goldens read the same under every locale (a German one
+         printed the ledger's 99.9% as 99,9%). -->
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
 </Project>
