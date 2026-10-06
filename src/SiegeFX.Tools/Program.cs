@@ -10643,7 +10643,7 @@ static int CmdAudioCoverage(string[] a)
 {
     if (a.Length < 1)
     {
-        Console.Error.WriteLine("usage: siegefx audio coverage <Sound.dsres> [--list-orphan-categories] [--list-unwired=PREFIX]");
+        Console.Error.WriteLine("usage: siegefx audio coverage <Sound.dsres> [--list-orphan-categories] [--list-unwired=PREFIX]   (PREFIX lists its unreachable sounds)");
         return 1;
     }
     string? soundPath = null;
@@ -10665,45 +10665,41 @@ static int CmdAudioCoverage(string[] a)
     }
     if (soundPath is null) { Console.Error.WriteLine("missing <Sound.dsres>"); return 1; }
 
-    // Static wired-id list mirrors RenderHost's Sfx* constants + the inline
-    // clip ids it registers (swing_01..04, hit_flesh_1..5, die_<species>).
-    // When RenderHost grows new TryRegisterSfx calls, append here so the
-    // gap report stays accurate. See feedback_siegefx_diagnostic_clis.md.
-    var wiredPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    // Reachable = what the engine can play: a sound the engine names, or one
+    // a GAS field it reads names (template sound events, mood music, effect
+    // scripts). The same analysis feeds the parity ledger's sounds row, read
+    // from the built engine rather than a list kept beside it.
+    var resourcesDir = Path.GetDirectoryName(Path.GetFullPath(soundPath))!;
+    var logicPath = Path.Combine(resourcesDir, "Logic.dsres");
+    var worldPath = Path.Combine(Path.GetDirectoryName(resourcesDir) ?? resourcesDir, "Maps", "World.dsmap");
+    if (!File.Exists(logicPath) || !File.Exists(worldPath))
     {
-        "/sound/effects/s_e_spell_zap_cast.wav",
-        "/sound/effects/s_e_spell_healing_wind_cast.wav",
-        "/sound/effects/s_e_swing_01.wav",
-        "/sound/effects/s_e_swing_02.wav",
-        "/sound/effects/s_e_swing_03.wav",
-        "/sound/effects/s_e_swing_04.wav",
-        "/sound/effects/s_e_hit_steelsword_flesh1.wav",
-        "/sound/effects/s_e_hit_steelsword_flesh2.wav",
-        "/sound/effects/s_e_hit_steelsword_flesh3.wav",
-        "/sound/effects/s_e_hit_steelsword_flesh4.wav",
-        "/sound/effects/s_e_hit_steelsword_flesh5.wav",
-        "/sound/effects/s_e_miss_melee.wav",
-        "/sound/effects/s_e_level_up_melee.wav",
-        "/sound/effects/s_e_die_goblin.wav",
-        "/sound/effects/s_e_die_gremal.wav",
-        "/sound/effects/s_e_die_krug_scout.wav",
-        "/sound/effects/s_e_die_krug_dog.wav",
-        "/sound/effects/s_e_gui_inventory_sheet.wav",
-        "/sound/effects/s_e_gui_pick_up.wav",
-        "/sound/effects/s_e_gui_out_of_mana.wav",
-    };
+        Console.Error.WriteLine($"audio coverage needs Logic.dsres beside {Path.GetFileName(soundPath)} and Maps/World.dsmap in the install");
+        return 1;
+    }
+    var vocab = ParityLedger.LoadEngineVocabulary();
+    if (vocab is null) { Console.Error.WriteLine("audio coverage needs a built engine (build src/SiegeFX.Runtime)"); return 1; }
 
     using var tank = TankFile.Open(soundPath);
+    using var logicTank = TankFile.Open(logicPath);
+    using var worldTank = TankFile.Open(worldPath);
     var reader = new TankReader(tank);
+    var reach = ParityLedger.SoundReachability(reader, new TankReader(logicTank), new TankReader(worldTank), vocab);
+    bool Reachable(string p) => reach.TryGetValue(p, out var r) && r.Kind == ParityLedger.SoundReach.Reachable;
+    int Count(ParityLedger.SoundReach kind) => reach.Values.Count(r => r.Kind == kind);
 
-    int wavTotal = 0, musicTotal = 0, otherTotal = 0;
-    int wiredFound = 0, wiredMissing = 0;
+    int wavTotal = 0, musicTotal = 0, otherTotal = 0, musicReachable = 0;
     var byCategory = new SortedDictionary<string, (int Authored, int Wired, List<string> Unwired)>(StringComparer.OrdinalIgnoreCase);
 
     foreach (var path in reader.ListFiles())
     {
         var lower = path.ToLowerInvariant();
-        if (lower.StartsWith("/sound/music/", StringComparison.Ordinal)) { musicTotal++; continue; }
+        if (lower.StartsWith("/sound/music/", StringComparison.Ordinal))
+        {
+            musicTotal++;
+            if (Reachable(path)) musicReachable++;
+            continue;
+        }
         if (!lower.EndsWith(".wav", StringComparison.Ordinal))           { otherTotal++; continue; }
         if (!lower.StartsWith("/sound/effects/s_e_", StringComparison.Ordinal))
         {
@@ -10723,22 +10719,19 @@ static int CmdAudioCoverage(string[] a)
         if (!byCategory.TryGetValue(cat, out var cell))
             cell = (0, 0, new List<string>());
         cell.Authored++;
-        if (wiredPaths.Contains(path)) cell.Wired++;
+        if (Reachable(path)) cell.Wired++;
         else cell.Unwired.Add(path);
         byCategory[cat] = cell;
     }
 
-    foreach (var w in wiredPaths)
-    {
-        if (reader.TryGetFile(w, out _)) wiredFound++;
-        else wiredMissing++;
-    }
-
     Console.WriteLine($"audio coverage: {Path.GetFileName(soundPath)}");
     Console.WriteLine($"  totals: {wavTotal} wav(s), {musicTotal} music track(s), {otherTotal} other");
-    Console.WriteLine($"  wired-list health: {wiredFound}/{wiredPaths.Count} resolve in tank ({wiredMissing} missing — report stale runtime constants)");
+    Console.WriteLine("  reachable = the engine names the sound, or a GAS field it reads does");
+    Console.WriteLine($"  all sounds: {Count(ParityLedger.SoundReach.Reachable)} reachable, " +
+                      $"{Count(ParityLedger.SoundReach.UnreadField)} named only in fields the engine does not read (gaps), " +
+                      $"{Count(ParityLedger.SoundReach.Unreferenced)} named by no data (unused, or played by the original's own code)");
     Console.WriteLine();
-    Console.WriteLine($"  {"category",-12}  {"authored",8}  {"wired",5}  gap");
+    Console.WriteLine($"  {"category",-12}  {"authored",8}  {"reach",5}  gap");
     Console.WriteLine($"  {new string('-', 12)}  {new string('-', 8)}  {new string('-', 5)}  ---");
 
     var orphans = new List<string>();
@@ -10750,8 +10743,8 @@ static int CmdAudioCoverage(string[] a)
     }
 
     Console.WriteLine();
-    Console.WriteLine($"  unwired categories ({orphans.Count}): {string.Join(", ", orphans)}");
-    Console.WriteLine($"  music: 0/{musicTotal} wired (no music playback path in runtime yet)");
+    Console.WriteLine($"  categories with nothing reachable ({orphans.Count}): {string.Join(", ", orphans)}");
+    Console.WriteLine($"  music: {musicReachable}/{musicTotal} reachable");
 
     if (listOrphans && orphans.Count > 0)
     {
@@ -10768,7 +10761,7 @@ static int CmdAudioCoverage(string[] a)
     if (listUnwiredPrefix is not null)
     {
         Console.WriteLine();
-        Console.WriteLine($"unwired entries in [{listUnwiredPrefix}] (full list):");
+        Console.WriteLine($"unreachable entries in [{listUnwiredPrefix}] (full list):");
         if (byCategory.TryGetValue(listUnwiredPrefix, out var cellList))
         {
             foreach (var p in cellList.Unwired) Console.WriteLine($"  {p}");

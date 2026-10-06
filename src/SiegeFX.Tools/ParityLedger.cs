@@ -75,10 +75,11 @@ static class ParityLedger
         if (install is null) { Console.Error.WriteLine(Usage); return 1; }
 
         string logicPath = Path.Combine(install, "Resources", "Logic.dsres");
+        string soundPath = Path.Combine(install, "Resources", "Sound.dsres");
         string worldPath = Path.Combine(install, "Maps", "World.dsmap");
-        if (!File.Exists(logicPath) || !File.Exists(worldPath))
+        if (!File.Exists(logicPath) || !File.Exists(soundPath) || !File.Exists(worldPath))
         {
-            Console.Error.WriteLine($"no Resources/Logic.dsres and Maps/World.dsmap under {install}");
+            Console.Error.WriteLine($"no Resources/Logic.dsres, Resources/Sound.dsres and Maps/World.dsmap under {install}");
             return 1;
         }
         engineDir ??= FindEngineDir();
@@ -90,8 +91,10 @@ static class ParityLedger
         }
 
         using var logicTank = TankFile.Open(logicPath);
+        using var soundTank = TankFile.Open(soundPath);
         using var worldTank = TankFile.Open(worldPath);
         var logic = new TankReader(logicTank);
+        var sound = new TankReader(soundTank);
         var world = new TankReader(worldTank);
 
         var sections = new List<Section>
@@ -112,6 +115,7 @@ static class ParityLedger
         sections.Add(MoodFields(logic, vocab));
         sections.Add(UiInterfaces(logic, vocab));
         sections.Add(EffectKeys(logic));
+        sections.Add(Sounds(sound, logic, world, vocab));
         sections.Add(AnimationScriptApi(logic, vocab));
 
         string engineVersion = FileVersionInfo.GetVersionInfo(Path.Combine(engineDir, "SiegeFX.dll")).ProductVersion ?? "?";
@@ -288,6 +292,109 @@ static class ParityLedger
                 s.Add(k, consumed.Contains(k) || gameplay.Contains(k), spell.Name);
         }
         return s;
+    }
+
+    static Section Sounds(TankReader sound, TankReader logic, TankReader world, EngineVocabulary vocab)
+    {
+        var s = new Section("sounds", "Sound files the game data names (Sound.dsres)",
+            "a field the engine reads names the sound, or the engine names it itself",
+            "sounds no data names are left out (unused by the original, or played by its own code); " +
+            "audio coverage lists them");
+        foreach (var (path, r) in SoundReachability(sound, logic, world, vocab))
+        {
+            if (r.Kind == SoundReach.Unreferenced) continue;
+            s.Add(path, r.Kind == SoundReach.Reachable, r.Via);
+        }
+        return s;
+    }
+
+    internal enum SoundReach { Reachable, UnreadField, Unreferenced }
+
+    /// <summary>For every sound in <paramref name="sound"/>: whether the engine
+    /// can reach it. Reachable: the engine names it (a literal, or a prefix such
+    /// as s_e_die_), or a GAS field it reads — anywhere in the logic tank or the
+    /// world map: template sound events, mood music, effect scripts — carries its
+    /// name. UnreadField: the data names it only in fields the engine does not
+    /// read (a real gap). Unreferenced: no data names it (the original may not
+    /// use it, or its own code plays it). Shared by the ledger and audio coverage.</summary>
+    internal static SortedDictionary<string, (SoundReach Kind, string Via)> SoundReachability(
+        TankReader sound, TankReader logic, TankReader world, EngineVocabulary vocab)
+    {
+        var result = new SortedDictionary<string, (SoundReach Kind, string Via)>(StringComparer.Ordinal);
+        var byStem = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in sound.ListFiles())
+        {
+            var ext = Path.GetExtension(path).ToLowerInvariant();
+            if (ext is not (".wav" or ".mp3" or ".ogg")) continue;
+            var stem = Path.GetFileNameWithoutExtension(path);
+            result[path] = vocab.Names(stem)
+                ? (SoundReach.Reachable, "named by the engine")
+                : (SoundReach.Unreferenced, "no data names it");
+            if (!byStem.TryGetValue(stem, out var list)) byStem[stem] = list = new List<string>();
+            list.Add(path);
+        }
+        void Mark(string sample, bool read, string via, string unreadVia)
+        {
+            if (!byStem.TryGetValue(Path.GetFileNameWithoutExtension(sample.Trim().Trim('"')), out var paths)) return;
+            foreach (var p in paths)
+            {
+                var cur = result[p];
+                if (read && cur.Kind != SoundReach.Reachable) result[p] = (SoundReach.Reachable, via);
+                else if (!read && cur.Kind == SoundReach.Unreferenced) result[p] = (SoundReach.UnreadField, unreadVia);
+            }
+        }
+
+        // The sound database goes through the engine's own loaders (the runtime
+        // loads both at boot): the material matrix's combat sounds play by
+        // material lookup, and a [global_voice] event stands for its samples
+        // wherever a field names the event. The file itself is definitions, not
+        // uses, so the direct scan below skips it.
+        bool soundDbLoaded = vocab.Names("sounddb");
+        var events = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
+        if (soundDbLoaded)
+        {
+            foreach (var snd in SoundDb.LoadMaterialMatrix(logic).Matrix.Values)
+                Mark(snd, true, "sounddb material matrix", "");
+            foreach (var (evt, samples) in SoundDb.LoadGlobalVoice(logic).Events) events[evt] = samples;
+        }
+
+        foreach (var (reader, file) in GasFiles(logic, "/").Concat(GasFiles(world, "/")))
+        {
+            if (soundDbLoaded && file.Equals(SoundDb.TankPath, StringComparison.OrdinalIgnoreCase)) continue;
+            foreach (var root in Load(reader, file))
+                foreach (var at in AttributesUnder(root))
+                {
+                    var (_, check) = NormalizeField(at.Name);
+                    bool read = vocab.Names(check);
+                    string via = $"{check} in {ShortLabel(file)}", unreadVia = $"only in unread field {check} ({ShortLabel(file)})";
+                    foreach (var token in IdentifierTokens(at.Value))
+                    {
+                        Mark(token, read, via, unreadVia);
+                        if (events.TryGetValue(token, out var samples))
+                            foreach (var sample in samples)
+                                Mark(sample, read, $"event {token}: {via}", $"event {token} {unreadVia}");
+                    }
+                }
+        }
+        return result;
+    }
+
+    static IEnumerable<GasAttribute> AttributesUnder(GasNode node)
+    {
+        foreach (var at in node.Attributes) yield return at;
+        foreach (var child in node.Children)
+            foreach (var at in AttributesUnder(child)) yield return at;
+    }
+
+    static IEnumerable<string> IdentifierTokens(string value)
+    {
+        int start = -1;
+        for (int i = 0; i <= value.Length; i++)
+        {
+            bool id = i < value.Length && (char.IsLetterOrDigit(value[i]) || value[i] == '_');
+            if (id && start < 0) start = i;
+            else if (!id && start >= 0) { yield return value[start..i]; start = -1; }
+        }
     }
 
     static Section AnimationScriptApi(TankReader logic, EngineVocabulary vocab)
