@@ -49,6 +49,10 @@ jobs:
       - name: Build (warnings are errors)
         run: dotnet build SiegeFX.sln -c Release -warnaserror
 
+      - name: test-all.sh is what test-all.bat generates
+        if: runner.os == 'Linux'
+        run: tools/test-menu.sh --check
+
       # Every test is named as it passes; one that hangs is stopped after two
       # minutes with a dump.
       - name: Unit tests

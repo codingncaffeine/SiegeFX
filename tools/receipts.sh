@@ -52,6 +52,7 @@ step() {
 
 step build "$dotnet" build "$repo/SiegeFX.sln" -c Release --nologo -warnaserror
 step tests "$dotnet" test "$repo/tests/SiegeFX.Tests" -c Release --no-build --nologo
+step test-menu "$repo/tools/test-menu.sh" --check
 
 game="$repo/src/SiegeFX.Runtime/bin/Release/net10.0/SiegeFX"
 for t in save dialogue net; do
