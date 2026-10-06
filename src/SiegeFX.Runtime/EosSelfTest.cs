@@ -8,11 +8,15 @@ namespace SiegeFX.Runtime;
 /// optional EOS module beside the program the way the multiplayer menu does,
 /// logs in with the game's credentials (eos_config.txt in the save folder, or
 /// the one shipped beside the program), creates a lobby, finds it through
-/// Epic's lobby search and leaves it. Needs the network. The anonymous device
-/// identity lives in SIEGEFX_EOS_CACHE when set (a test identity of its own),
-/// else in a temporary folder. Exits 0 only when every step works.</summary>
+/// Epic's lobby search and leaves it, and checks that the login tells Epic the
+/// player's name and the platform, nothing about the computer. Needs the
+/// network. The anonymous device identity lives in SIEGEFX_EOS_CACHE when set
+/// (a test identity of its own), else in a temporary folder. Exits 0 only when
+/// every step works.</summary>
 public static class EosSelfTest
 {
+    const string PlayerName = "SiegeFX selftest";
+
     public static bool Run()
     {
         NetLog.Verbose = true;
@@ -40,7 +44,7 @@ public static class EosSelfTest
         {
             var register = Assembly.LoadFrom(module).GetType("SiegeFX.Net.Eos.EosBootstrap")?
                 .GetMethod("Register", BindingFlags.Public | BindingFlags.Static);
-            platform = register?.Invoke(null, new object[] { cfg, cache });
+            platform = register?.Invoke(null, new object[] { cfg, cache, PlayerName });
         }
         catch (Exception ex)
         {
@@ -67,6 +71,15 @@ public static class EosSelfTest
         try
         {
             Assert(PumpUntil(() => loggedIn?.GetValue(platform) is true, 30), "logged in with an anonymous device id");
+            if (!ok) return false;
+            // What the login told Epic: the player's own name, and the platform
+            // rather than the computer's name.
+            var sentName = platform.GetType().GetProperty("SentDisplayName")?.GetValue(platform) as string;
+            Assert(sentName == PlayerName && sentName != Environment.UserName,
+                   $"Epic gets the player's name, not the computer's login name (sent '{sentName}')");
+            var sentModel = platform.GetType().GetProperty("SentDeviceModel")?.GetValue(platform) as string;
+            Assert(sentModel is { Length: > 0 } && !sentModel.Contains(Environment.MachineName, StringComparison.OrdinalIgnoreCase),
+                   $"the device id names the platform, not the computer (sent '{sentModel}')");
             if (!ok) return false;
             var (lobby, transport) = MpProviderFactory.Create("eos");
             using var lobbyService = lobby;

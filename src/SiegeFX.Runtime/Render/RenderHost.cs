@@ -6237,7 +6237,7 @@ public sealed class RenderHost : IDisposable
         bool asHost = string.Equals(role, "host", StringComparison.OrdinalIgnoreCase);
         SiegeFX.Core.Net.NetLog.Info($"in-region MP init: role={role} provider={provider} host='{host}' port={port} name='{name}' region={_regionPath}");
 
-        MpInitProvider(); // reflection-load EOS if present (idempotent, fresh process)
+        MpInitProvider(name); // reflection-load EOS if present (idempotent, fresh process)
 
         var (lobby, rawTransport) = SiegeFX.Core.Net.MpProviderFactory.Create(provider);
         // Tune the connect budget on the raw UDP transport BEFORE the AEAD wrap
@@ -8025,7 +8025,9 @@ public sealed class RenderHost : IDisposable
         return null;
     }
 
-    private void MpInitProvider()
+    /// <summary><paramref name="playerName"/> is the name the EOS login reports
+    /// for this player (the multiplayer name, by default the hero's).</summary>
+    private void MpInitProvider(string playerName)
     {
         if (_mpProviderInit) return;
         _mpProviderInit = true;
@@ -8071,7 +8073,7 @@ public sealed class RenderHost : IDisposable
                     // (same cache dir = same device id = same ProductUserId = collision).
                     string cache = Environment.GetEnvironmentVariable("SIEGEFX_EOS_CACHE") is { Length: > 0 } cc
                         ? cc : Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_cache");
-                    _eosPlatform = reg.Invoke(null, new object[] { cfg, cache });
+                    _eosPlatform = reg.Invoke(null, new object[] { cfg, cache, playerName });
                     if (_eosPlatform is not null)
                     {
                         var tick = _eosPlatform.GetType().GetMethod("Tick");
@@ -24956,8 +24958,10 @@ void main()
                 }
                 break;
             case MainMenuPanel.Action.Multiplayer:
-                // SC-MP-MENU — roll into the Multiplayer provider menu.
-                MpInitProvider();
+                // SC-MP-MENU — roll into the Multiplayer provider menu. The saved
+                // multiplayer name is the one the EOS login reports.
+                LoadMpSessionPrefs();
+                MpInitProvider(_mpSession.PlayerName);
                 _frontendScene?.SetState(Hud.FrontendScene.ScreenState.MainMenuToMp);
                 _mainMenu.ClearHover();
                 break;

@@ -152,8 +152,9 @@ public static class EosBootstrap
     static EosPlatform? _platform;
 
     /// <summary>Returns the live platform (for the engine to Tick), or null
-    /// when EOS isn't configured/available.</summary>
-    public static EosPlatform? Register(string configPath, string cacheDir)
+    /// when EOS isn't configured/available. <paramref name="playerName"/> is the
+    /// name Epic shows for this player (see EosPlatform.LoginDeviceId).</summary>
+    public static EosPlatform? Register(string configPath, string cacheDir, string playerName)
     {
         var cfg = EosPlatform.ReadConfig(configPath);
         if (cfg is null)
@@ -166,7 +167,7 @@ public static class EosBootstrap
         _platform = plat;
         // Device-ID login runs async; the provider factory only produces
         // usable transports once LoggedIn, so kick it now.
-        plat.LoginDeviceId(ok => { if (!ok) NetLog.Warn("eos: device-id login failed — Internet games unavailable until retry"); });
+        plat.LoginDeviceId(playerName, ok => { if (!ok) NetLog.Warn("eos: device-id login failed — Internet games unavailable until retry"); });
         MpProviderFactory.Register("eos", () =>
         {
             if (_platform is null || !_platform.LoggedIn) return null;
