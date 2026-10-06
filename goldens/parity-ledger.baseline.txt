@@ -1,5 +1,5 @@
 # siegefx parity ledger baseline: section, authored, handled (a run that handles fewer fails)
-commands	43	40
+commands	43	43
 trigger-verbs	24	23
 quests	31	30
 skrit-components	152	95
