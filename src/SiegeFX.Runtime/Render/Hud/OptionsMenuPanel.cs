@@ -1160,19 +1160,24 @@ internal sealed class OptionsMenuPanel
             () => _staged.RailLocked, v => _staged.RailLocked = v);
         // SC-RECORD — capture output folders. LMB opens the native picker
         // (host-injected — the panel stays shell-free), RMB resets to the
-        // default %LOCALAPPDATA%\SiegeFX location.
+        // default %LOCALAPPDATA%\SiegeFX location. The Videos row exists only
+        // on the Windows build, like the recorder.
+#if WINDOWS
         FolderField(bars, text, vw, vh, r++, "Videos Folder",
             () => _staged.VideosDir, v => _staged.VideosDir = v,
             "Choose where recordings are saved");
+#endif
         FolderField(bars, text, vw, vh, r++, "Screenshots Folder",
             () => _staged.ScreenshotsDir, v => _staged.ScreenshotsDir = v,
             "Choose where screenshots are saved");
     }
 
     /// <summary>SC-RECORD — host-injected native folder chooser:
-    /// (dialog title, current path or "") → picked path, or null on
-    /// cancel. Null when headless (rows then just show their value).</summary>
-    public Func<string, string, string?>? PickFolderDialog;
+    /// (dialog title, current path or "", apply). The host calls apply on
+    /// the render thread with the picked path; a cancel never calls it.
+    /// The answer may come frames later (desktop dialogs run beside the
+    /// game). Null when headless (rows then just show their value).</summary>
+    public Action<string, string, Action<string>>? PickFolderDialog;
 
     /// <summary>SC-RECORD — capture-folder row: right-justified label, a
     /// bordered value button showing the current path ("(default)" when
@@ -1209,11 +1214,7 @@ internal sealed class OptionsMenuPanel
         _widgets.Add(new W
         {
             Rect = widgetR,
-            OnClick = () =>
-            {
-                var picked = PickFolderDialog?.Invoke(dialogTitle, get());
-                if (picked is not null) set(picked);
-            },
+            OnClick = () => PickFolderDialog?.Invoke(dialogTitle, get(), set),
             OnRightClick = () => set(""),
         });
     }

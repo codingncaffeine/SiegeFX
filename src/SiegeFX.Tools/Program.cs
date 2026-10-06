@@ -6,6 +6,10 @@ using SiegeFX.Core.Nav;
 using SiegeFX.Core.Skrit;
 using SiegeFX.Core.Tank;
 
+// Bundled OpenAL Soft stays findable on a distribution-built .NET
+// (see NativeLibraryFallback) for the audio commands.
+SiegeFX.Audio.NativeLibraryFallback.Install();
+
 if (args.Length == 0)
 {
     PrintUsage();

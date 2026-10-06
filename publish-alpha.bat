@@ -27,7 +27,7 @@ cd /d "%~dp0"
 echo.
 echo === publishing SiegeFX (single-file, self-contained win-x64) ===
 if exist "publish\SiegeFX" rmdir /s /q "publish\SiegeFX"
-dotnet publish src/SiegeFX.Runtime -c Release -p:PublishSingleFile=true -p:DebugType=embedded -o publish\SiegeFX --nologo
+dotnet publish src/SiegeFX.Runtime -c Release -f net10.0-windows10.0.22621.0 -p:PublishSingleFile=true -p:DebugType=embedded -o publish\SiegeFX --nologo
 if errorlevel 1 goto :fail
 
 rem --- Bundle Epic Online Services (INTERNET play). EOS is a reflection-loaded
@@ -45,7 +45,7 @@ dotnet build src/SiegeFX.Net.Eos -c Release --nologo
 if errorlevel 1 (
   echo   EOS module build failed or SDK missing - shipping LAN/direct-IP only.
 ) else (
-  set "EOSBIN=src\SiegeFX.Net.Eos\bin\Release\net11.0"
+  set "EOSBIN=src\SiegeFX.Net.Eos\bin\Release\net10.0"
   if exist "!EOSBIN!\SiegeFX.Net.Eos.dll" ( copy /y "!EOSBIN!\SiegeFX.Net.Eos.dll" "publish\SiegeFX\" >nul && echo   + SiegeFX.Net.Eos.dll )
   if exist "!EOSBIN!\EOSSDK-Win64-Shipping.dll" ( copy /y "!EOSBIN!\EOSSDK-Win64-Shipping.dll" "publish\SiegeFX\" >nul && echo   + EOSSDK-Win64-Shipping.dll )
   if exist "%LOCALAPPDATA%\SiegeFX\Saves\eos_config.txt" (

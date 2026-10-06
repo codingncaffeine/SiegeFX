@@ -5408,12 +5408,22 @@ public sealed class RenderHost : IDisposable
     // (back buffer complete), so OnRender's tail calls the capture.
     private bool _screenshotPending;
 
+    /// <summary>Work that background tasks (screenshot saves, the desktop
+    /// folder picker) hand back to the render thread; OnRender's tail runs
+    /// it once per frame.</summary>
+    private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _renderThreadWork = new();
+#if !WINDOWS
+    // One desktop folder dialog at a time (render thread only).
+    private bool _folderPickOpen;
+#endif
+
     // SC-RECORD — Ctrl+F9 (rebindable "record_video") toggles the WGC
     // video recorder: compositor-level window capture + hardware H.264,
     // audio from a WASAPI loopback tap. The REC chip only draws for the
     // first few seconds after arming — WGC records the HUD too, so a
-    // persistent indicator would burn into the whole clip.
-    private readonly Capture.WgcRecorder _recorder = new();
+    // persistent indicator would burn into the whole clip. Windows build
+    // only; other builds get a recorder that never records.
+    private readonly Capture.IVideoRecorder _recorder = Capture.VideoRecorder.Create();
 
     /// <summary>Capture output folder: the user's pick from the Advanced
     /// tab, or the default under %LOCALAPPDATA%\SiegeFX.</summary>
@@ -9423,9 +9433,40 @@ void main()
         _optionsMenu.Registry = _keyBindings;
         // SC-RECORD — hand the panel a native folder chooser for the
         // Advanced tab's capture-folder rows (kept out of the panel so the
-        // HUD layer stays shell-free).
-        _optionsMenu.PickFolderDialog = (dlgTitle, current) =>
-            Capture.FolderPicker.Pick(dlgTitle, current.Length > 0 ? current : null);
+        // HUD layer stays shell-free). Windows shows its shell dialog
+        // synchronously; elsewhere the desktop's portal dialog answers on a
+        // pool thread while the game keeps drawing, and the pick comes back
+        // through the render-thread queue.
+#if WINDOWS
+        _optionsMenu.PickFolderDialog = (dlgTitle, current, apply) =>
+        {
+            var picked = Capture.FolderPicker.Pick(dlgTitle, current.Length > 0 ? current : null);
+            if (picked is not null) apply(picked);
+        };
+#else
+        _optionsMenu.PickFolderDialog = (dlgTitle, current, apply) =>
+        {
+            if (_folderPickOpen) return;
+            _folderPickOpen = true;
+            _ = Task.Run(async () =>
+            {
+                string? picked = null;
+                bool failed = false;
+                try { picked = await Capture.FolderPicker.PickAsync(dlgTitle, current.Length > 0 ? current : null); }
+                catch (Exception ex)
+                {
+                    failed = true;
+                    Console.WriteLine($"[folders] desktop folder picker failed: {ex.Message}");
+                }
+                _renderThreadWork.Enqueue(() =>
+                {
+                    _folderPickOpen = false;
+                    if (failed) AddGameMessage("No folder chooser is available on this desktop.");
+                    else if (picked is not null) apply(picked);
+                });
+            });
+        };
+#endif
         var live = _optionsMenu.Live;
         int winW = width, winH = height;
         var winState = WindowState.Normal;
@@ -40567,6 +40608,8 @@ void main()
         // threads; surface them on the strip from the render thread.
         while (_recorder.StatusLines.TryDequeue(out var recLine))
             AddGameMessage(recLine);
+        while (_renderThreadWork.TryDequeue(out var work))
+            work();
     }
 
     /// <summary>SC-SCREENSHOT — Print Screen capture. Reads the back buffer
@@ -40591,13 +40634,24 @@ void main()
                     _gl.ReadPixels(0, 0, (uint)w, (uint)h, GLEnum.Rgb, GLEnum.UnsignedByte, p);
             }
             var dir = CaptureDir(_optionsMenu.Live.ScreenshotsDir, "Screenshots");
-            Directory.CreateDirectory(dir);
-            string path;
-            int n = 1;
-            do { path = Path.Combine(dir, $"SiegeFX Screen - {n:D4}.png"); n++; }
-            while (File.Exists(path));
-            WritePng(path, w, h, pixels);
-            AddGameMessage($"Screenshot successfully taken to '{Path.GetFileName(path)}'");
+            // The read-back is all the render thread does: encoding a
+            // full-resolution PNG takes long enough to hitch a frame, so it
+            // and the file write run on the pool, and the confirmation comes
+            // back through the render-thread queue.
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    string name = SaveScreenshot(dir, w, h, pixels);
+                    _renderThreadWork.Enqueue(() =>
+                        AddGameMessage($"Screenshot successfully taken to '{name}'"));
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[screenshot] failed: {ex.Message}");
+                    _renderThreadWork.Enqueue(() => AddGameMessage("Screenshot failed."));
+                }
+            });
         }
         catch (Exception ex)
         {
@@ -40606,10 +40660,12 @@ void main()
         }
     }
 
-    /// <summary>PNG writer over the Windows imaging encoder (no extra
-    /// dependency on the Windows TFM). GL's ReadPixels rows are bottom-up;
-    /// PNG is top-down, so rows flip while expanding RGB→RGBA.</summary>
-    private static void WritePng(string path, int w, int h, byte[] rgb)
+    /// <summary>Writes a GL read-back as the next free "SiegeFX Screen -
+    /// NNNN.png" in <paramref name="dir"/> and returns its file name. GL's
+    /// ReadPixels rows are bottom-up; PNG is top-down, so rows flip while
+    /// expanding RGB→RGBA. CreateNew claims the name atomically, so two
+    /// saves in flight never pick the same one.</summary>
+    private static string SaveScreenshot(string dir, int w, int h, byte[] rgb)
     {
         var rgba = new byte[w * h * 4];
         for (int y = 0; y < h; y++)
@@ -40623,17 +40679,16 @@ void main()
                 rgba[dst++] = 255;
             }
         }
-        using var mem = new Windows.Storage.Streams.InMemoryRandomAccessStream();
-        var enc = Windows.Graphics.Imaging.BitmapEncoder.CreateAsync(
-            Windows.Graphics.Imaging.BitmapEncoder.PngEncoderId, mem)
-            .AsTask().GetAwaiter().GetResult();
-        enc.SetPixelData(Windows.Graphics.Imaging.BitmapPixelFormat.Rgba8,
-            Windows.Graphics.Imaging.BitmapAlphaMode.Ignore,
-            (uint)w, (uint)h, 96, 96, rgba);
-        enc.FlushAsync().AsTask().GetAwaiter().GetResult();
-        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
-        mem.Seek(0);
-        mem.AsStreamForRead().CopyTo(fs);
+        Directory.CreateDirectory(dir);
+        for (int n = 1; ; n++)
+        {
+            string path = Path.Combine(dir, $"SiegeFX Screen - {n:D4}.png");
+            FileStream fs;
+            try { fs = new FileStream(path, FileMode.CreateNew, FileAccess.Write); }
+            catch (IOException) when (File.Exists(path)) { continue; }
+            using (fs) SiegeFX.Core.IO.Png.EncodeRgba(fs, rgba, w, h);
+            return Path.GetFileName(path);
+        }
     }
 
     /// <summary>Phase 21-SC-SCROLL-PRE-2 — start a scroll drag from the

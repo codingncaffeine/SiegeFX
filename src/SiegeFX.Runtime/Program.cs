@@ -1,5 +1,9 @@
 using SiegeFX.Runtime.Render;
 
+// Bundled GLFW / OpenAL Soft stay findable on a distribution-built .NET
+// (see NativeLibraryFallback); must run before the first window or device.
+SiegeFX.Audio.NativeLibraryFallback.Install();
+
 // Crash logger — dumps any unhandled exception (including ones the CLR would
 // otherwise report via its own stderr banner) to siegefx_crash.log next to the
 // DLL. test-all.bat's T23 prints this file after the process exits so the user

@@ -1,0 +1,10 @@
+<Project>
+
+  <!-- Lets any host restore and compile the Windows-specific builds (the
+       engine's Windows build with its video recorder, and the WPF studio),
+       so the whole solution builds on Linux as well as on Windows. -->
+  <PropertyGroup>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+
+</Project>

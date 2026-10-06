@@ -13,9 +13,9 @@ namespace SiegeSmith.Services;
 public static class RuntimeLauncher
 {
     /// <summary>Finds the built engine by walking up from this app's directory to the
-    /// sibling <c>SiegeFX.Runtime/bin/&lt;cfg&gt;/&lt;tfm&gt;/</c> output. The runtime's TFM is
-    /// windows-specific since SC-RECORD (WGC capture projections), so the new folder is
-    /// probed first and the old plain <c>net11.0</c> second (stale checkouts). The
+    /// sibling <c>SiegeFX.Runtime/bin/&lt;cfg&gt;/&lt;tfm&gt;/</c> output. The runtime builds twice:
+    /// the Windows target (with the WGC video recorder) is probed first, the portable
+    /// <c>net10.0</c> one second. The
     /// assembly ships as <c>SiegeFX</c> (alpha packaging rename); <c>SiegeFX.Runtime</c>
     /// is probed second so a stale pre-rename build still launches. Returns the .exe if
     /// present, else the .dll (run via <c>dotnet</c>), else null.</summary>
@@ -28,7 +28,7 @@ public static class RuntimeLauncher
             if (!Directory.Exists(bin)) continue;
             foreach (var cfg in new[] { "Release", "Debug" })
             {
-                foreach (var tfm in new[] { "net11.0-windows10.0.22621.0", "net11.0" })
+                foreach (var tfm in new[] { "net10.0-windows10.0.22621.0", "net10.0" })
                 {
                     foreach (var asm in new[] { "SiegeFX", "SiegeFX.Runtime" })
                     {

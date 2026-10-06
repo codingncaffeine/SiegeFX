@@ -29,7 +29,7 @@ namespace SiegeFX.Runtime.Capture;
 ///  - audio silence-fills when the game is quiet (WASAPI loopback goes
 ///    dark with no active session) but only while behind the video clock,
 ///    so filler can't outrun real time.</summary>
-public sealed class WgcRecorder
+public sealed class WgcRecorder : IVideoRecorder
 {
     // ---- public surface -------------------------------------------------
 
@@ -40,7 +40,7 @@ public sealed class WgcRecorder
     /// <summary>Status lines for the game's message strip. Produced on
     /// worker threads; the host drains once per frame on the render
     /// thread.</summary>
-    public readonly ConcurrentQueue<string> StatusLines = new();
+    public ConcurrentQueue<string> StatusLines { get; } = new();
 
     public static bool IsSupported
     {
