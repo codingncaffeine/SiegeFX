@@ -6,43 +6,44 @@ namespace SiegeFX.Runtime.Render.Hud;
 /// Phase 24-MAINMENU step 5+6 — the seven-button main menu the FrontendScene
 /// drops into after the splash → logo-drop sequence completes.
 ///
-/// <para><b>Phase 24 splinters parked at the end of this slice:</b></para>
+/// <para><b>Phase 24 splinters parked at the end of this slice</b>, each with
+/// where it stands (2026-10-06):</para>
 /// <list type="bullet">
-///   <item><b>SC-MAINMENU-NEWGAME</b> — wire SinglePlayer click to a region
+///   <item><b>SC-MAINMENU-NEWGAME</b> (done: Phase 27-SP-FLYOUT) — wire SinglePlayer click to a region
 ///         launch path that doesn't require <c>--play-region</c> CLI args
 ///         (resolve fh_r1 paths from <c>_ds1ResourcesDir</c>, run LoadRegion +
 ///         LoadPlayActors + open the existing CharacterCreator).</item>
-///   <item><b>SC-MAINMENU-CONTINUE</b> — Continue → load the most recent
+///   <item><b>SC-MAINMENU-CONTINUE</b> (done) — Continue → load the most recent
 ///         quicksave from the SaveStore.</item>
-///   <item><b>SC-MAINMENU-MULTIPLAYER</b> — Multiplayer sub-screen +
+///   <item><b>SC-MAINMENU-MULTIPLAYER</b> (done: SC-MP-MENU) — Multiplayer sub-screen +
 ///         provider selection (DS1 ships <c>multiplayer_provider.gas</c>
 ///         + <c>map_chooser.gas</c> for the LAN/IP/zone picker).</item>
-///   <item><b>SC-MAINMENU-CREDITS</b> — Credits sub-screen; possibly
+///   <item><b>SC-MAINMENU-CREDITS</b> (open: the click only logs) — Credits sub-screen; possibly
 ///         playing <c>credits.bik</c> from <c>Objects.dsres /movies/</c>
 ///         once SC-MAINMENU-BINK lands.</item>
-///   <item><b>SC-MAINMENU-BINK</b> — real Bink playback for
+///   <item><b>SC-MAINMENU-BINK</b> (open) — real Bink playback for
 ///         <c>gpg_intro.bik</c> in the IntroBink slot (1s fade today).</item>
-///   <item><b>SC-MAINMENU-LOGO-EXIT</b> — play <c>logo-exit.prs</c>
+///   <item><b>SC-MAINMENU-LOGO-EXIT</b> (done: FrontendScene) — play <c>logo-exit.prs</c>
 ///         (0.58s sword rise) on the IntroLogoDrop → MainMenu transition
 ///         instead of cutting to no-logo instantly.</item>
-///   <item><b>SC-MAINMENU-NIS</b> — full NIS gizmo runtime
+///   <item><b>SC-MAINMENU-NIS</b> (done: RenderHost's NIS command runtime) — full NIS gizmo runtime
 ///         (<c>cmd_enter_nis</c> / <c>cmd_camera_command</c> /
 ///         <c>cmd_camera_waypoint</c> / <c>cmd_leave_nis</c>) so the
 ///         farmboy-region opening cinematic + the other 18 shipped
 ///         NISs play. ESC fast-forward + subtitle wiring through
 ///         <c>conversations.gas nis = true</c>. See
 ///         <c>project_siegefx_nis_research.md</c>.</item>
-///   <item><b>SC-MAINMENU-CHROME-LINEUP</b> — buttons today scale by
+///   <item><b>SC-MAINMENU-CHROME-LINEUP</b> (not measured since) — buttons today scale by
 ///         viewport height in 800×600 authored space, but the
 ///         FrontendScene chrome behind them is projected via the
 ///         backdrop's mesh-space rect; non-4:3 monitors will see the
 ///         buttons floating off-axis vs the chrome's painted button
 ///         slots. Either project the panel through the same backdrop
 ///         basis or letterbox the chrome to match 800×600.</item>
-///   <item><b>SC-MAINMENU-BUTTONS-RAW</b> — swap the colored-rectangle
+///   <item><b>SC-MAINMENU-BUTTONS-RAW</b> (done: Phase 24-POLISH-B) — swap the colored-rectangle
 ///         button visuals for DS1's shipped <c>button_wood_up/down/hov.raw</c>
 ///         (16,400 bytes each, 128×128) and the matching exit button atlas.</item>
-///   <item><b>SC-MAINMENU-ABOUT-RAW</b> — load <c>about_dialog.gas</c>
+///   <item><b>SC-MAINMENU-ABOUT-RAW</b> (open: the placeholder card) — load <c>about_dialog.gas</c>
 ///         layout for the About sub-screen + use DS1's wood-bordered
 ///         chrome instead of the placeholder dim-card.</item>
 /// </list></summary>
