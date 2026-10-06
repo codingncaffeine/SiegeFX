@@ -1,0 +1,4 @@
+# cmd.exe misreads labels in batch files with LF endings; bash fails on
+# CRLF. Fix both whatever the checkout's core.autocrlf says.
+*.bat text eol=crlf
+*.sh  text eol=lf
