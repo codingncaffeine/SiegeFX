@@ -79,7 +79,10 @@ for ((i = 0; i < frames; i++)); do
     [ "$px" -eq 0 ] && px=256
     png="$stage/share/icons/hicolor/${px}x${px}/apps/siegefx.png"
     mkdir -p "$(dirname "$png")"
-    tail -c +$(($(u32 $((entry + 12))) + 1)) "$ico" | head -c "$(u32 $((entry + 8)))" > "$png"
+    # dd, not tail | head: head exits once it has its bytes and a tail still
+    # writing gets SIGPIPE, which pipefail turns into a failed publish (a race).
+    dd if="$ico" of="$png" iflag=skip_bytes,count_bytes bs=64K \
+        skip="$(u32 $((entry + 12)))" count="$(u32 $((entry + 8)))" status=none
     if [ "$(od -An -tx1 -N8 "$png" | tr -d ' ')" != 89504e470d0a1a0a ]; then
         echo "publish: icon frame ${px}x${px} in $ico is not a PNG" >&2
         exit 1
