@@ -8012,7 +8012,7 @@ public sealed class RenderHost : IDisposable
     /// is the exe dir for single-file publishes (.NET 6+), but the real process
     /// dir is checked too so the reflection-loaded EOS module + bundled creds are
     /// found regardless of publish mode. Returns null if in neither location.</summary>
-    private static string? MpAppFile(string name)
+    internal static string? MpAppFile(string name)
     {
         string? procDir = null;
         try { procDir = Path.GetDirectoryName(Environment.ProcessPath); } catch { }

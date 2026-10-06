@@ -13,11 +13,11 @@
 #
 # <version> (e.g. v0.5.0) names the SiegeFX artifacts and is the version the
 # build reports in its session log; the default, "dev", keeps the version in
-# the csproj. As publish-alpha.bat does, the Windows zip bundles the optional
-# EOS module (internet play) when an EOS SDK is unpacked at $EOS_SDK_ROOT
+# the csproj. Both games bundle the optional EOS module (internet play), each
+# with its own native library, when an EOS SDK is unpacked at $EOS_SDK_ROOT
 # (default: EOS/SDK beside the repo folder), with the game's eos_config.txt
-# from $EOS_CONFIG (default: the save folder); without the SDK it is a LAN and
-# direct-IP build. DOTNET picks the dotnet executable (default: dotnet on PATH).
+# from $EOS_CONFIG (default: the save folder); without the SDK they are LAN and
+# direct-IP builds. DOTNET picks the dotnet executable (default: dotnet on PATH).
 set -euo pipefail
 repo=$(cd "$(dirname "$0")" && pwd)
 dotnet=${DOTNET:-dotnet}
@@ -33,6 +33,29 @@ for p in SiegeFX.Runtime SiegeFX.Core SiegeFX.Audio SiegeFX.Net.Eos SiegeSmith; 
 done
 mkdir -p "$out"
 
+echo "=== EOS module (optional; a LAN and direct-IP build without it) ==="
+eos_sdk=${EOS_SDK_ROOT:-$(dirname "$repo")/EOS/SDK}
+creds=${EOS_CONFIG:-${XDG_DATA_HOME:-$HOME/.local/share}/SiegeFX/Saves/eos_config.txt}
+eos=false
+eos_build() {   # eos_build <EosPlatform> <output folder>
+    "$dotnet" build "$repo/src/SiegeFX.Net.Eos" -c Release --nologo -p:EosSdkRoot="$eos_sdk" \
+        -p:EosPlatform="$1" -o "$2" >> "$out/eos-build.log" 2>&1
+}
+if [ ! -d "$eos_sdk/Source" ]; then
+    echo "  no EOS SDK at $eos_sdk - shipping LAN/direct-IP only."
+elif ! eos_build Windows64 "$out/eos-win" || ! eos_build Linux "$out/eos-linux"; then
+    echo "  EOS module build failed (see $out/eos-build.log) - shipping LAN/direct-IP only."
+else
+    eos=true
+    [ -f "$creds" ] || echo "  ! no eos_config.txt at $creds - internet play stays on LAN until a player supplies credentials."
+fi
+bundle_eos() {  # bundle_eos <artifact folder> <module build> <native library>
+    $eos || return 0
+    cp "$2/SiegeFX.Net.Eos.dll" "$2/$3" "$1/" && echo "  + SiegeFX.Net.Eos.dll, $3"
+    if [ -f "$creds" ]; then cp "$creds" "$1/eos_config.txt" && echo "  + eos_config.txt (the game's credentials)"; fi
+}
+
+echo
 echo "=== SiegeFX for Linux (self-contained linux-x64) ==="
 linux="SiegeFX-$ver-linux-x64"
 stage="$out/$linux"
@@ -40,6 +63,7 @@ stage="$out/$linux"
     -p:DebugType=embedded "${stamp[@]}" -o "$stage" --nologo
 cp "$repo/packaging/README.txt" "$stage/README.txt"
 cp "$repo/LICENSE" "$repo/THIRD-PARTY-NOTICES.txt" "$stage/"
+bundle_eos "$stage" "$out/eos-linux" libEOSSDK-Linux-Shipping.so
 # The desktop entry and the icons, laid out as under /usr/share so a package
 # or a per-user install copies them as they are. The icons are the PNG frames
 # of the Windows icon, copied out byte for byte.
@@ -66,27 +90,7 @@ echo "=== SiegeFX for Windows (single file, self-contained win-x64) ==="
 win="$out/SiegeFX"
 "$dotnet" publish "$repo/src/SiegeFX.Runtime" -c Release -f net10.0-windows10.0.22621.0 \
     -p:PublishSingleFile=true -p:DebugType=embedded "${stamp[@]}" -o "$win" --nologo
-
-echo
-echo "=== bundling EOS (optional; a LAN and direct-IP build without it) ==="
-eos_sdk=${EOS_SDK_ROOT:-$(dirname "$repo")/EOS/SDK}
-if [ ! -d "$eos_sdk/Source" ]; then
-    echo "  no EOS SDK at $eos_sdk - shipping LAN/direct-IP only."
-elif ! "$dotnet" build "$repo/src/SiegeFX.Net.Eos" -c Release --nologo -p:EosSdkRoot="$eos_sdk" \
-        > "$out/eos-build.log" 2>&1; then
-    echo "  EOS module build failed (see $out/eos-build.log) - shipping LAN/direct-IP only."
-else
-    eos_bin="$repo/src/SiegeFX.Net.Eos/bin/Release/net10.0"
-    for f in SiegeFX.Net.Eos.dll EOSSDK-Win64-Shipping.dll; do
-        if [ -f "$eos_bin/$f" ]; then cp "$eos_bin/$f" "$win/" && echo "  + $f"; fi
-    done
-    creds=${EOS_CONFIG:-${XDG_DATA_HOME:-$HOME/.local/share}/SiegeFX/Saves/eos_config.txt}
-    if [ -f "$creds" ]; then
-        cp "$creds" "$win/eos_config.txt" && echo "  + eos_config.txt (bundled game creds)"
-    else
-        echo "  ! no eos_config.txt at $creds - INTERNET play falls back to LAN until a joiner supplies creds."
-    fi
-fi
+bundle_eos "$win" "$out/eos-win" EOSSDK-Win64-Shipping.dll
 cp "$repo/THIRD-PARTY-NOTICES.txt" "$win/"
 
 echo

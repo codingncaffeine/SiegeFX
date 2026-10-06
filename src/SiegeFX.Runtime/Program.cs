@@ -257,6 +257,12 @@ else if (args.Length >= 1 && args[0] == "--selftest-net")
     // malformed-frame safety. No window; suitable for test-all.bat.
     return SiegeFX.Runtime.NetSelfTest.Run() ? 0 : 1;
 }
+else if (args.Length >= 1 && args[0] == "--selftest-eos")
+{
+    // Internet play end to end: the EOS module, the game's credentials, a
+    // device-id login and a lobby round trip through Epic. Needs the network.
+    return SiegeFX.Runtime.EosSelfTest.Run() ? 0 : 1;
+}
 else if (args.Length >= 1 && args[0] == "--selftest-dialogue")
 {
     // Phase 20a self-test. Parses a synthetic conversations.gas (mirroring

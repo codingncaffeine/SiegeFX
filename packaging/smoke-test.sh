@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # packaging/smoke-test.sh <SiegeFX-<version>-linux-x64.tar.gz | installed command>
-#                         [--ds1=PATH] [--expect-version=X.Y.Z]
+#                         [--ds1=PATH] [--expect-version=X.Y.Z] [--eos]
 #
 # Launches what a release ships - the program in a fresh extraction of the
 # tarball, or an installed command such as /usr/bin/siegefx - in a throwaway
@@ -11,6 +11,9 @@
 #      loopback) start the program and its runtime;
 #   2. the session log names the build: the version in the tarball's name (or
 #      --expect-version) and the portable linux-x64 runtime;
+#   (--eos) internet play: the bundled EOS module and credentials log in to
+#      Epic and round-trip a lobby (needs the network; a test identity of its
+#      own, kept in scratch/eos-test-identity);
 # and with a Dungeon Siege install (--ds1), on a private Xvfb server:
 #   3. the main menu renders offscreen (GLFW and OpenGL);
 #   4. the game boots to its menu with OpenAL up, and the OpenAL and GLFW
@@ -19,12 +22,13 @@
 # or $SMOKE_WORK.
 set -uo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
-target=""; ds1=""; expect=""
+target=""; ds1=""; expect=""; eos=false
 for arg in "$@"; do
     case "$arg" in
         --ds1=*) ds1=${arg#--ds1=} ;;
         --expect-version=*) expect=${arg#--expect-version=} ;;
-        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
+        --eos) eos=true ;;
+        -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
         -*) echo "smoke-test: unknown argument $arg" >&2; exit 2 ;;
         *) target=$arg ;;
     esac
@@ -87,6 +91,13 @@ build_line() {
 }
 step build-line build_line
 sed 's/^/        /' "$work/build-line.log"
+
+if $eos; then
+    mkdir -p -- "$repo/scratch/eos-test-identity"
+    step eos env -i "${genv[@]}" SIEGEFX_EOS_CACHE="$repo/scratch/eos-test-identity" \
+        timeout 120 "$exe" --selftest-eos
+    grep 'selftest-eos\] ' "$work/eos.log" | sed 's/^/        /'
+fi
 
 if [ -n "$ds1" ]; then
     if ! command -v Xvfb > /dev/null; then
