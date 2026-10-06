@@ -17610,9 +17610,10 @@ void main()
                     }
                 }
                 // SC-NIS - index NIS gizmos with world pose (placement
-                // quaternion composed with the anchor node's rotation).
+                // quaternion composed with the anchor node's rotation). The
+                // command catalog's Nis entries are the set indexed here.
                 var tnLower = p.TemplateName.ToLowerInvariant();
-                if (tnLower is "cmd_enter_nis" or "cmd_camera_command" or "cmd_camera_waypoint" or "cmd_leave_nis" or "cmd_camera_move")
+                if (SiegeFX.Core.Parity.CommandCatalog.Handles(tnLower, SiegeFX.Core.Parity.CommandHandling.Nis))
                 {
                     var nis = new NisCommand { Scid = p.Scid, Type = tnLower, Pos = world, Orient = p.Placement.Orientation };
                     if (tnLower == "cmd_leave_nis") nis.Duration = 2f;
@@ -17702,6 +17703,14 @@ void main()
     private void ActivateAiCommand(uint scid, (string Type, uint Next, Vector3 Pos, uint Target1) cmd)
     {
         var t = cmd.Type.ToLowerInvariant();
+        // The command catalog decides what activation acts on; the audits read
+        // the same table. A case below runs only for a template the catalog
+        // lists as Activate — add a new one there too, or it never runs.
+        if (!SiegeFX.Core.Parity.CommandCatalog.Handles(t, SiegeFX.Core.Parity.CommandHandling.Activate))
+        {
+            PassOverInactiveCommand(scid, cmd, t);
+            return;
+        }
         switch (t)
         {
             case "cmd_ai_c_move":
@@ -18074,30 +18083,46 @@ void main()
                 break;
             }
             default:
-                // ALPHA-2 CRASH FOLD — walk stubbed links ITERATIVELY with a
-                // visited set. Patrol chains cycle by design; the old
-                // recursive pass-through stack-overflowed the process (no
-                // managed exception, no crash log) the first time a trigger
-                // activated a looping chain of stubbed commands
-                // (path2crypts, 2026-07-09 user crash).
-                if (_fadeWarnedOnce.Add($"cmd:{t}"))
-                    Console.WriteLine($"[cmd] {t} 0x{scid:X8} recognized but not yet implemented");
-                var visited = new HashSet<uint> { scid };
-                uint cursor = cmd.Next;
-                while (cursor != 0 && visited.Add(cursor) && _commands.TryGetValue(cursor, out var chained))
-                {
-                    var ct = chained.Type.ToLowerInvariant();
-                    if (ct is "cmd_ai_c_move" or "cmd_ai_c_move_orient" or "cmd_ai_t_move" or "cmd_ai_t_move_orient")
-                    {
-                        // Real handler; its move cases don't recurse into stubs.
-                        ActivateAiCommand(cursor, chained);
-                        break;
-                    }
-                    if (_fadeWarnedOnce.Add($"cmd:{ct}"))
-                        Console.WriteLine($"[cmd] {ct} 0x{cursor:X8} recognized but not yet implemented");
-                    cursor = chained.Next;
-                }
+                Console.WriteLine($"[cmd] {t} 0x{scid:X8}: the command catalog routes it to activation " +
+                                  "but the dispatcher has no case for it");
                 break;
+        }
+    }
+
+    /// <summary>An activated command that activation does not act on: either
+    /// nothing in the engine implements it yet, or another path runs it (NIS,
+    /// a region-load runner, a patrol route). The chain behind it is walked to
+    /// the next move command, so the set-piece carries on.</summary>
+    private void PassOverInactiveCommand(uint scid, (string Type, uint Next, Vector3 Pos, uint Target1) cmd, string t)
+    {
+        // ALPHA-2 CRASH FOLD — walk stubbed links ITERATIVELY with a
+        // visited set. Patrol chains cycle by design; the old
+        // recursive pass-through stack-overflowed the process (no
+        // managed exception, no crash log) the first time a trigger
+        // activated a looping chain of stubbed commands
+        // (path2crypts, 2026-07-09 user crash).
+        void Note(string type, uint id)
+        {
+            if (!_fadeWarnedOnce.Add($"cmd:{type}")) return;
+            var handling = SiegeFX.Core.Parity.CommandCatalog.Classify(type);
+            Console.WriteLine(handling == SiegeFX.Core.Parity.CommandHandling.None
+                ? $"[cmd] {type} 0x{id:X8} recognized but not yet implemented"
+                : $"[cmd] {type} 0x{id:X8} is run by its {handling} path, not by activation");
+        }
+        Note(t, scid);
+        var visited = new HashSet<uint> { scid };
+        uint cursor = cmd.Next;
+        while (cursor != 0 && visited.Add(cursor) && _commands.TryGetValue(cursor, out var chained))
+        {
+            var ct = chained.Type.ToLowerInvariant();
+            if (ct is "cmd_ai_c_move" or "cmd_ai_c_move_orient" or "cmd_ai_t_move" or "cmd_ai_t_move_orient")
+            {
+                // Real handler; its move cases don't recurse into stubs.
+                ActivateAiCommand(cursor, chained);
+                break;
+            }
+            Note(ct, cursor);
+            cursor = chained.Next;
         }
     }
 

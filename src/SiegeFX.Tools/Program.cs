@@ -1053,22 +1053,19 @@ static int CmdRegionCmdAudit(string[] a)
     var mapReader = new TankReader(mapTank);
     string filter = a.Length >= 2 ? a[1].Trim() : "all";
 
-    // Verbs the runtime actually dispatches (RenderHost.ActivateAiCommand /
-    // BuildCommandRoute / the NIS engine). Everything else logs "recognized but
-    // not yet implemented" and is effectively inert.
-    var handled = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    // Which templates the engine acts on, and by which path, comes from the
+    // command catalog the engine itself consults (SiegeFX.Core.Parity), so a
+    // template reported as not implemented is one the engine leaves inert.
+    static string PathsOf(SiegeFX.Core.Parity.CommandHandling h)
     {
-        "cmd_ai_c_move", "cmd_ai_c_move_orient", "cmd_ai_t_move", "cmd_ai_t_move_orient",
-        "cmd_enter_nis", "cmd_camera_command", "cmd_camera_waypoint", "cmd_leave_nis",
-    };
-    // "route" verbs aren't message-dispatched, but their positions ARE consumed by
-    // BuildCommandRoute -> AssignPatrolRoutes: an actor whose [mind] initial_command
-    // points at one of these walks the chain as a patrol. So the 105 scripted
-    // patrollers DO move; the verb-specific nuance (orient/face-on-arrival) is lost.
-    var routeVerbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-    {
-        "cmd_ai_c_patrol", "cmd_ai_c_patrol_orient",
-    };
+        if (h == SiegeFX.Core.Parity.CommandHandling.None) return "STUB";
+        var parts = new List<string>();
+        if (h.HasFlag(SiegeFX.Core.Parity.CommandHandling.Activate))    parts.Add("activate");
+        if (h.HasFlag(SiegeFX.Core.Parity.CommandHandling.Nis))         parts.Add("nis");
+        if (h.HasFlag(SiegeFX.Core.Parity.CommandHandling.RegionLoad))  parts.Add("load");
+        if (h.HasFlag(SiegeFX.Core.Parity.CommandHandling.PatrolRoute)) parts.Add("route");
+        return string.Join('+', parts);
+    }
 
     var regionPaths = new List<string>();
     {
@@ -1127,16 +1124,17 @@ static int CmdRegionCmdAudit(string[] a)
     Console.WriteLine($"  {totalCmds} command placement(s), {verbCount.Count} distinct verb(s)");
     Console.WriteLine($"  {actorsWithInitial} actor(s) reference a scripted route via [mind] initial_command");
     Console.WriteLine();
-    Console.WriteLine($"  {"count",5} {"status",-8} verb (regions)");
+    Console.WriteLine($"  {"count",5} {"path",-14} verb (regions) — what the engine does");
     int stubbed = 0, stubPlacements = 0;
     foreach (var kv in verbCount.OrderByDescending(k => k.Value))
     {
-        string status = handled.Contains(kv.Key) ? "handled"
-                      : routeVerbs.Contains(kv.Key) ? "route"
-                      : "STUB";
-        if (status == "STUB") { stubbed++; stubPlacements += kv.Value; }
+        var handling = SiegeFX.Core.Parity.CommandCatalog.Classify(kv.Key);
+        string status = PathsOf(handling);
+        if (handling == SiegeFX.Core.Parity.CommandHandling.None) { stubbed++; stubPlacements += kv.Value; }
         int rc = verbRegions.TryGetValue(kv.Key, out var s) ? s.Count : 0;
-        Console.WriteLine($"  {kv.Value,5} {status,-8} {kv.Key}  ({rc} region{(rc == 1 ? "" : "s")})");
+        string note = SiegeFX.Core.Parity.CommandCatalog.Describe(kv.Key);
+        Console.WriteLine($"  {kv.Value,5} {status,-14} {kv.Key}  ({rc} region{(rc == 1 ? "" : "s")})" +
+                          (note.Length > 0 ? $" — {note}" : ""));
     }
     Console.WriteLine();
     if (initialByRegion.Count > 0)
@@ -1146,7 +1144,8 @@ static int CmdRegionCmdAudit(string[] a)
             Console.WriteLine($"  {kv.Value,4}  {kv.Key}");
         Console.WriteLine();
     }
-    Console.WriteLine($"VERDICT: {verbCount.Count - stubbed}/{verbCount.Count} verb type(s) handled; {stubbed} stubbed ({stubPlacements} placements) — those scripted set-pieces are inert.");
+    Console.WriteLine($"VERDICT: {verbCount.Count - stubbed}/{verbCount.Count} verb type(s) handled; {stubbed} not implemented " +
+                      $"({stubPlacements} placement{(stubPlacements == 1 ? "" : "s")}) — those scripted set-pieces are inert.");
     return 0;
 }
 
