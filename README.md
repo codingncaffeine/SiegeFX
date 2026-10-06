@@ -16,7 +16,7 @@ Most of the groundwork is other people's — see [Credits & prior art](#credits-
 
 ## Current state of development
 
-**Latest alpha: [v0.4.0](https://github.com/codingncaffeine/SiegeFX/releases/tag/v0.4.0)**, a self-contained Windows x64 build; every earlier build, back to the first playable v0.0.1, is on the [Releases](https://github.com/codingncaffeine/SiegeFX/releases) page. Unzip it and run `SiegeFX.exe`: GOG, Steam and Microsoft installs are found by themselves, or set `SIEGEFX_DS1` to your Dungeon Siege folder. On Linux, build it from source (see [Build](#build)) until a release carries a Linux build. Please report what breaks via GitHub issues.
+**Latest alpha: [v0.5.0](https://github.com/codingncaffeine/SiegeFX/releases/tag/v0.5.0)**, self-contained builds for Windows x64 and Linux x64; every earlier build, back to the first playable v0.0.1, is on the [Releases](https://github.com/codingncaffeine/SiegeFX/releases) page. On Windows, unzip it and run `SiegeFX.exe`; on Linux, unpack the tarball and run `./SiegeFX`, or install the AUR package `siegefx-bin` on Arch. GOG and Steam installs are found by themselves (on Linux also through Heroic, Lutris, Bottles and Wine prefixes), or set `SIEGEFX_DS1` to your Dungeon Siege folder. Please report what breaks via GitHub issues.
 
 *Versioning note:* earlier tags tracked internal engine milestones and outpaced the project's playable maturity; the scheme was reset at the first playable build and now tracks progress toward **1.0 = a complete Farmhouse → Castle Ehb campaign**. The retired milestone notes live on the wiki's [Release Archive](https://github.com/codingncaffeine/SiegeFX/wiki/Release-Archive).
 
