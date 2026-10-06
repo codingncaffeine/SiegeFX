@@ -17322,6 +17322,22 @@ void main()
     private readonly System.Collections.Generic.Dictionary<uint, (string Message, uint ToScid)> _sendMsgParams = new();
     // SC-NIS-VERBS — cmd_ai_c_animate's authored anim fourcc (int1).
     private readonly System.Collections.Generic.Dictionary<uint, int> _cAnimParams = new();
+    // SC-CMD-CATALYST — a command chain runs on one actor, its catalyst
+    // (cmd_ai_dojob.skrit): the party member whose arrival fired the trigger,
+    // or the actor whose [mind] initial_command starts the chain. Each link
+    // hands on when its job finishes (WE_JOB_FINISHED), never in the same
+    // tick. The authored equip/drop slot per command; the animation job each
+    // actor is playing; the hero's equip walk; the actors already running
+    // their initial_command job.
+    private readonly System.Collections.Generic.Dictionary<uint, string> _cmdSlots = new();
+    private sealed record CommandAnimJob(uint Scid, double EndsAt, uint Next);
+    private readonly System.Collections.Generic.Dictionary<ActorRenderState, CommandAnimJob> _commandAnims = new();
+    private sealed record PendingEquip(uint Scid, LootPile Pile, string Slot, uint Next, double GiveUpAt);
+    private PendingEquip? _pendingEquip;
+    private readonly HashSet<ActorRenderState> _initialCommandJobs = new();
+    // An item a command put in the hero's hand that is not the intro hoe
+    // (which keeps its tuned grip in EquipHoeInHand): what it replaced.
+    private (string Slot, string Item, string? Original)? _commandHeldItem;
     // SC-PROP-ANIM — animated scenery (sway trees, bobbing logs, goblin
     // machinery): brainless looping performers kept OUT of _actors so the
     // per-frame sim scans never pay for them. One-line-per-template load log.
@@ -17415,6 +17431,8 @@ void main()
                             TryParseSnodeGuid(a.Value, out target1);
                         else if (a.Name.Equals("target2", StringComparison.OrdinalIgnoreCase))
                             TryParseSnodeGuid(a.Value, out target2);
+                        else if (a.Name.Equals("slot", StringComparison.OrdinalIgnoreCase))
+                            _cmdSlots[p.Scid] = a.Value.Trim();
                     }
                     break;
                 }
@@ -17544,7 +17562,7 @@ void main()
                 // SC-NIS-VERBS — cmd_ai_c_send_message authors its payload.
                 if (p.TemplateName.Equals("cmd_ai_c_send_message", StringComparison.OrdinalIgnoreCase))
                 {
-                    string smMsg = ""; uint smTo = 0;
+                    string smMsg = ""; uint smTo = 0, smNext = 0;
                     foreach (var child in p.Node.Children)
                     {
                         if (!child.Header.Equals("cmd_send_world_message", StringComparison.OrdinalIgnoreCase)) continue;
@@ -17554,9 +17572,16 @@ void main()
                                 smMsg = at.Value.Trim().Trim('"');
                             else if (at.Name.Equals("sendtoscid", StringComparison.OrdinalIgnoreCase))
                                 TryParseSnodeGuid(at.Value, out smTo);
+                            else if (at.Name.Equals("next_scid", StringComparison.OrdinalIgnoreCase))
+                                TryParseSnodeGuid(at.Value, out smNext);
                         }
                     }
                     if (smMsg.Length > 0 && smTo != 0) _sendMsgParams[p.Scid] = (smMsg, smTo);
+                    // Its chain link lives in this component, not in [cmd_ai_dojob];
+                    // cmd_send_world_message.skrit activates it right after sending,
+                    // passing the catalyst on (the intro's "listen" beat waits on it).
+                    if (smNext != 0 && _commands.TryGetValue(p.Scid, out var smCmd))
+                        _commands[p.Scid] = (smCmd.Type, smNext, smCmd.Pos, smCmd.Target1);
                 }
                 // SC-NIS-VERBS — cmd_selection_toggle authors its target
                 // object + whether visibility flips.
@@ -17696,7 +17721,8 @@ void main()
         catch (Exception ex) { Console.WriteLine($"[cmd] auto_save failed: {ex.Message}"); }
     }
 
-    private void ActivateAiCommand(uint scid, (string Type, uint Next, Vector3 Pos, uint Target1) cmd)
+    private void ActivateAiCommand(uint scid, (string Type, uint Next, Vector3 Pos, uint Target1) cmd,
+                                   ActorRenderState? catalyst = null)
     {
         var t = cmd.Type.ToLowerInvariant();
         // The command catalog decides what activation acts on; the audits read
@@ -17719,6 +17745,15 @@ void main()
                 // route on every fire (the "can't walk down the stairs"
                 // fight). Hero movement stays only for unclaimed chains —
                 // the intro's authored "move hero" form.
+                if (catalyst is not null && !catalyst.IsPlayer)
+                {
+                    // SC-CMD-CATALYST — the chain belongs to an NPC (its own
+                    // initial_command): the catalyst walks, not the hero.
+                    CancelCommandAnim(catalyst);
+                    _scriptedMoves.RemoveAll(m => ReferenceEquals(m.S, catalyst));
+                    _scriptedMoves.Add((catalyst, cmd.Pos, cmd.Next));
+                    break;
+                }
                 if (_patrolClaimedCommands.Contains(scid))
                 {
                     Console.WriteLine($"[cmd] c_move 0x{scid:X8} is a patrol-route link — not a hero move");
@@ -17726,6 +17761,8 @@ void main()
                 }
                 if (_playerFollower is not null)
                 {
+                    // A move job replaces whatever the hero was animating.
+                    if (_player is not null) CancelCommandAnim(_player);
                     // SC-NIS-TELEPORT fix — after an Esc-skip the player is
                     // ALREADY placed at the run's endpoint, but the drained
                     // move-hero message arrives via the bus one tick later
@@ -17773,6 +17810,7 @@ void main()
                 foreach (var s in _actors)
                 {
                     if (s.Actor.Instance.Scid != cmd.Target1 || s.IsDead) continue;
+                    CancelCommandAnim(s);
                     _scriptedMoves.RemoveAll(m => ReferenceEquals(m.S, s));
                     _scriptedMoves.Add((s, cmd.Pos, cmd.Next));
                     Console.WriteLine($"[cmd] move 0x{cmd.Target1:X8} -> ({cmd.Pos.X:F1},{cmd.Pos.Y:F1},{cmd.Pos.Z:F1}) next=0x{cmd.Next:X8}");
@@ -17788,6 +17826,7 @@ void main()
                 foreach (var s in _actors)
                 {
                     if (s.Actor.Instance.Scid != cmd.Target1 || s.IsDead) continue;
+                    CancelCommandAnim(s);
                     _scriptedMoves.RemoveAll(m => ReferenceEquals(m.S, s));
                     _scriptedMoves.Add((s, cmd.Pos, cmd.Next));
                     Console.WriteLine($"[cmd] t_patrol 0x{cmd.Target1:X8} onto chain @0x{scid:X8}");
@@ -17799,13 +17838,13 @@ void main()
             case "cmd_auto_save":
                 TryAutoSave();
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterSave))
-                    ActivateAiCommand(cmd.Next, afterSave);
+                    ActivateAiCommand(cmd.Next, afterSave, catalyst);
                 break;
             case "cmd_report_gameplay_screen_player":
                 // Retail telemetry ping ("player reached gameplay screen");
                 // acknowledging keeps the chain flowing.
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterReport))
-                    ActivateAiCommand(cmd.Next, afterReport);
+                    ActivateAiCommand(cmd.Next, afterReport, catalyst);
                 break;
             case "cmd_alignment_changer":
                 // Our hostility model treats combatant NPCs as hostile by
@@ -17813,14 +17852,14 @@ void main()
                 // live state already); acknowledge and chain.
                 Console.WriteLine($"[cmd] alignment_changer 0x{scid:X8} — combatants already hostile; chained");
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterAlign))
-                    ActivateAiCommand(cmd.Next, afterAlign);
+                    ActivateAiCommand(cmd.Next, afterAlign, catalyst);
                 break;
             // SC-NIS-VERBS — the set-piece party verbs.
             case "cmd_party_wrangler":
                 _wranglerActive.Add(scid);
                 Console.WriteLine($"[cmd] party_wrangler 0x{scid:X8} ON — party frozen+invulnerable");
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterWrangle))
-                    ActivateAiCommand(cmd.Next, afterWrangle);
+                    ActivateAiCommand(cmd.Next, afterWrangle, catalyst);
                 break;
             case "cmd_stop_party":
                 if (_playerFollower is not null)
@@ -17840,7 +17879,7 @@ void main()
                 }
                 Console.WriteLine($"[cmd] stop_party 0x{scid:X8}");
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterStop))
-                    ActivateAiCommand(cmd.Next, afterStop);
+                    ActivateAiCommand(cmd.Next, afterStop, catalyst);
                 break;
             case "cmd_move_party":
             {
@@ -17864,7 +17903,7 @@ void main()
                 }
                 Console.WriteLine($"[cmd] move_party 0x{scid:X8} → ({mvDest.X:F1},{mvDest.Z:F1})");
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterMove))
-                    ActivateAiCommand(cmd.Next, afterMove);
+                    ActivateAiCommand(cmd.Next, afterMove, catalyst);
                 break;
             }
             case "cmd_selection_toggle":
@@ -17879,14 +17918,14 @@ void main()
                                       (flipped ? "visibility flipped" : "target not found (prop layer?)"));
                 }
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterTog))
-                    ActivateAiCommand(cmd.Next, afterTog);
+                    ActivateAiCommand(cmd.Next, afterTog, catalyst);
                 break;
             }
             case "fader_proxy":
                 _screenFadeTarget = 1f;
                 Console.WriteLine($"[cmd] fader_proxy 0x{scid:X8} fade to black");
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterFade))
-                    ActivateAiCommand(cmd.Next, afterFade);
+                    ActivateAiCommand(cmd.Next, afterFade, catalyst);
                 break;
             case "cmd_ai_c_send_message":
                 if (_sendMsgParams.TryGetValue(scid, out var sm) && _triggerRuntime is not null)
@@ -17895,7 +17934,7 @@ void main()
                     Console.WriteLine($"[cmd] send_message 0x{scid:X8}: {sm.Message} → 0x{sm.ToScid:X8}");
                 }
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterSend))
-                    ActivateAiCommand(cmd.Next, afterSend);
+                    ActivateAiCommand(cmd.Next, afterSend, catalyst);
                 break;
             case "cmd_ai_c_face":
             case "cmd_ai_t_face":
@@ -17918,7 +17957,7 @@ void main()
                     break;
                 }
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterFace))
-                    ActivateAiCommand(cmd.Next, afterFace);
+                    ActivateAiCommand(cmd.Next, afterFace, catalyst);
                 break;
             }
             case "cmd_ai_t_fidget":
@@ -17937,7 +17976,7 @@ void main()
                     break;
                 }
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterFdg))
-                    ActivateAiCommand(cmd.Next, afterFdg);
+                    ActivateAiCommand(cmd.Next, afterFdg, catalyst);
                 break;
             case "cmd_camera_move":
                 // Pose-only camera cut: valid mid-NIS (drives the same
@@ -17947,7 +17986,7 @@ void main()
                 else
                     Console.WriteLine($"[cmd] camera_move 0x{scid:X8} outside NIS — ignored");
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterCamMove))
-                    ActivateAiCommand(cmd.Next, afterCamMove);
+                    ActivateAiCommand(cmd.Next, afterCamMove, catalyst);
                 break;
             case "cmd_ai_t_attack_catalyst":
                 // "Make X attack" — flip the target actor hostile and give
@@ -17963,41 +18002,87 @@ void main()
                     break;
                 }
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterCat))
-                    ActivateAiCommand(cmd.Next, afterCat);
+                    ActivateAiCommand(cmd.Next, afterCat, catalyst);
                 break;
             case "cmd_ai_c_animate":
             {
-                // [cmd_ai_dojob] int1 = MSB-first anim fourcc, no explicit
-                // target — the choreography addresses whoever the scene
-                // parked at the gizmo; play it on the nearest live actor.
+                // job_play_anim: the catalyst plays the chore_misc sub-anim the
+                // command names in int1 (an MSB-first fourcc) once; the chain
+                // moves on when the anim is done. Never over a pinned pose.
+                var actor = catalyst ?? _player;
                 _cAnimParams.TryGetValue(scid, out int fourcc);
-                if (fourcc != 0)
+                // After an intro skip the hero's choreography is over (see the
+                // move-hero case); the drained beats must not replay on him.
+                if (actor is null || actor.IsDead || fourcc == 0 || actor.Actor.Host.PinnedOverrideAnim >= 0
+                    || actor.IsPlayer && _introNisSkipped)
                 {
-                    ActorRenderState? nearest = null;
-                    float nd2 = 6f * 6f;
-                    foreach (var na in _actors)
-                    {
-                        if (na.IsDead || na.IsPlayer || na.Hidden) continue;
-                        // SC-NIS-PIN-GUARD — never choreograph an actor
-                        // holding a pinned pose (Norick's infinite "dead"
-                        // collapse): a 4s gesture here replaced the hold and
-                        // the death anim looped until the NIS settled him.
-                        if (na.Actor.Host.PinnedOverrideAnim >= 0) continue;
-                        var nv = na.CurrentTransform.Translation - cmd.Pos;
-                        float d2 = nv.X * nv.X + nv.Z * nv.Z;
-                        if (d2 < nd2) { nd2 = d2; nearest = na; }
-                    }
-                    if (nearest is not null)
-                    {
-                        string anim = $"{(char)((fourcc >> 24) & 0xFF)}{(char)((fourcc >> 16) & 0xFF)}{(char)((fourcc >> 8) & 0xFF)}{(char)(fourcc & 0xFF)}".Trim();
-                        if (anim.Equals("talk", StringComparison.OrdinalIgnoreCase)) anim = "tlk1";
-                        if (nearest.Actor.GetClipIndex(anim) >= 0)
-                            nearest.Actor.PlayChoreOnce(anim, 4f);
-                        Console.WriteLine($"[cmd] ai_c_animate 0x{scid:X8}: '{anim}' on {nearest.Actor.Template.Name}");
-                    }
+                    ContinueCommandChain(cmd.Next, actor);
+                    break;
                 }
-                if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterCAnim))
-                    ActivateAiCommand(cmd.Next, afterCAnim);
+                // The named sub-anim of chore_misc, or its first ("chore_misc") when
+                // the actor has none by that name, as job_play_anim falls back to 0.
+                string anim = FourCcName(fourcc);
+                if (actor.Actor.GetClipIndex(anim) < 0) anim = "chore_misc";
+                int clip = actor.Actor.GetClipIndex(anim);
+                float length = clip >= 0 && clip < actor.Actor.Clips.Length ? actor.Actor.Clips[clip].AnimLength : 0f;
+                CancelCommandAnim(actor);
+                if (length <= 0f)
+                {
+                    Console.WriteLine($"[cmd] ai_c_animate 0x{scid:X8}: '{anim}' — {actor.Actor.Template.Name} has no such clip");
+                    ContinueCommandChain(cmd.Next, actor);
+                    break;
+                }
+                actor.AnimTime = 0;
+                actor.Actor.PlayChoreOnce(anim, length);
+                _commandAnims[actor] = new CommandAnimJob(scid, _playSeconds + length, cmd.Next);
+                Console.WriteLine($"[cmd] ai_c_animate 0x{scid:X8}: '{anim}' on {actor.Actor.Template.Name} ({length:F1}s)");
+                break;
+            }
+            case "cmd_ai_c_equip":
+            {
+                // job_equip: the catalyst walks to within half a meter of
+                // target1 (15 s at most) and equips it in the command's slot.
+                var actor = catalyst ?? _player;
+                var pile = _lootPiles.Find(p => p.SourceScid == cmd.Target1 && p.Items.Count > 0);
+                if (actor is null || !actor.IsPlayer || pile is null || _introNisSkipped)
+                {
+                    Console.WriteLine($"[cmd] ai_c_equip 0x{scid:X8}: " + (pile is null
+                        ? $"no item 0x{cmd.Target1:X8} in the world"
+                        : _introNisSkipped ? "intro skipped, item left where it lies"
+                        : "only the hero equips from a command"));
+                    ContinueCommandChain(cmd.Next, actor);
+                    break;
+                }
+                CancelCommandAnim(actor);
+                string slot = _cmdSlots.TryGetValue(scid, out var es) ? es : "es_weapon_hand";
+                _pendingEquip = new PendingEquip(scid, pile, slot, cmd.Next, _playSeconds + 15.0);
+                _playerFollower?.SetTarget(pile.Position);
+                Console.WriteLine($"[cmd] ai_c_equip 0x{scid:X8}: hero goes for '{pile.Items[0].Reference}' ({slot})");
+                break;
+            }
+            case "cmd_ai_c_drop":
+            {
+                // job_drop: Inventory.RSRemove(item, true) — the catalyst lets
+                // go of target1 and it lands in the world with a toss.
+                var actor = catalyst ?? _player;
+                string? dropped = actor is { IsPlayer: true } ? ReleaseCommandHeldItem() : null;
+                if (dropped is not null) DropItemFromHero(dropped);
+                Console.WriteLine($"[cmd] ai_c_drop 0x{scid:X8}: " + (dropped is null ? "nothing in hand to drop" : $"hero drops '{dropped}'"));
+                ContinueCommandChain(cmd.Next, actor);
+                break;
+            }
+            case "cmd_ai_c_stop":
+            {
+                // job_stop, queue cleared: the catalyst stops what it is doing.
+                var actor = catalyst ?? _player;
+                if (actor is not null)
+                {
+                    CancelCommandAnim(actor);
+                    if (actor.IsPlayer) { _playerScriptedNext = 0; _pendingEquip = null; }
+                    else _scriptedMoves.RemoveAll(m => ReferenceEquals(m.S, actor));
+                    Console.WriteLine($"[cmd] ai_c_stop 0x{scid:X8}: {actor.Actor.Template.Name} stops");
+                }
+                ContinueCommandChain(cmd.Next, actor);
                 break;
             }
             case "animate_object":
@@ -18018,7 +18103,7 @@ void main()
                 else
                     Console.WriteLine($"[cmd] animate_object 0x{scid:X8}: target 0x{aoTarget:X8} has no animated body — acknowledged");
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterAnimObj))
-                    ActivateAiCommand(cmd.Next, afterAnimObj);
+                    ActivateAiCommand(cmd.Next, afterAnimObj, catalyst);
                 break;
             }
             case "animate_chain":
@@ -18037,7 +18122,7 @@ void main()
                 else
                     Console.WriteLine($"[cmd] {t} 0x{scid:X8}: no siege_node authored — acknowledged");
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterPropAnim))
-                    ActivateAiCommand(cmd.Next, afterPropAnim);
+                    ActivateAiCommand(cmd.Next, afterPropAnim, catalyst);
                 break;
             case "cmd_ai_t_guard":
             case "preload_go":
@@ -18046,7 +18131,7 @@ void main()
                 // need. Acknowledge and keep the chain flowing.
                 Console.WriteLine($"[cmd] {t} 0x{scid:X8} acknowledged");
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterAck))
-                    ActivateAiCommand(cmd.Next, afterAck);
+                    ActivateAiCommand(cmd.Next, afterAck, catalyst);
                 break;
             case "light_enable":
                 // SC-LIGHT-GIZMOS — toggle the targeted region light.
@@ -18057,7 +18142,7 @@ void main()
                     Console.WriteLine($"[cmd] light_enable 0x{scid:X8}: light 0x{lgTgt:X8} {(nowOn ? "ON" : "OFF")}");
                 }
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterLight))
-                    ActivateAiCommand(cmd.Next, afterLight);
+                    ActivateAiCommand(cmd.Next, afterLight, catalyst);
                 break;
             case "camera_quake":
             case "rock_beast_stomp":
@@ -18075,7 +18160,7 @@ void main()
                 StartCameraShake(qm, qd);
                 Console.WriteLine($"[cmd] {t} 0x{scid:X8} shake mag={qm:F2} dur={qd:F2}");
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterQuake))
-                    ActivateAiCommand(cmd.Next, afterQuake);
+                    ActivateAiCommand(cmd.Next, afterQuake, catalyst);
                 break;
             }
             default:
@@ -18122,6 +18207,122 @@ void main()
         }
     }
 
+    /// <summary>SC-CMD-CATALYST — hand a command chain on to its next link, for
+    /// the same actor (cmd_ai_dojob.skrit gives the next command to the actor
+    /// whose job finished).</summary>
+    private void ContinueCommandChain(uint next, ActorRenderState? catalyst)
+    {
+        if (next != 0 && _commands.TryGetValue(next, out var chained))
+            ActivateAiCommand(next, chained, catalyst);
+    }
+
+    /// <summary>End the animation job an actor plays for a command: a new job
+    /// replaces it, and its chain does not move on.</summary>
+    private void CancelCommandAnim(ActorRenderState actor)
+    {
+        if (_commandAnims.Remove(actor))
+            actor.Actor.Host.OverrideAnimIndex(-1, 0f);
+    }
+
+    /// <summary>An MSB-first fourcc (cmd_ai_c_animate's int1) as its name.</summary>
+    private static string FourCcName(int fourcc) =>
+        $"{(char)((fourcc >> 24) & 0xFF)}{(char)((fourcc >> 16) & 0xFF)}{(char)((fourcc >> 8) & 0xFF)}{(char)(fourcc & 0xFF)}".Trim();
+
+    /// <summary>Command jobs that end with time or distance: an animation that
+    /// has played out hands its chain on, and the hero's equip walk equips once
+    /// he is within half a meter of the item (or can get no closer), or gives
+    /// up after 15 s as job_equip does. Either way the chain moves on.</summary>
+    private void TickCommandJobs()
+    {
+        if (_commandAnims.Count > 0)
+        {
+            List<ActorRenderState>? done = null;
+            foreach (var (actor, job) in _commandAnims)
+                if (_playSeconds >= job.EndsAt || actor.IsDead || !_actors.Contains(actor))
+                    (done ??= new()).Add(actor);
+            if (done is not null)
+                foreach (var actor in done)
+                {
+                    var job = _commandAnims[actor];
+                    _commandAnims.Remove(actor);
+                    if (!actor.IsDead && _actors.Contains(actor))
+                        ContinueCommandChain(job.Next, actor);
+                    else
+                        Console.WriteLine($"[cmd] job 0x{job.Scid:X8} ends: {actor.Actor.Template.Name} left the world");
+                }
+        }
+        if (_pendingEquip is not { } pe || _player is null) return;
+        var p = _player.CurrentTransform.Translation;
+        float dx = pe.Pile.Position.X - p.X, dz = pe.Pile.Position.Z - p.Z;
+        bool inRange = dx * dx + dz * dz <= 0.5f * 0.5f || (_playerFollower?.ReachedGoal ?? true);
+        bool present = _lootPiles.Contains(pe.Pile);
+        if (present && !inRange && _playSeconds < pe.GiveUpAt) return;   // still walking
+        _pendingEquip = null;
+        if (!present || !inRange)
+        {
+            Console.WriteLine($"[cmd] ai_c_equip 0x{pe.Scid:X8}: could not reach the item — job ends");
+            ContinueCommandChain(pe.Next, _player);
+            return;
+        }
+        string item = pe.Pile.Items[0].Reference;
+        _lootPiles.Remove(pe.Pile);
+        if (pe.Pile.SourceScid != 0)
+        {
+            _consumedInventoryScids ??= new HashSet<uint>();
+            _consumedInventoryScids.Add(pe.Pile.SourceScid);
+        }
+        bool hand = pe.Slot.Equals("es_weapon_hand", StringComparison.OrdinalIgnoreCase);
+        if (hand && item.Equals("hoe", StringComparison.OrdinalIgnoreCase))
+            EquipHoeInHand();   // the intro hoe keeps its tuned off-hand grip
+        else
+        {
+            _commandHeldItem = (pe.Slot, item, _playerEquipment.TryGetValue(pe.Slot, out var cur) ? cur : null);
+            _playerEquipment[pe.Slot] = item;
+            if (hand) TryLoadPlayerWeapon();
+            else TryLoadPlayerEquipment(_player.Actor.Template);
+        }
+        Console.WriteLine($"[cmd] ai_c_equip 0x{pe.Scid:X8}: hero equips '{item}'");
+        ContinueCommandChain(pe.Next, _player);
+    }
+
+    /// <summary>Take the item a command put in the hero's hand back out (his
+    /// own gear returns to the slot); its template, or null when he holds none.</summary>
+    private string? ReleaseCommandHeldItem()
+    {
+        if (_introHoeSwapped) { RestoreIntroHoeWeapon(); return "hoe"; }
+        if (_commandHeldItem is not { } held) return null;
+        _commandHeldItem = null;
+        if (held.Original is not null) _playerEquipment[held.Slot] = held.Original;
+        else _playerEquipment.Remove(held.Slot);
+        if (held.Slot.Equals("es_weapon_hand", StringComparison.OrdinalIgnoreCase)) TryLoadPlayerWeapon();
+        else if (_player is not null) TryLoadPlayerEquipment(_player.Actor.Template);
+        return held.Item;
+    }
+
+    /// <summary>Put an item the hero lets go of into the world with the
+    /// player's drop toss (job_drop's RSRemove(item, true): "spin when dropped").</summary>
+    private void DropItemFromHero(string item)
+    {
+        if (_player is null) return;
+        var feet = _player.CurrentTransform.Translation;
+        var facing = _playerFacing.LengthSquared() < 1e-4f ? Vector3.UnitZ : Vector3.Normalize(_playerFacing);
+        AddLootPile(new LootPile(feet, new List<SiegeFX.Core.Actors.LootEntry> { new("", item) })
+        {
+            RestPitch = ComputeLootRestPitch(item),
+            Throw = new LootThrow
+            {
+                Source        = feet,
+                Target        = feet + facing * 3.5f,
+                Duration      = 0.45f,
+                Elapsed       = 0f,
+                ArcHeight     = 0.6f,
+                Spins         = 1f,
+                StartRotation = MathF.Atan2(facing.X, facing.Z),
+            },
+        });
+        _audio?.PlayAt(SfxGuiPickup, feet);
+    }
+
     private void TickScriptedMoves(float dt)
     {
         // Player chain: when the scripted walk arrives, fire the next link.
@@ -18130,7 +18331,7 @@ void main()
             var next = _playerScriptedNext;
             _playerScriptedNext = 0;
             if (_commands.TryGetValue(next, out var chained))
-                ActivateAiCommand(next, chained);
+                ActivateAiCommand(next, chained, _player);
         }
         for (int i = _scriptedMoves.Count - 1; i >= 0; i--)
         {
@@ -18153,7 +18354,7 @@ void main()
                                 or "cmd_ai_t_patrol" or "cmd_ai_t_patrol_orient")
                         _scriptedMoves.Add((s, chained.Pos, chained.Next));
                     else
-                        ActivateAiCommand(next, chained);
+                        ActivateAiCommand(next, chained, s);
                 }
                 continue;
             }
@@ -18259,13 +18460,9 @@ void main()
     private float _introDogSniffDelay;
     private const uint DogLookCameraScid = 0x01c00786;  // the NIS camera cut DS1 hangs the dog "look" off (+0.5s)
 
-    private bool _introHoeStarted;
-    private bool _introHoeDone;
     private float _introHoeTimer;
-    private Vector3 _introHoeSpot;
     private bool _introHoeSwapped;
     private string? _introHoeOrigWeapon;
-    private const uint IntroHoeItemScid = 0x01c007c9;   // fh_r1 inventory.gas [t:hoe] — the ground hoe pickup
     // Dev grip tuner for the in-hand hoe (numpad). Extra rot/trans applied on top of the
     // base weapon grip while the hoe is held; bake the dialed-in values once it looks right.
     // Baked hoe grip (tuned 2026-07-06, off-hand / shield_grip): rotation pitch/yaw/roll in
@@ -18320,63 +18517,21 @@ void main()
         }
     }
 
-    // SC-INTRO-HOE — the hero farms with the hoe during the opening NIS, then puts it
-    // away and heads to the bridge. Feasibility confirmed: base_farmboy chore_misc keys
-    // hoe1 = a_c_gah_fb_fs5_dsf-02 (same class as the working "knee"/"lstn"). Motion for
-    // now — the visible hoe prop is a follow-up. Loops the swing so the farming reads as
-    // sustained; stops when the hero leaves his spot for the scripted bridge run (the big
-    // move, distinct from the small in-place hoe-positioning turn).
+    // SC-INTRO-HOE — the hero's hoe beat in the opening NIS is authored, and runs as
+    // commands (cmd_ai_dojob.skrit with job_equip / job_play_anim / job_drop): at +30 s
+    // he walks to the hoe lying in the field and takes it in hand, at +58 s he steps to
+    // his spot and plays hoe1 (base_farmboy chore_misc, one 29 s clip), and at +91 s,
+    // as Norick's part begins, he drops it back to the ground. Should the NIS end with
+    // the hoe still in his hands, he lets it drop as the authored drop would have.
     private void TickIntroHoe(float dt)
     {
-        if (_player is null || _player.IsDead) return;
-        if (_nisPhase == NisPhase.Off)
+        if (_player is null || _player.IsDead || _nisPhase != NisPhase.Off) return;
+        // The Keypad0 grip tuner holds the hoe outside any NIS on purpose and
+        // toggles it off itself.
+        if (_introHoeSwapped && !_hoeGripDevMode && ReleaseCommandHeldItem() is { } held)
         {
-            // NIS ended without him leaving his spot (the bridge-run distance check
-            // below normally puts the hoe away) — restore his weapon if still swapped.
-            // Exception: the Keypad0 grip-tuner holds the hoe outside any NIS on purpose
-            // (it owns the swap and toggles it off itself), so don't yank it back here or
-            // the dev-mode hoe is un-equipped one frame after Keypad0 equips it.
-            if (_introHoeSwapped && !_hoeGripDevMode) RestoreIntroHoeWeapon();
-            return;
-        }
-        if (_introHoeDone) return;
-
-        if (!_introHoeStarted)
-        {
-            _introHoeStarted = true;
-            _introHoeSpot = _player.CurrentTransform.Translation;
-            // Put the actual hoe in his hands: swap the weapon_grip mesh to the hoe
-            // item (m_w_misc_hoe) for the farming, remembering the equipped weapon so
-            // it comes back when he drops it for the bridge run.
-            EquipHoeInHand();
-            // He's holding the hoe now — remove the ground hoe pickup so there isn't a
-            // second hoe standing in the dirt next to him (DS1: the hoe just vanishes
-            // after the beat, it never enters inventory).
-            _lootPiles.RemoveAll(pl => pl.SourceScid == IntroHoeItemScid);
-            Console.WriteLine("[intro] hero farming with the hoe");
-        }
-
-        var p = _player.CurrentTransform.Translation;
-        float dx = p.X - _introHoeSpot.X, dz = p.Z - _introHoeSpot.Z;
-        if (dx * dx + dz * dz > 3f * 3f)
-        {
-            _introHoeDone = true;
-            _player.Actor.Host.OverrideAnimIndex(-1, 0f);   // release the hoe pose
-            RestoreIntroHoeWeapon();                        // original weapon back in hand
-            Console.WriteLine("[intro] hero drops the hoe, heads to the bridge");
-            return;
-        }
-
-        // Sustained farming: replay the hoe swing on a loop (PlayChoreOnce end-holds a
-        // single swing, so re-arm it each clip-length like the dog's intermediate loop).
-        _introHoeTimer -= dt;
-        if (_introHoeTimer <= 0f)
-        {
-            _player.AnimTime = 0;
-            _player.Actor.PlayChoreOnce("hoe1", float.PositiveInfinity);
-            int hi = _player.Actor.GetClipIndex("hoe1");
-            float hl = (hi >= 0 && hi < _player.Actor.Clips.Length) ? _player.Actor.Clips[hi].AnimLength : 0f;
-            _introHoeTimer = hl > 0.2f ? hl : 1.5f;
+            DropItemFromHero(held);
+            Console.WriteLine("[intro] NIS over with the hoe in hand — dropped");
         }
     }
 
@@ -18463,6 +18618,15 @@ void main()
         // settles so those overwrite anything the drained messages kick off.
         if (_triggerRuntime is not null && _triggerCtx is not null)
             _triggerRuntime.FastForwardDelayed(_triggerCtx);
+        // Hoe: end whatever the hero was animating for a command, call off a walk to
+        // the hoe, and if he holds it, let it drop where he stands, as the authored
+        // cmd_ai_c_drop would have — before he is moved to the bridge.
+        if (_player is not null && !_player.IsDead)
+        {
+            CancelCommandAnim(_player);
+            _pendingEquip = null;
+            if (ReleaseCommandHeldItem() is { } heldItem) DropItemFromHero(heldItem);
+        }
         // Player: land him where the scripted run would have ended (the bridge). Fall
         // back to Norick's bridge spot if the run never started.
         var end = ResolvePlayerRunEndpoint();
@@ -18475,11 +18639,6 @@ void main()
         // Dog: retire the one-shot intro prop immediately.
         if (_introDog is not null) _introDog.Hidden = true;
 
-        // Hoe: stop farming, clear the pose, and put his real weapon back so the
-        // skipped-to hero isn't mid-swing holding the hoe.
-        _introHoeDone = true;
-        if (_player is not null && !_player.IsDead) _player.Actor.Host.OverrideAnimIndex(-1, 0f);
-        RestoreIntroHoeWeapon();
     }
 
     /// <summary>Walk the hero's scripted move chain to its final destination (the last
@@ -18851,6 +19010,20 @@ void main()
                     _patrolClaimedCommands.Add(c);
                     c = link.Next;
                 }
+            }
+
+            // SC-CMD-CATALYST — a chain that opens with a catalyst job rather than
+            // a waypoint (the Stonebridge barkeep's wipe → look → talk loop) is
+            // the actor's own job sequence, not a route: he runs it himself.
+            if (_commands.TryGetValue(cmdScid, out var first)
+                && first.Type.Equals("cmd_ai_c_animate", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!s.IsDead && _initialCommandJobs.Add(s))
+                {
+                    ActivateAiCommand(cmdScid, first, s);
+                    Console.WriteLine($"  command job: {s.Actor.Template.Name} runs its initial_command 0x{cmdScid:X8}");
+                }
+                continue;
             }
 
             if (s.Brain is null || s.Brain.PatrolRoute is not null || s.Brain.HasHadPatrol || s.IsDead) continue;
@@ -24029,6 +24202,7 @@ void main()
                 TickInvChangers();
                 TickPendingObjectSpawns((float)stepSec);
                 TickScriptedMoves((float)stepSec);
+                TickCommandJobs();
                 TickScriptedSmashes((float)stepSec);
                 TickNorickDeath((float)stepSec);
                 TickIntroDog((float)stepSec);

@@ -7,10 +7,21 @@ public class CommandCatalogTests
     [Fact]
     public void A_template_the_catalog_does_not_list_is_not_implemented()
     {
-        Assert.Equal(CommandHandling.None, CommandCatalog.Classify("cmd_ai_c_drop"));
+        // cmd_ai_t_drop is a real command template no region places.
+        Assert.Equal(CommandHandling.None, CommandCatalog.Classify("cmd_ai_t_drop"));
         Assert.Equal(CommandHandling.None, CommandCatalog.Classify("no_such_template"));
-        Assert.False(CommandCatalog.Handles("cmd_ai_c_drop", CommandHandling.Activate));
-        Assert.Equal("", CommandCatalog.Describe("cmd_ai_c_drop"));
+        Assert.False(CommandCatalog.Handles("cmd_ai_t_drop", CommandHandling.Activate));
+        Assert.Equal("", CommandCatalog.Describe("cmd_ai_t_drop"));
+    }
+
+    [Theory]
+    [InlineData("cmd_ai_c_animate")]
+    [InlineData("cmd_ai_c_equip")]
+    [InlineData("cmd_ai_c_drop")]
+    [InlineData("cmd_ai_c_stop")]
+    public void The_catalyst_verbs_run_on_activation(string name)
+    {
+        Assert.Equal(CommandHandling.Activate, CommandCatalog.Classify(name));
     }
 
     [Theory]
