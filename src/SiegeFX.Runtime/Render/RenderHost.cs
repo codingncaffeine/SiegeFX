@@ -653,16 +653,44 @@ public sealed class RenderHost : IDisposable
     /// IDLE hero (no swing/cast in flight, no queued attack, no move order
     /// under way), engage the nearest hostile that's actively fighting the
     /// party, using the active method — the walk-up melee loop, or
-    /// auto-cast when a spell slot is selected.</summary>
-    private void TryAutoDefend()
+    /// auto-cast when a spell slot is selected.
+    /// SC-FC-HERO — the hero's field-command orders govern it, per the
+    /// authored rollover text: Hold Fire never fights ("even if attacked"),
+    /// Defend fights back when hit (the default, and the pre-orders
+    /// behavior), Attack Freely also engages unprovoked
+    /// (<paramref name="wasHit"/> false, from the idle scan). Movement sets
+    /// how far the hero will go (Hold Ground 3.5, Engage 8, Move Freely 12,
+    /// the followers' ratios) and targeting picks closest / strongest /
+    /// weakest.</summary>
+    private float _heroEngageScanTimer;
+    private const float HeroEngageScanInterval = 0.25f;
+
+    /// <summary>True while the player is driving the world: not paused, no
+    /// cutscene, no dialogue, vendor, inventory or menu window open.</summary>
+    private bool HeroHasWorld() =>
+        !_bootMode && !SimFrozen && _nisPhase == NisPhase.Off
+        && !_optionsMenu.IsOpen && !_creator.IsOpen && !_dialogue.IsOpen
+        && !_vendor.IsOpen && !_inventoryOpen && !_questLogOpen;
+
+    private void TryAutoDefend(bool wasHit = true)
     {
         if (_player is null || _player.IsDead || _playerFollower is null) return;
+        if (_player.Actor.Combat.Downed) return; // unconscious heroes don't swing
+        var atkOrder = _player.FcAttack;
+        if (atkOrder == Hud.FieldCommandsPanel.Action.AtkHoldFire) return;
+        if (!wasHit && atkOrder != Hud.FieldCommandsPanel.Action.AtkFree) return;
         if (_playerSwing is not null || _playerCast is not null
             || _pendingAttackTarget is not null || PlayerDrinking) return;
         if (!_playerFollower.ReachedGoal) return; // an active move order wins
         var pp = _player.CurrentTransform.Translation;
         ActorRenderState? foe = null;
-        float bestD2 = 8f * 8f;
+        float radius = _player.FcMovement switch
+        {
+            Hud.FieldCommandsPanel.Action.MoveHoldGround => 3.5f,
+            Hud.FieldCommandsPanel.Action.MoveFree       => 12f,
+            _                                            => 8f,
+        };
+        float maxD2 = radius * radius, bestScore = 0f;
         foreach (var s in _actors)
         {
             if (s.IsDead || s.IsPlayer || s.IsPartyMember || s.Brain is null) continue;
@@ -676,15 +704,30 @@ public sealed class RenderHost : IDisposable
             // hero off to swing at air (field report: random melee
             // attacks out of combat after a fight).
             if (!s.IsEvilAligned || !s.Actor.Stats.IsCombatant) continue;
-            if (s.Brain.State != SiegeFX.Core.Actors.ActorBrain.BrainState.Attack
-                && s.Brain.State != SiegeFX.Core.Actors.ActorBrain.BrainState.Chase) continue;
+            // Defend answers only foes already fighting; Attack Freely
+            // takes any hostile in reach the player could click — the same
+            // visibility gates the followers' SelectEnemyFor applies, so a
+            // dormant or faded-out monster never draws the hero off.
+            if (atkOrder != Hud.FieldCommandsPanel.Action.AtkFree)
+            {
+                if (s.Brain.State != SiegeFX.Core.Actors.ActorBrain.BrainState.Attack
+                    && s.Brain.State != SiegeFX.Core.Actors.ActorBrain.BrainState.Chase) continue;
+            }
+            else if (s.Hidden || !s.IsSelectable || !PickableFromPlayerFloor(s)) continue;
             var p = s.CurrentTransform.Translation;
             if (MathF.Abs(p.Y - pp.Y) > SiegeFX.Core.Actors.ActorBrain.AggroVerticalBand) continue;
             float dx = p.X - pp.X, dz = p.Z - pp.Z;
             float d2 = dx * dx + dz * dz;
-            if (d2 >= bestD2) continue;
+            if (d2 >= maxD2) continue;
+            float score = _player.FcTargeting switch
+            {
+                Hud.FieldCommandsPanel.Action.TgtStrongest =>  s.Actor.Stats.MaxLife,
+                Hud.FieldCommandsPanel.Action.TgtWeakest   => -s.Actor.Stats.MaxLife,
+                _                                          => -d2,   // closest
+            };
+            if (foe is not null && score <= bestScore) continue;
             if (IsSightBlocked(p, pp)) continue;
-            bestD2 = d2;
+            bestScore = score;
             foe = s;
         }
         if (foe is null) return;
@@ -31571,7 +31614,7 @@ void main()
             fcDisp?.FcMovement  ?? Hud.FieldCommandsPanel.Action.MoveEngage,
             fcDisp?.FcAttack    ?? Hud.FieldCommandsPanel.Action.AtkFightback,
             fcDisp?.FcTargeting ?? Hud.FieldCommandsPanel.Action.TgtClosest,
-            fcDisp?.FcFollow ?? true,
+            FcFollowerDisplayMember()?.FcFollow ?? true,
             _fcCommandsCollapsed, _fcMinimized,
             ShowChat: _mpNetSession is not null);
         _fieldPanel.Draw(_barRenderer, _textRenderer, _iconRenderer,
@@ -31994,10 +32037,25 @@ void main()
         else _selectedPartyIdx.Add(idx);
     }
 
-    /// <summary>Followers an order click applies to: the selected followers
-    /// when any are selected, else the whole party (clicking orders with just
-    /// the leader selected commands everyone, the pre-selection behavior).</summary>
+    /// <summary>Members an order click applies to: the selected followers
+    /// (plus the hero when selected with them) when any follower is selected,
+    /// else the whole party, hero included. SC-FC-HERO — the hero takes
+    /// standing orders like any member; they decide what an idle hero does
+    /// when foes come near (<see cref="TryAutoDefend"/>). Before, only
+    /// followers were addressed, so solo every order click was a no-op.</summary>
     private IEnumerable<ActorRenderState> FcOrderTargets()
+    {
+        bool anyFollowerSelected = false;
+        foreach (var i in _selectedPartyIdx) if (i > 0) { anyFollowerSelected = true; break; }
+        if (_player is not null && (!anyFollowerSelected || _selectedPartyIdx.Contains(0)))
+            yield return _player;
+        foreach (var m in FcFollowerTargets()) yield return m;
+    }
+
+    /// <summary>Followers an order click applies to: the selected followers
+    /// when any are selected, else every follower. The follow toggle uses
+    /// this alone (the hero leads; follow means nothing for them).</summary>
+    private IEnumerable<ActorRenderState> FcFollowerTargets()
     {
         bool anySelected = false;
         foreach (var i in _selectedPartyIdx) if (i > 0) { anySelected = true; break; }
@@ -32012,10 +32070,19 @@ void main()
             yield return smn;
     }
 
-    /// <summary>The member whose orders the panel displays: the lowest-index
-    /// selected follower, else the lowest-index follower, else null (solo —
-    /// the panel shows the DS1 defaults).</summary>
+    /// <summary>The member whose orders the panel displays: the hero when
+    /// selected (the default selection, and always when solo), else the
+    /// lowest-index selected follower. SC-FC-HERO.</summary>
     private ActorRenderState? FcDisplayMember()
+    {
+        if (_player is not null && _selectedPartyIdx.Contains(0)) return _player;
+        return FcFollowerDisplayMember() ?? _player;
+    }
+
+    /// <summary>The follower whose follow toggle the panel displays: the
+    /// lowest-index selected follower, else the lowest-index follower, else
+    /// null (solo — the toggle shows its default).</summary>
+    private ActorRenderState? FcFollowerDisplayMember()
     {
         ActorRenderState? best = null;
         foreach (var m in _party)
@@ -32096,8 +32163,8 @@ void main()
 
             case Hud.FieldCommandsPanel.Action.ToggleFollow:
             {
-                bool newVal = !(disp?.FcFollow ?? true);
-                foreach (var m in FcOrderTargets())
+                bool newVal = !(FcFollowerDisplayMember()?.FcFollow ?? true);
+                foreach (var m in FcFollowerTargets())
                 {
                     m.FcFollow = newVal;
                     // SC-SELECT-MOVE — re-engaging follow mode releases any
@@ -33216,7 +33283,7 @@ void main()
                     case Hud.FieldCommandsPanel.Action.FormPyramid:      return One("Arrange party in a wedge formation.");
                     case Hud.FieldCommandsPanel.Action.FormCircle:       return One("Arrange party in a circle formation.");
                     case Hud.FieldCommandsPanel.Action.ToggleFollow:
-                        return One((d?.FcFollow ?? true) ? "Disengage follow mode" : "Engage follow mode");
+                        return One((FcFollowerDisplayMember()?.FcFollow ?? true) ? "Disengage follow mode" : "Engage follow mode");
                     case Hud.FieldCommandsPanel.Action.SelectAll:
                         return One($"Select all party members (Hotkey: {Key("select_all_party_members")})");
                     case Hud.FieldCommandsPanel.Action.Disband:
@@ -36530,6 +36597,15 @@ void main()
             PlayMeleeHit(_player.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f));
             SpawnBloodHit(_player);
             TryAutoDefend();
+        }
+        // SC-FC-HERO — Attack Freely: an idle hero goes looking for a fight,
+        // a few scans a second, only while the player has the world (not
+        // paused, no cutscene, no window open).
+        else if (_player is { IsDead: false, FcAttack: Hud.FieldCommandsPanel.Action.AtkFree }
+                 && HeroHasWorld() && (_heroEngageScanTimer -= dt) <= 0f)
+        {
+            _heroEngageScanTimer = HeroEngageScanInterval;
+            TryAutoDefend(wasHit: false);
         }
         if (_activeMood is null) return;
         if (nowInCombat)
@@ -42044,6 +42120,10 @@ void main()
                 CameraYaw     = _camera.Yaw,
                 CameraPitch   = _camera.Pitch,
                 ActiveSlot    = _activeAbilityIdx,
+                // SC-FC-HERO — the hero's standing field-command orders.
+                MoveOrder     = FcOrderToInt(_player.FcMovement),
+                AtkOrder      = FcOrderToInt(_player.FcAttack),
+                TgtOrder      = FcOrderToInt(_player.FcTargeting),
             };
             // Inventory + equipment fold into the same flat list the loot
             // path uses. On load, equipped items get re-wired by walking
@@ -42838,6 +42918,12 @@ void main()
             // AFTER the equipment rebuild so the wielded-weapon visual
             // follows the slot. -1 = pre-field save, keep the default.
             if (ps.ActiveSlot >= 0) SetActiveAbilitySlot(ps.ActiveSlot);
+
+            // SC-FC-HERO — the hero's standing orders. -1 = pre-field save:
+            // keep the DS1 defaults (Engage / Defend / Target Closest).
+            if (ps.MoveOrder >= 0) _player.FcMovement  = FcMoveFromInt(ps.MoveOrder);
+            if (ps.AtkOrder  >= 0) _player.FcAttack    = FcAtkFromInt(ps.AtkOrder);
+            if (ps.TgtOrder  >= 0) _player.FcTargeting = FcTgtFromInt(ps.TgtOrder);
 
             // SC-VITALS-ORDER — re-apply the saved vitals now that EVERY
             // max-affecting restore has run (level resync, gear enchants).
