@@ -251,20 +251,23 @@ are placements in `World.dsmap`: 36 `cmd_camera_command`, 4
 smashed barrels. The 2019 save has 7 007 entries and the LoA save 3 005.
 SCIDs are unique only within one map: LoA's `map_expansion`
 (`Expansion.dsmap`) reuses DS1's numbers, so a save's retired SCIDs must be
-looked up in the map its `info.gas` names. Against `Expansion.dsmap`, the LoA
-save's 3 005 retired SCIDs matched 9 015 placements, about three each, with
-templates repeated as `2W_…` and `3W_…`. That fits a copy of every placement
-per difficulty world (regular, veteran, elite) sharing one SCID, presumably
-in a folder per world under `objects/`. The save names its world in
-`/m_pworldterrain/m_pmap/m_mpworldname`: `"normal"` in every DS1 save,
-`"regular"` in the LoA save. That LoA list is mostly monsters killed, crates
-smashed, doors and triggers.
+looked up in the map its `info.gas` names. `Expansion.dsmap` places every object once per
+difficulty world, in folders `objects/regular/`, `objects/veteran/` and
+`objects/elite/`, all three copies under one SCID (veteran and elite
+templates are prefixed `2W_` and `3W_`). DS1's `World.dsmap` has no such
+folders. The save names its world in `/m_pworldterrain/m_pmap/m_mpworldname`:
+`"normal"` in every DS1 save, `"regular"` in the LoA save. Looked up in
+`regular/` only, all 3 005 of the LoA save's retired SCIDs are found, once
+each: about 2 400 monsters killed, about 250 crates smashed, 87 doors, 282
+triggers, 26 cutscene commands, and spent generators (`gen_explode_*`,
+`dsx_darkgenerator_*`).
 
 Which tanks a save was played with is in its `[tank_manifest]`. The LoA save
 lists `Expansion.dsmap` as its only map, and its own `Logic.dsres` and
 `Objects.dsres` (CRCs differ from DS1's); `Voices`, `Sound` and `Terrain`
 have the same CRCs as DS1's. In a LoA install, `Expansion.dsmap`,
-`Expansion.dsres` and `ExpVoices.dsres` are in `DSLOA/`, not `Maps/`. The
+`Expansion.dsres` and `ExpVoices.dsres` are in `DSLOA/`, not `Maps/`; the
+`MpWorld.dsmap` in its `Maps/` is byte-identical to DS1's (same SHA-256). The
 list is sorted by SCID. A smashed barrel leaves nothing else by SCID; its
 debris is in `/godb/m_localdb`, which holds objects made at run time
 (`m_scid = 0xfffffffe`). C2 holds `frag_glb_metal_01` ×4 and
@@ -343,9 +346,10 @@ they always show churn and are listed last.
 Roughly in order of how much they block importing and writing saves.
 
 1. **What else retires a SCID.** Smashing and killing do; the list also
-   grows with one-time gizmos as the game runs (D2 → D3 added 26). Which
-   commands and triggers retire themselves, and whether picking up a
-   map-placed item does, is not yet sorted out. Also: what
+   grows with one-time gizmos as the game runs (D2 → D3 added 26), and the
+   LoA save has 87 doors on it. Whether opening a door retires it (or only
+   breaking one), which commands and triggers retire themselves, and whether
+   picking up a map-placed item does, is not yet sorted out. Also: what
    `m_scidbitscoll` bits other than `0x10000` (a spent spawner bush) mean.
 2. **The write order.** 0.3–0.4 % of entries (a handful of member names) are
    written after a later sibling's subtree. A writer needs the rule for when, or
