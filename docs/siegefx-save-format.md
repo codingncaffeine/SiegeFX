@@ -51,9 +51,9 @@ needs the migration whitelist in `SaveStore.Load` extended too.
 
 ## Known gaps
 
-- The hero's Field Commands orders (the `fix/field-commands-hero` branch adds
-  `PlayerSnapshot.MoveOrder/AtkOrder/TgtOrder`; the original saves them — see
-  the orders table in the original-format doc).
+- The hero's Field Commands orders: only companions carry them
+  (`CompanionSnapshot`); the original saves them for the hero too (see the
+  orders table in the original-format doc).
 - Saved party groups (Ctrl+number).
 - Alignment changes made at runtime (`cmd_alignment_changer`): not stored.
 - Which SiegeFX build and which game data wrote the save.

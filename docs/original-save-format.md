@@ -7,8 +7,10 @@ tools; nothing comes from the leaked source. When you solve one of the
 [open questions](#open-questions), move it up into the known sections with the
 evidence.
 
-The reader is the `src/SiegeFX.OriginalSaves` library (kept out of the engine assemblies the parity ledger scans, since its field names come from save files, not game data); the CLI is
-`siegefx save inspect | tree | diff` (see [Tools](#tools)).
+The reader is the `src/SiegeFX.OriginalSaves` library, kept out of the
+engine assemblies the parity ledger scans since its field names come from
+save files, not game data. The CLI is
+`siegefx save inspect | tree | diff | locate | retired` (see [Tools](#tools)).
 
 ## Files
 
@@ -58,7 +60,12 @@ Plain GAS text, one `[info]` block. What the original's load menu shows.
 
 The tank manifest identifies the exact game data a save was made with: the
 same install produced the same CRCs in every save, and a 2019 save from an
-earlier install lists different `Logic.dsres`/`Objects.dsres` CRCs.
+earlier install lists different `Logic.dsres`/`Objects.dsres` CRCs. The LoA
+save lists `Expansion.dsmap` as its only map, and LoA's own `Logic.dsres` and
+`Objects.dsres`; its `Voices`, `Sound` and `Terrain` CRCs match DS1's. In a
+LoA install, `Expansion.dsmap`, `Expansion.dsres` and `ExpVoices.dsres` are
+in `DSLOA/`, not `Maps/`; the `MpWorld.dsmap` in its `Maps/` is
+byte-identical to DS1's (same SHA-256).
 
 ## party.gas
 
@@ -101,8 +108,8 @@ button in the original game.
 | Targeting | `focus_orders` | `fo_closest` Closest · `fo_strongest` Strongest · `fo_weakest` Weakest | 0 · 1 · 2 |
 | (none) | `disposition_orders` | `ad_defensive` everywhere, except `ad_offensive` on LoA's Kraal | — |
 
-The hero has orders like every companion, which is the parity evidence behind
-the "Give the hero the Field Commands orders" fix.
+The hero has orders like every companion, so a faithful import or save
+carries the hero's orders too.
 
 ## The world: world.xidx + world.xdat
 
@@ -143,9 +150,9 @@ file, so its **size is the only type evidence**:
 | NUL-terminated | text | `m_code` = `"success"`, `sname` = `"quest_edgaar_basement"` |
 | ends in two zero bytes | UTF-16 text | `sscreenname` = `"Clear Edgaar's Basement"`, `sspeaker` |
 
-**Node ids in positions are stored byte-reversed** relative to how `info.gas`
-prints them: `teleport … 0x5353287c` is stored `53 53 28 7c`, so read the last
-four bytes big-endian.
+**Node ids are stored in the byte order `info.gas` prints them**, unlike the
+rest of the file: `teleport … 0x5353287c` is stored `53 53 28 7c`, so read a
+position's last four bytes (and `m_prevownednodes` values) big-endian.
 
 Name prefixes help: `b…` bool, `s…` string, `m_p…` pointer, `m_…` member;
 names ending in `$` belong to skrit (script) property stores.
@@ -196,28 +203,23 @@ also the SCID SiegeFX gives the actor. Evidence: Edgaar is
 `fh_r1  actor.gas  [t:edgaar,n:0x01c00b13]` against the same install. World
 import can therefore match saved objects to SiegeFX actors by SCID.
 
-### Life and death, and areas left behind
+### What is loaded
 
-A creature's `aspect` component (one of its `m_componentcoll` entries, whose
-`_name` is `"aspect"`) holds `life_state` (`"ls_dead_normal"` once killed),
-`life` and `max_life` as floats.
+Each party member has a frustum, the area loaded around them:
+`/m_pworldterrain/siegeengine/m_frustumcoll/N` with `id` (one bit each: 1,
+2, 4 … 128 in an 8-member party), `m_frustumwidth` 45 (metres) and
+`m_prevownednodes`, the terrain nodes it holds. An object's
+`m_frustummembership` is the OR of the frustums it is in. In all six saves
+checked (C, C2, A2, D7, the 2019 save, LoA) it is non-zero exactly for the
+objects on a loaded node, apart from 19 aspect-less objects in the LoA save
+that sit on a loaded node but are in no frustum.
 
-**What is loaded.** Each party member has a frustum, the area loaded around
-them: `/m_pworldterrain/siegeengine/m_frustumcoll/N` with `id` (one bit
-each: 1, 2, 4 … 128 in an 8-member party), `m_frustumwidth` 45 (metres) and
-`m_prevownednodes`, the terrain nodes it holds. A node GUID there is stored
-in the same byte order as a position's node, so read it big-endian to get
-the `0x…` the map and `info.gas` print. An object's `m_frustummembership` is
-the OR of the frustums it is in. In all six saves checked (C, C2, A2, D7,
-the 2019 save, LoA) it is non-zero exactly for the objects on a loaded node,
-apart from 19 aspect-less objects in the LoA save that sit on a loaded node
-but are in no frustum.
+### What is saved, and what the map supplies
 
-**What is saved.** `godb/m_globaldb` holds game objects, not decor: in C2,
-659 trees, bushes, cornstalks, reeds and pieces of furniture placed on
-loaded nodes are missing (across all the saves, only a lightable lamp stand
-in D7 and two chairs in the LoA save are of that kind), so the map supplies
-them every time. Of the
+`godb/m_globaldb` holds game objects, not decor: in C2, 659 trees, bushes,
+cornstalks, reeds and pieces of furniture placed on loaded nodes are missing
+(across all the saves, only a lightable lamp stand in D7 and two chairs in
+the LoA save are of that kind), so the map supplies them every time. Of the
 rest it holds:
 
 - every object on a loaded node, untouched barrels included;
@@ -229,80 +231,9 @@ rest it holds:
 Untouched props off the loaded nodes are dropped. In new game "C" the five
 start-area barrels (`0x01c00001`, `…06`, `…0a`, `…6b6`, `…6b8`) are saved;
 in "C2", after running to the next farmhouse, all five are gone although
-nobody touched them. So a missing object means "as the map placed it",
-unless its SCID is retired.
-
-**Retired SCIDs.** `/godb/m_retiredscidcoll/N/_value` lists the map
-placements the game must not create again, for the whole game and whether or
-not their area is loaded. Evidence:
-
-| Saves | Added to the list |
-|---|---|
-| C → C2 (the hero and a krug each smashed a barrel) | `0x01c00008`, `0x01c00427`: both `barrel_glb_fh_r1`, nothing else |
-| A → A2 | `0x01c00427` again (the krug smashes the same barrel every new game), plus 7 others along the way |
-| Fire Shot → kill | `0x01c005ca`, the krug killed, which is also still saved as a corpse |
-| kill → D2 (hit a barrel) | `0x01c006b6`, a start-area barrel |
-
-A new game already has 44 entries, mostly its opening cutscene. All 47 in C2
-are placements in `World.dsmap`: 36 `cmd_camera_command`, 4
-`trigger_generic`, `cmd_enter_nis`, `dog_sleeping`,
-`door_grs_farmhouse_breakable`, a `spider` (`0x08d000b7`), Norick
-(`0x01c007c0`, dies in the opening; his corpse is still saved) and the two
-smashed barrels. The 2019 save has 7 007 entries and the LoA save 3 005.
-SCIDs are unique only within one map: LoA's `map_expansion`
-(`Expansion.dsmap`) reuses DS1's numbers, so a save's retired SCIDs must be
-looked up in the map its `info.gas` names. `Expansion.dsmap` places every object once per
-difficulty world, in folders `objects/regular/`, `objects/veteran/` and
-`objects/elite/`, all three copies under one SCID (veteran and elite
-templates are prefixed `2W_` and `3W_`). DS1's `World.dsmap` has no such
-folders. The save names its world in `/m_pworldterrain/m_pmap/m_mpworldname`:
-`"normal"` in every DS1 save, `"regular"` in the LoA save. Looked up in
-`regular/` only, all 3 005 of the LoA save's retired SCIDs are found, once
-each: about 2 300 monsters killed, about 240 crates smashed, 88 doors, 282
-triggers, 26 cutscene commands, and spent generators (`gen_explode_*`,
-`dsx_darkgenerator_*`).
-
-Which tanks a save was played with is in its `[tank_manifest]`. The LoA save
-lists `Expansion.dsmap` as its only map, and its own `Logic.dsres` and
-`Objects.dsres` (CRCs differ from DS1's); `Voices`, `Sound` and `Terrain`
-have the same CRCs as DS1's. In a LoA install, `Expansion.dsmap`,
-`Expansion.dsres` and `ExpVoices.dsres` are in `DSLOA/`, not `Maps/`; the
-`MpWorld.dsmap` in its `Maps/` is byte-identical to DS1's (same SHA-256). The
-list is sorted by SCID. A smashed barrel leaves nothing else by SCID; its
-debris is in `/godb/m_localdb`, which holds objects made at run time
-(`m_scid = 0xfffffffe`). C2 holds `frag_glb_metal_01` ×4 and
-`frag_glb_wood_01`–`04` ×2 each, the hoops and staves of two barrels, and
-`/m_psim/m_objects` their physics state. `siegefx save retired` lists a
-save's retired placements by template.
-
-**Picked-up items stay saved under their map SCID.** Picking up the Fire
-Shot scroll (`spell_fireshot`, `0x01c00274`, saves "no tips" → "Fire Shot")
-retires nothing of its own. The same object stays in `m_globaldb` with
-`m_parent` = the hero's goid (`0x09000087`), `m_isinsideinventory` 0 → 1,
-`m_isallclients` 0 → 1, `m_bidentified` 0 → 1, `is_visible` 1 → 0, and its
-position now the hero's. Its one-shot pickup trigger (`receive_world_message
-we_picked_up` → `send_world_message we_trigger_deactivate` to `0x01c00afa`)
-is removed from the object. `party.gas` lists the item too. **Using up a map item retires it.** In new game "A", F1 → F2 picked up a
-`potion_health_medium` (`0x0600026d`) in the crypt: nothing retired. F2 → F5
-drank it to the end: `party.gas` drops it and `0x0600026d` is retired. So a
-map item keeps its SCID while carried and is retired when used up, which is
-what stops the map placing it again.
-
-**Run-time objects.** Loot (monster drops, chest contents), bought items,
-gold piles, monsters spawned by generators and the hero itself (the farm
-girl, goid `0x09000087`) are in `m_globaldb` with `m_scid = 0xfffffffe` and
-`m_ispcontentgenerated = 1`, owned through `m_parent` (a party member, or the
-monster that will drop it: krugs carry their daggers and spell books from the
-start). They keep their `m_goid` from save to save (all 70 of D3's are in D4
-unchanged). Having no placement, they are never retired: used up, sold or
-dropped and left, they are simply gone. Few carried
-items have a map SCID at all: loot dropped by monsters or chests is made at
-run time (`m_scid = 0xfffffffe`) and cannot be retired. Map items inside an
-inventory: 2 in D7 (the Fire Shot and `potion_mana_small` `0x01c0007e`), 4 in
-the 2019 save, 1 in the LoA save. No retired SCID belongs to an item still in
-an inventory in any save. One
-`trigger_generic` (`0x01c007c3`) was retired in the same few seconds; whether
-the pickup caused it is not known.
+nobody touched them. **So a missing object means "as the map placed it",
+unless its SCID is retired** (next section) or its state is in
+[`m_scidbitscoll`](#per-scid-bits).
 
 What is kept off the loaded nodes does not last for ever: in F5, after
 about four minutes deep in the crypt, the farm's chickens, butterflies, rake,
@@ -310,10 +241,83 @@ shovel and Norick's corpse are gone from the save (Norick stays retired, so
 he does not come back). The rule for when such objects are let go is not
 known.
 
-Monsters killed are kept with `ls_dead_normal` wherever they are. In A→A2 the
-fence-smashing krug `0x01c005ca` and Norick (`0x01c007c0`, who dies in the
-scripted bridge collapse) are still saved, dead, at the crypt; in the twelve
-D saves every one of the 39 monsters that died stays in every later save.
+A creature's `aspect` component (the `m_componentcoll` entry whose `_name`
+is `"aspect"`) holds `life_state` (`"ls_dead_normal"` once killed), `life`
+and `max_life` as floats. Killed monsters stay saved, dead, while they are
+kept at all: in A → A2 the fence-smashing krug `0x01c005ca` and Norick
+(`0x01c007c0`, who dies in the scripted bridge collapse) are still saved at
+the crypt, and in the twelve D saves every one of the 39 monsters that died
+stays in every later save.
+
+### Retired placements
+
+`/godb/m_retiredscidcoll/N/_value`, sorted by SCID, lists the map placements
+the game must not create again, for the whole game and whether or not their
+area is loaded:
+
+| Saves | Change | Added to the list |
+|---|---|---|
+| C → C2 | the hero and a krug each smashed a barrel | `0x01c00008`, `0x01c00427`: both `barrel_glb_fh_r1`, nothing else |
+| A → A2 | ran to the crypt | `0x01c00427` again (the krug smashes the same barrel every new game), plus 7 others along the way |
+| Fire Shot → kill | killed a krug | `0x01c005ca`, which is also still saved as a corpse |
+| kill → D2 | hit a barrel | `0x01c006b6`, a start-area barrel |
+| F2 → F5 | drank a crypt potion to the end | `0x0600026d` `potion_health_medium`, plus the monsters killed |
+
+Smashed, killed or used up retires a placement; opening a door and picking
+up an item do not (see below). A smashed barrel leaves nothing else by SCID:
+its debris is in `/godb/m_localdb`, which holds objects made at run time
+(`m_scid = 0xfffffffe`; C2 holds `frag_glb_metal_01` ×4 and
+`frag_glb_wood_01`–`04` ×2 each, the hoops and staves of two barrels), and
+`/m_psim/m_objects` holds their physics state.
+
+A new game already has 44 entries, mostly its opening cutscene. All 47 in C2
+are placements in `World.dsmap`: 36 `cmd_camera_command`, 4
+`trigger_generic`, `cmd_enter_nis`, `dog_sleeping`,
+`door_grs_farmhouse_breakable`, a `spider` (`0x08d000b7`), Norick and the two
+smashed barrels. The 2019 save has 7 007 entries and the LoA save 3 005.
+
+**Look them up in the save's own map and world.** SCIDs are unique only
+within one map: LoA's `map_expansion` (`Expansion.dsmap`) reuses DS1's
+numbers. `Expansion.dsmap` also places every object once per difficulty
+world, in `objects/regular/`, `objects/veteran/` and `objects/elite/`, all
+three copies under one SCID (veteran and elite templates are prefixed `2W_`
+and `3W_`); DS1's `World.dsmap` has no such folders. The save names its
+world in `/m_pworldterrain/m_pmap/m_mpworldname`: `"normal"` in every DS1
+save, `"regular"` in the LoA save. Looked up in `regular/` only, all 3 005 of
+the LoA save's retired SCIDs are found, once each: about 2 300 monsters
+killed, about 240 crates smashed, 88 doors, 282 triggers, 26 cutscene
+commands, and spent generators (`gen_explode_*`, `dsx_darkgenerator_*`).
+
+### Items: picked up, used up, made at run time
+
+**Picked up, an item keeps its map SCID.** Picking up the Fire Shot scroll
+(`spell_fireshot`, `0x01c00274`, saves "no tips" → "Fire Shot") retires
+nothing of its own. The same object stays in `m_globaldb` with `m_parent` =
+the hero's goid (`0x09000087`), `m_isinsideinventory` 0 → 1,
+`m_isallclients` 0 → 1, `m_bidentified` 0 → 1, `is_visible` 1 → 0, and its
+position now the hero's. Its one-shot pickup trigger (`receive_world_message
+we_picked_up` → `send_world_message we_trigger_deactivate` to `0x01c00afa`)
+is removed from the object, and `party.gas` lists the item. One
+`trigger_generic` (`0x01c007c3`) was retired in the same few seconds; whether
+the pickup caused it is not known.
+
+**Used up, it is retired.** F1 → F2 picked up a `potion_health_medium`
+(`0x0600026d`) in the crypt: nothing retired. F2 → F5 drank it to the end:
+`party.gas` drops it and `0x0600026d` is retired, which is what stops the
+map placing it again.
+
+**Run-time objects have no SCID.** Loot (monster drops, chest contents),
+bought items, gold piles, monsters spawned by generators and the hero itself
+(the farm girl, goid `0x09000087`) are in `m_globaldb` with `m_scid =
+0xfffffffe` and `m_ispcontentgenerated = 1`, owned through `m_parent` (a
+party member, or the monster that will drop it: krugs carry their daggers
+and spell books from the start). They keep their `m_goid` from save to save
+(all 70 of D3's are in D4 unchanged). Having no placement, they are never
+retired: used up, sold or dropped and left, they are simply gone. So few
+carried items have a map SCID at all: 2 in D7 (the Fire Shot and
+`potion_mana_small` `0x01c0007e`), 4 in the 2019 save, 1 in the LoA save.
+
+### Per-SCID bits
 
 `/godb/m_scidbitscoll/N` (`_key` = SCID, `m_bits`, `m_mustrpc`) keeps
 state for objects that must remember it whether or not they are loaded:
@@ -382,17 +386,24 @@ siegefx save retired <file> <World.dsmap>      # placements the game will not cr
 ```
 
 `retired` looks up every SCID in `m_retiredscidcoll` in the save's own map
-(it refuses a map tank without that map's regions and names the right file),
-keeps only the save's world when the map has a folder per world (and prints
-the folders it found), and lists them by template; `*` marks the ones still saved (corpses, mostly).
+(it refuses a map tank without that map's regions and names the right
+file), keeps only the save's world when the map has a folder per world (and
+prints the folders it found), and lists them by template; `*` marks the ones
+still saved (corpses, mostly).
 
-`diff` reports the readable facts first (info, party, orders, items, quests,
-flags, tips), then SCIDs newly retired, changed `m_scidbitscoll` bits, and
-game objects compared by SCID (which came, which left, which changed and
-how many values) and run-time objects by goid (which came, which left; `--object=TEXT` prints the values for templates or SCIDs
-containing TEXT and skips the rest), then counts value changes per world section. `skritengine` and
-`godb` are positional lists — one new object shifts every later index — so
-they always show churn and are listed last.
+`diff` reports, in order:
+
+1. the readable facts: info, party (orders, skills, items), quests, flags,
+   tips;
+2. SCIDs newly retired and changed `m_scidbitscoll` bits;
+3. game objects matched by SCID (which came into the save, which left it,
+   which changed and by how many values) and run-time objects matched by
+   goid (which came, which left). `--object=TEXT` keeps only the objects
+   whose template or id contains TEXT, prints every changed value, and stops
+   there;
+4. value changes per world section, then the values themselves.
+   `skritengine` and `godb` are positional lists (one new object shifts
+   every later index), so they always show churn and are listed last.
 
 ## Open questions
 
