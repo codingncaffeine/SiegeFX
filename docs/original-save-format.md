@@ -326,6 +326,7 @@ siegefx save tree <file> --path=/world/m_pvictory --depth=2
 siegefx save tree <file> --find=edgaar # every node and value mentioning a name
 siegefx save diff <before> <after>     # what changed, clocks and timers hidden
 siegefx save diff <a> <b> --all        # including clocks and timers
+siegefx save diff <a> <b> --object=door  # every value that changed on matching objects
 siegefx save locate <World.dsmap> 0x01c00b13   # where a save object was placed in the map
 siegefx save locate <World.dsmap> edgaar       # placements by template name
 siegefx save retired <file> <World.dsmap>      # placements the game will not create again
@@ -337,7 +338,10 @@ keeps only the save's world when the map has a folder per world (and prints
 the folders it found), and lists them by template; `*` marks the ones still saved (corpses, mostly).
 
 `diff` reports the readable facts first (info, party, orders, items, quests,
-flags, tips), then counts value changes per world section. `skritengine` and
+flags, tips), then SCIDs newly retired, changed `m_scidbitscoll` bits, and
+game objects compared by SCID (which came, which left, which changed and
+how many values; `--object=TEXT` prints the values for templates or SCIDs
+containing TEXT), then counts value changes per world section. `skritengine` and
 `godb` are positional lists — one new object shifts every later index — so
 they always show churn and are listed last.
 

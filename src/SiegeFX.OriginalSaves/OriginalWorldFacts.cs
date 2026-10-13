@@ -102,6 +102,36 @@ public static class OriginalWorldFacts
         return set;
     }
 
+    /// <summary>The saved game objects that came from a map placement, by
+    /// SCID. Objects made at run time (<c>0xfffffffe</c>) and any SCID saved
+    /// twice are left out, so positional churn in <c>m_globaldb</c> does not
+    /// hide what changed on one object.</summary>
+    public static IReadOnlyDictionary<uint, XferNode> ObjectsByScid(XferTree world)
+    {
+        var map = new Dictionary<uint, XferNode>();
+        var twice = new HashSet<uint>();
+        foreach (var o in world.Find(ObjectsPath)?.Children ?? [])
+        {
+            if (o.Value("m_scid")?.AsUInt32 is not uint scid || scid is 0 or 0xfffffffe) continue;
+            if (!map.TryAdd(scid, o)) twice.Add(scid);
+        }
+        foreach (var scid in twice) map.Remove(scid);
+        return map;
+    }
+
+    public const string ScidBitsPath = "/godb/m_scidbitscoll";
+
+    /// <summary>Per-SCID bits (<c>m_bits</c>), kept whether or not the
+    /// object is loaded. Seen: <c>0x10000</c> on a spent spawner bush; the
+    /// farmhouse door <c>0x01c000ab</c> carries <c>5</c> from the start.</summary>
+    public static IReadOnlyDictionary<uint, uint> ScidBits(XferTree world)
+    {
+        var map = new Dictionary<uint, uint>();
+        foreach (var e in world.Find(ScidBitsPath)?.Children ?? [])
+            if (e.Value("_key")?.AsUInt32 is uint scid && e.Value("m_bits")?.AsUInt32 is uint bits) map[scid] = bits;
+        return map;
+    }
+
     public const string FrustumsPath = "/m_pworldterrain/siegeengine/m_frustumcoll";
 
     /// <summary>The terrain nodes loaded when the game saved: the union of

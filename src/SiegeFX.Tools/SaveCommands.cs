@@ -10,7 +10,9 @@ static class SaveCommands
         "usage: siegefx save inspect <file> [--all]                  summary: save info, party, quests, flags\n" +
         "       siegefx save tree    <file> [--path=/world] [--depth=N] [--find=TEXT]\n" +
         "                                                            the world tree (world.xidx + world.xdat)\n" +
-        "       siegefx save diff    <a> <b> [--all] [--ignore=n1,n2] what changed between two saves\n" +
+        "       siegefx save diff    <a> <b> [--all] [--ignore=n1,n2] [--object=TEXT]\n" +
+        "                                                            what changed between two saves; --object shows\n" +
+        "                                                            every change on objects whose template or SCID matches\n" +
         "       siegefx save locate  <World.dsmap> <0xSCID | template>  where a save object was placed in the map\n" +
         "       siegefx save retired <file> <World.dsmap> [--all]   map objects the game will not create again\n" +
         "                                                            (smashed, killed, used up)";
@@ -30,7 +32,7 @@ static class SaveCommands
             "locate" when files.Count == 2 => Locate(files[0], files[1]),
             "retired" when files.Count == 2 => Retired(OriginalSave.Open(files[0]), files[1], Flag("all")),
             "diff" when files.Count == 2 => Diff(OriginalSave.Open(files[0]), OriginalSave.Open(files[1]), Flag("all"),
-                                                 (Opt("ignore") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)),
+                                                 (Opt("ignore") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries), Opt("object")),
             _ => Fail(),
         };
         static int Fail() { Console.Error.WriteLine(Usage); return 1; }
@@ -191,7 +193,7 @@ static class SaveCommands
         "file_name", "save_time", "save_time_text", "save_duration", "screen_name",
     };
 
-    static int Diff(OriginalSave a, OriginalSave b, bool all, string[] ignore)
+    static int Diff(OriginalSave a, OriginalSave b, bool all, string[] ignore, string? objectFilter)
     {
         var skip = new HashSet<string>(ignore, StringComparer.Ordinal);
         if (!all) skip.UnionWith(Volatile);
@@ -251,6 +253,8 @@ static class SaveCommands
             if (!fa.TryGetValue(f.Key, out var old) || old != f.Value)
                 Console.WriteLine($"  flag {f.Key}: {old ?? "(none)"}  →  {f.Value}");
 
+        DiffObjects(a.World, b.World, skip, all, objectFilter);
+
         // Generic value diff by path. Script instances and game objects are
         // positional lists, so one new entry shifts every later index: those
         // two sections churn on any save and are listed last.
@@ -286,6 +290,73 @@ static class SaveCommands
         }
         static string QuestState(OriginalQuest? q) =>
             q is null ? "(none)" : q.Completed ? "completed" : q.Active ? "active" : "inactive";
+    }
+
+    /// <summary>Retired SCIDs and game objects compared by SCID, not by their
+    /// index in m_globaldb (which shifts whenever an object comes or goes).</summary>
+    static void DiffObjects(XferTree a, XferTree b, HashSet<string> skip, bool all, string? filter)
+    {
+        static string Bits(uint v) => v == uint.MaxValue ? "(none)" : $"0x{v:x}";
+        var ra = OriginalWorldFacts.RetiredScids(a);
+        var rb = OriginalWorldFacts.RetiredScids(b);
+        var oa = OriginalWorldFacts.ObjectsByScid(a);
+        var ob = OriginalWorldFacts.ObjectsByScid(b);
+        string Name(uint scid) =>
+            $"0x{scid:x8} {(ob.GetValueOrDefault(scid) ?? oa.GetValueOrDefault(scid))?.Value("m_datatemplate")?.AsText ?? "?"}";
+        foreach (var scid in rb.Except(ra).Order()) Console.WriteLine($"  retired: {Name(scid)}");
+        foreach (var scid in ra.Except(rb).Order()) Console.WriteLine($"  no longer retired: {Name(scid)}");
+        var ba = OriginalWorldFacts.ScidBits(a);
+        var bb = OriginalWorldFacts.ScidBits(b);
+        foreach (var scid in ba.Keys.Union(bb.Keys).Order())
+            if (ba.GetValueOrDefault(scid, uint.MaxValue) is var x && bb.GetValueOrDefault(scid, uint.MaxValue) is var y && x != y)
+                Console.WriteLine($"  scid bits {Name(scid)}: {Bits(x)}  →  {Bits(y)}");
+
+        bool Match(uint scid) => filter is null || Name(scid).Contains(filter, StringComparison.OrdinalIgnoreCase);
+        var gone = oa.Keys.Except(ob.Keys).Where(Match).Order().ToList();
+        var come = ob.Keys.Except(oa.Keys).Where(Match).Order().ToList();
+        var changed = new List<(uint Scid, List<string> Lines)>();
+        foreach (var scid in oa.Keys.Intersect(ob.Keys).Where(Match).Order())
+        {
+            var fa = Flatten(oa[scid], skip);
+            var fb = Flatten(ob[scid], skip);
+            var lines = new List<string>();
+            foreach (var (k, v) in fb)
+                if (!fa.TryGetValue(k, out var old)) lines.Add($"      + {k} = {v}");
+                else if (old != v) lines.Add($"      ~ {k}: {old}  →  {v}");
+            foreach (var (k, v) in fa) if (!fb.ContainsKey(k)) lines.Add($"      - {k} = {v}");
+            if (lines.Count > 0) changed.Add((scid, lines));
+        }
+        Console.WriteLine($"  objects by SCID{(filter is null ? "" : $" matching \"{filter}\"")}: " +
+                          $"{changed.Count} changed, {come.Count} came into the save, {gone.Count} left it");
+        int limit = all || filter is not null ? int.MaxValue : 25;
+        foreach (var scid in come.Take(limit)) Console.WriteLine($"    + {Name(scid)}");
+        foreach (var scid in gone.Take(limit)) Console.WriteLine($"    - {Name(scid)}");
+        foreach (var (scid, lines) in changed.Take(limit))
+        {
+            Console.WriteLine($"    ~ {Name(scid)}: {lines.Count} value(s)");
+            if (filter is not null || all) foreach (var l in lines) Console.WriteLine(l);
+        }
+        if (limit != int.MaxValue && Math.Max(changed.Count, Math.Max(come.Count, gone.Count)) > limit)
+            Console.WriteLine("    … (--all, or --object=TEXT for one object's values)");
+    }
+
+    /// <summary>Every value under <paramref name="root"/>, keyed by its path
+    /// relative to it.</summary>
+    static Dictionary<string, string> Flatten(XferNode root, HashSet<string> skip)
+    {
+        var d = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var n in root.DescendantsAndSelf())
+        {
+            var rel = n.Path.Length > root.Path.Length ? n.Path[root.Path.Length..] : "/";
+            var seen = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var v in n.Values)
+            {
+                if (skip.Contains(v.Name)) continue;
+                int k = seen[v.Name] = seen.GetValueOrDefault(v.Name) + 1;
+                d[$"{rel}  {v.Name}{(k > 1 ? "#" + k : "")}"] = v.Display();
+            }
+        }
+        return d;
     }
 
     static Dictionary<string, string> Flatten(XferTree t, HashSet<string> skip)

@@ -125,6 +125,8 @@ public class XferTreeTests
             new XferBuilder.Node("godb", new XferBuilder.Node("m_globaldb",
                 new XferBuilder.Node("0", XferBuilder.Int("m_scid", 0x01c00009)),
                 new XferBuilder.Node("1", XferBuilder.Int("m_scid", 0x01c0001d))),
+                new XferBuilder.Node("m_scidbitscoll",
+                    new XferBuilder.Node("0", XferBuilder.Int("_key", 0x01c000ab), XferBuilder.Int("m_bits", 5), XferBuilder.Bool("m_mustrpc", false))),
                 new XferBuilder.Node("m_retiredscidcoll",
                     new XferBuilder.Node("0", XferBuilder.Int("_value", 0x01c00008)),
                     new XferBuilder.Node("1", XferBuilder.Int("_value", 0x01c00427))))));
@@ -134,6 +136,8 @@ public class XferTreeTests
         Assert.Empty(OriginalWorldFacts.LoadedNodes(Sample()));
         Assert.Empty(OriginalWorldFacts.RetiredScids(Sample()));
         Assert.Null(OriginalWorldFacts.WorldName(Sample()));
+        Assert.Equal([0x01c00009u, 0x01c0001du], OriginalWorldFacts.ObjectsByScid(t).Keys.Order());
+        Assert.Equal(new Dictionary<uint, uint> { [0x01c000ab] = 5 }, OriginalWorldFacts.ScidBits(t));
     }
 
     [Fact]
