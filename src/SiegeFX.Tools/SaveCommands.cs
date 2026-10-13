@@ -12,7 +12,7 @@ static class SaveCommands
         "                                                            the world tree (world.xidx + world.xdat)\n" +
         "       siegefx save diff    <a> <b> [--all] [--ignore=n1,n2] [--object=TEXT]\n" +
         "                                                            what changed between two saves; --object shows\n" +
-        "                                                            every change on objects whose template or SCID matches\n" +
+        "                                                            only objects whose template or SCID matches, every value\n" +
         "       siegefx save locate  <World.dsmap> <0xSCID | template>  where a save object was placed in the map\n" +
         "       siegefx save retired <file> <World.dsmap> [--all]   map objects the game will not create again\n" +
         "                                                            (smashed, killed, used up)";
@@ -254,6 +254,7 @@ static class SaveCommands
                 Console.WriteLine($"  flag {f.Key}: {old ?? "(none)"}  →  {f.Value}");
 
         DiffObjects(a.World, b.World, skip, all, objectFilter);
+        if (objectFilter is not null) return 0;
 
         // Generic value diff by path. Script instances and game objects are
         // positional lists, so one new entry shifts every later index: those

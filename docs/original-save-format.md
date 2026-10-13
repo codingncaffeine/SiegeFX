@@ -280,10 +280,18 @@ fence-smashing krug `0x01c005ca` and Norick (`0x01c007c0`, who dies in the
 scripted bridge collapse) are still saved, dead, at the crypt; in the twelve
 D saves every one of the 39 monsters that died stays in every later save.
 
-`/godb/m_scidbitscoll/N` (`_key` = SCID, `m_bits`, `m_mustrpc`) records a
-few objects only: `generator_bush_01` krug-spawning bushes get `m_bits =
-0x10000` once spent, sound emitters `1`, and a handful of fixed entries
-present from the start of the game.
+`/godb/m_scidbitscoll/N` (`_key` = SCID, `m_bits`, `m_mustrpc`) keeps
+state for objects that must remember it whether or not they are loaded:
+
+- **Doors.** The farmhouse door `0x01c000ab` (`door_grs_farmhouse`) is
+  `0x5` closed and `0x9` open: saves E (closed) → E2 (opened) → E3 (closed
+  again) go `0x5 → 0x9 → 0x5`. The door object itself changes only
+  `does_block_path` (in its `m_componentcoll/3`) `1 → 0 → 1`. Opening a door
+  does not retire it.
+- `generator_bush_01` krug-spawning bushes get `0x10000` once spent; sound
+  emitters (`emt_sound_act`) `0x1`.
+- The 2019 and LoA saves carry many more, with values `0x1`, `0x3`, `0x9`,
+  `0x11`, `0x19`; their meaning per template is not worked out.
 
 ### What the auditor records
 
@@ -314,6 +322,7 @@ present from the start of the game.
 | D7 + the map | `save locate` for Edgaar's `m_scid` | the save's SCID is the map placement's SCID |
 | new game "A" → "A2" | killed the fence krug, ran to the crypt, opened sarcophagi | creatures (dead and alive), items and the opened sarcophagus are still saved at the crypt; untouched farm props are not |
 | new game "C" → "C2" | ran to the next farmhouse; the hero and a krug each smashed a barrel | the two barrels join `m_retiredscidcoll`; untouched start barrels drop out of `m_globaldb`; loaded nodes = `m_frustumcoll` |
+| new game "E" → "E2" → "E3" | opened the farmhouse door, then closed it | door's `m_scidbitscoll` bits `0x5 → 0x9 → 0x5`, `does_block_path` `1 → 0 → 1`; nothing retired |
 | 2019 DS1 save | 8-member party, 13:56 played | every companion stored like the hero; only the hero gets a portrait file |
 | LoA save, `.dsparty` | — | `is_dsx`, expansion tanks in the manifest, `m_ptransformationmanager` section; `.dsparty` has no world |
 
@@ -341,7 +350,7 @@ the folders it found), and lists them by template; `*` marks the ones still save
 flags, tips), then SCIDs newly retired, changed `m_scidbitscoll` bits, and
 game objects compared by SCID (which came, which left, which changed and
 how many values; `--object=TEXT` prints the values for templates or SCIDs
-containing TEXT), then counts value changes per world section. `skritengine` and
+containing TEXT and skips the rest), then counts value changes per world section. `skritengine` and
 `godb` are positional lists — one new object shifts every later index — so
 they always show churn and are listed last.
 
@@ -349,12 +358,13 @@ they always show churn and are listed last.
 
 Roughly in order of how much they block importing and writing saves.
 
-1. **What else retires a SCID.** Smashing and killing do; the list also
-   grows with one-time gizmos as the game runs (D2 → D3 added 26), and the
-   LoA save has 88 doors on it. Whether opening a door retires it (or only
-   breaking one), which commands and triggers retire themselves, and whether
-   picking up a map-placed item does, is not yet sorted out. Also: what
-   `m_scidbitscoll` bits other than `0x10000` (a spent spawner bush) mean.
+1. **What else retires a SCID.** Smashing and killing do; opening a door
+   does not (its state is in `m_scidbitscoll`). The list also grows with
+   one-time gizmos as the game runs (D2 → D3 added 26), and the LoA save
+   has 88 doors on it, some of them breakable cage doors: are the rest
+   broken, or opened by scripts? Whether picking up a map-placed item
+   retires it is not known either, nor what the other `m_scidbitscoll`
+   bits mean.
 2. **The write order.** 0.3–0.4 % of entries (a handful of member names) are
    written after a later sibling's subtree. A writer needs the rule for when, or
    proof that the original loads a save laid out in plain tree order (it reads

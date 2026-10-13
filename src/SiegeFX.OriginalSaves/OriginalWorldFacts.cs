@@ -123,7 +123,7 @@ public static class OriginalWorldFacts
 
     /// <summary>Per-SCID bits (<c>m_bits</c>), kept whether or not the
     /// object is loaded. Seen: <c>0x10000</c> on a spent spawner bush; the
-    /// farmhouse door <c>0x01c000ab</c> carries <c>5</c> from the start.</summary>
+    /// farmhouse door <c>0x01c000ab</c> is <c>0x5</c> closed, <c>0x9</c> open.</summary>
     public static IReadOnlyDictionary<uint, uint> ScidBits(XferTree world)
     {
         var map = new Dictionary<uint, uint>();
