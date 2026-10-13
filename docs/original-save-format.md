@@ -191,6 +191,17 @@ also the SCID SiegeFX gives the actor. Evidence: Edgaar is
 `fh_r1  actor.gas  [t:edgaar,n:0x01c00b13]` against the same install. World
 import can therefore match saved objects to SiegeFX actors by SCID.
 
+### Life and death
+
+A creature's `aspect` component (one of its `m_componentcoll` entries, whose
+`_name` is `"aspect"`) holds `life_state` (`"ls_dead_normal"` once killed),
+`life` and `max_life` as floats. Across twelve saves from the first ten
+minutes, every monster that died (39 of them) stays in `godb` as a corpse in
+every later save, including the fence-smashing krug `0x01c005ca` killed first.
+What drops out of later saves is mostly one-time gizmos (patrol commands,
+triggers, tutorial tips), smashed barrels, and living creatures in areas left
+behind.
+
 ### What the auditor records
 
 `/world/m_pgameauditor/m_entries` holds more than script flags:
@@ -244,11 +255,13 @@ they always show churn and are listed last.
 Roughly in order of how much they block importing and writing saves.
 
 1. **Areas you've left.** `godb` holds only objects near the party — between
-   122 and 412 in the first ten minutes depending on which area was loaded,
-   1 497 in a large LoA save. Where does the original remember that a monster
-   in another region is dead or a chest is open? Candidates: a compact list elsewhere in the tree,
-   or `misc`/`world_state`. Test: kill something, walk two regions away, save,
-   and search the tree for its SCID.
+   122 and 412 in the first ten minutes, 1 497 in a large LoA save — yet no
+   corpse has dropped out of a later save so far, because none of those saves
+   went far enough for a fight site to unload. Where does the original remember
+   a death or a smashed barrel once its area unloads? Test: kill something,
+   travel well away (e.g. on to Stonebridge), save, and check whether the dead
+   SCIDs (`0x01c005ca` and the others) are still in `godb` — if not, search the
+   tree for them elsewhere.
 2. **The write order.** 0.3–0.4 % of entries (a handful of member names) are
    written after a later sibling's subtree. A writer needs the rule for when, or
    proof that the original loads a save laid out in plain tree order (it reads
