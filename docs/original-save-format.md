@@ -181,6 +181,16 @@ entries in file order.
 | Game objects | `/godb/m_globaldb/N` | `m_goid`, `m_scid`, `m_datatemplate` (template name), `m_regionsource`, `m_parent`, flags (`m_isselected`, `m_isinsideinventory`, …), `m_componentcoll/…` (components: skills, conversations, enchantments, triggers…), `m_childcoll` |
 | Triggers | inside an object's `m_componentcoll/…/m_instancetriggers/m_triggers` | conditions and actions with parameters, e.g. `change_quest_state quest_edgaar_basement completed` |
 
+### Objects are keyed by the map's SCID
+
+A game object's `m_scid` is the SCID of the map placement it came from — the
+`n:` in `[t:<template>,n:<scid>]` in `regions/<region>/objects/*.gas`, which is
+also the SCID SiegeFX gives the actor. Evidence: Edgaar is
+`m_scid = 0x01c00b13`, `m_datatemplate = "edgaar"` in the save, and
+`siegefx save locate World.dsmap 0x01c00b13` and `… edgaar` both return
+`fh_r1  actor.gas  [t:edgaar,n:0x01c00b13]` against the same install. World
+import can therefore match saved objects to SiegeFX actors by SCID.
+
 ### What the auditor records
 
 `/world/m_pgameauditor/m_entries` holds more than script flags:
@@ -207,6 +217,7 @@ entries in file order.
 | D5, D6, D7 | the remaining order buttons | completes the [orders table](#field-commands-orders) |
 | D6 → D7 | got Edgaar's quest | quest `bactive` 0 → 1, `talked_with_edgaar_*` flags, kill counters |
 | autosave | — | same format, `is_auto_save = true`, `.dsasave` |
+| D7 + the map | `save locate` for Edgaar's `m_scid` | the save's SCID is the map placement's SCID |
 | 2019 DS1 save | 8-member party, 13:56 played | every companion stored like the hero; only the hero gets a portrait file |
 | LoA save, `.dsparty` | — | `is_dsx`, expansion tanks in the manifest, `m_ptransformationmanager` section; `.dsparty` has no world |
 
@@ -238,29 +249,22 @@ Roughly in order of how much they block importing and writing saves.
    in another region is dead or a chest is open? Candidates: a compact list elsewhere in the tree,
    or `misc`/`world_state`. Test: kill something, walk two regions away, save,
    and search the tree for its SCID.
-2. **Does `m_scid` equal the map's placement SCID?** Edgaar is
-   `m_scid = 0x01c00b13` in the save. Placements are written
-   `[t:<template>,n:<scid>]` in the map's `regions/*/objects/*.gas`, and
-   SiegeFX takes its SCIDs from that `n:` field. Check with
-   `siegefx save locate "<…>/Maps/World.dsmap" 0x01c00b13` and
-   `siegefx save locate "<…>/Maps/World.dsmap" edgaar`. If the SCID finds
-   Edgaar, world import can key objects by SCID.
-3. **The write order.** 0.3–0.4 % of entries (a handful of member names) are
+2. **The write order.** 0.3–0.4 % of entries (a handful of member names) are
    written after a later sibling's subtree. A writer needs the rule for when, or
    proof that the original loads a save laid out in plain tree order (it reads
    through the index, so it may not care). A writer needs either the rule, or proof that the original
    loads a save whose entries are laid out differently (it reads through the
    index, so it may not care).
-4. **What the original checks on load.** Does it verify `fubi_manifest`,
+3. **What the original checks on load.** Does it verify `fubi_manifest`,
    the tank manifest CRCs, or the tank's own CRCs? Test by changing one byte of
    a copy (e.g. gold in `party.gas`) and loading it.
-5. **Unread `party.gas` fields:** `custom_head`, `pack_only`,
+4. **Unread `party.gas` fields:** `custom_head`, `pack_only`,
    `grid_x_offset`/`grid_y_offset`, `m_clientcachedengagedobject`,
    `disposition_orders` (seen: `ad_defensive`, `ad_offensive`).
-6. **Value types without a size hint:** 4-byte values are int, float or id —
+5. **Value types without a size hint:** 4-byte values are int, float or id —
    the reader only guesses. A table of known field types would end the guessing.
-7. **Quicksave:** the extension and whether anything else differs.
-8. **Tank header word 1** (`0x00050000` in every file) and the `[fubi_manifest]`
+6. **Quicksave:** the extension and whether anything else differs.
+7. **Tank header word 1** (`0x00050000` in every file) and the `[fubi_manifest]`
    `digest`.
-9. **The to-hit-bonus formula** behind `chance_to_hit_bonus_versus_*` (it is
+8. **The to-hit-bonus formula** behind `chance_to_hit_bonus_versus_*` (it is
    not a flat amount per kill: 18 kills → 0.09, 24 → 0.15).
