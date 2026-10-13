@@ -182,6 +182,7 @@ entries in file order.
 | Triggers | inside an object's `m_componentcoll/…/m_instancetriggers/m_triggers` | conditions and actions with parameters, e.g. `change_quest_state quest_edgaar_basement completed` |
 | Loaded area | `/m_pworldterrain/siegeengine/m_frustumcoll/N` | `id` (a bit per party member), `m_frustumpos`, `m_frustumwidth`, `m_prevownednodes/N/_value` (node GUIDs) |
 | Objects made at run time | `/godb/m_localdb/N` | same layout as `m_globaldb`, `m_scid = 0xfffffffe` (debris, leaves) |
+| Placements never to create again | `/godb/m_retiredscidcoll/N` | `_value` (SCID), sorted |
 | Per-SCID bits | `/godb/m_scidbitscoll/N` | `_key` (SCID), `m_bits`, `m_mustrpc` |
 | Saved trigger state | `/world/m_ptriggersys/m_trigbitsdb/N` | `_key/m_ownscid`, `_key/m_trignum`, `_value` |
 
@@ -212,9 +213,14 @@ the 2019 save, LoA) it is non-zero exactly for the objects on a loaded node,
 apart from 19 aspect-less objects in the LoA save that sit on a loaded node
 but are in no frustum.
 
-**What is saved.** `godb/m_globaldb` holds:
+**What is saved.** `godb/m_globaldb` holds game objects, not decor: in C2,
+659 trees, bushes, cornstalks, reeds and pieces of furniture placed on
+loaded nodes are missing (across all the saves, only a lightable lamp stand
+in D7 and two chairs in the LoA save are of that kind), so the map supplies
+them every time. Of the
+rest it holds:
 
-- every object on a loaded node, untouched barrels and all;
+- every object on a loaded node, untouched barrels included;
 - off the loaded nodes (`m_frustummembership = 0`), only creatures (alive
   or dead), items, triggers and generators, and props whose state changed:
   the sarcophagus opened on the way to the crypt (A2), elevators, levers,
@@ -223,19 +229,28 @@ but are in no frustum.
 Untouched props off the loaded nodes are dropped. In new game "C" the five
 start-area barrels (`0x01c00001`, `…06`, `…0a`, `…6b6`, `…6b8`) are saved;
 in "C2", after running to the next farmhouse, all five are gone although
-nobody touched them. So outside the loaded nodes, a missing object means
-nothing.
+nobody touched them. So a missing object means "as the map placed it",
+unless its SCID is retired.
 
-**What a smash leaves.** The barrels smashed near the farmhouse in C2 are
-simply missing. They are not in `m_scidbitscoll`, not marked dead, and not
-recorded anywhere else by SCID. What does show is their debris. Objects made
-at run time have `m_scid = 0xfffffffe` and live in `/godb/m_localdb`, and C2
-holds `frag_glb_metal_01` ×4 and `frag_glb_wood_01`–`04` ×2 each: the hoops
-and staves of two barrels. The one barrel hit in D2 left 2 metal and 4 wood
-pieces. `/m_psim/m_objects` holds their physics state. So on a loaded node,
-a missing placement was smashed, picked up or used up (`siegefx save gone`
-lists them). Once that area unloads, nothing remembers the smash (see open
-question 1).
+**Retired SCIDs.** `/godb/m_retiredscidcoll/N/_value` lists the map
+placements the game must not create again, for the whole game and whether or
+not their area is loaded. Evidence:
+
+| Saves | Added to the list |
+|---|---|
+| C → C2 (the hero and a krug each smashed a barrel) | `0x01c00008`, `0x01c00427`: both `barrel_glb_fh_r1`, nothing else |
+| A → A2 | `0x01c00427` again (the krug smashes the same barrel every new game), plus 7 others along the way |
+| Fire Shot → kill | `0x01c005ca`, the krug killed, which is also still saved as a corpse |
+| kill → D2 (hit a barrel) | `0x01c006b6`, a start-area barrel |
+
+A new game already has 44 entries (Norick `0x01c007c0`, who dies in the
+opening, among them); the 2019 save has 7 007 and the LoA save 3 005. The
+list is sorted by SCID. A smashed barrel leaves nothing else by SCID; its
+debris is in `/godb/m_localdb`, which holds objects made at run time
+(`m_scid = 0xfffffffe`). C2 holds `frag_glb_metal_01` ×4 and
+`frag_glb_wood_01`–`04` ×2 each, the hoops and staves of two barrels, and
+`/m_psim/m_objects` their physics state. `siegefx save retired` lists a
+save's retired placements by template.
 
 Monsters killed are kept with `ls_dead_normal` wherever they are. In A→A2 the
 fence-smashing krug `0x01c005ca` and Norick (`0x01c007c0`, who dies in the
@@ -275,7 +290,7 @@ present from the start of the game.
 | autosave | — | same format, `is_auto_save = true`, `.dsasave` |
 | D7 + the map | `save locate` for Edgaar's `m_scid` | the save's SCID is the map placement's SCID |
 | new game "A" → "A2" | killed the fence krug, ran to the crypt, opened sarcophagi | creatures (dead and alive), items and the opened sarcophagus are still saved at the crypt; untouched farm props are not |
-| new game "C" → "C2" | ran to the next farmhouse; the hero and a krug each smashed a barrel | untouched start barrels drop out; the smashed ones are simply missing, with their debris in `m_localdb`. Loaded nodes = `m_frustumcoll` |
+| new game "C" → "C2" | ran to the next farmhouse; the hero and a krug each smashed a barrel | the two barrels join `m_retiredscidcoll`; untouched start barrels drop out of `m_globaldb`; loaded nodes = `m_frustumcoll` |
 | 2019 DS1 save | 8-member party, 13:56 played | every companion stored like the hero; only the hero gets a portrait file |
 | LoA save, `.dsparty` | — | `is_dsx`, expansion tanks in the manifest, `m_ptransformationmanager` section; `.dsparty` has no world |
 
@@ -290,13 +305,11 @@ siegefx save diff <before> <after>     # what changed, clocks and timers hidden
 siegefx save diff <a> <b> --all        # including clocks and timers
 siegefx save locate <World.dsmap> 0x01c00b13   # where a save object was placed in the map
 siegefx save locate <World.dsmap> edgaar       # placements by template name
-siegefx save gone <file> <World.dsmap>         # placements on the loaded nodes the save lacks
+siegefx save retired <file> <World.dsmap>      # placements the game will not create again
 ```
 
-`gone` lists map placements anchored to a node one of the save's frustums
-holds whose SCID is not in `m_globaldb`: smashed, picked up, drunk, or a
-one-time command that has run. Multiplayer-only placements
-(`is_single_player = false`) are counted apart.
+`retired` looks up every SCID in `m_retiredscidcoll` in the map and lists
+them by template; `*` marks the ones still saved (corpses, mostly).
 
 `diff` reports the readable facts first (info, party, orders, items, quests,
 flags, tips), then counts value changes per world section. `skritengine` and
@@ -307,12 +320,11 @@ they always show churn and are listed last.
 
 Roughly in order of how much they block importing and writing saves.
 
-1. **Do smashed things come back?** On the loaded nodes, a missing placement
-   is gone (see [areas left behind](#life-and-death-and-areas-left-behind)),
-   but nothing records a smash once its area unloads. Either the original
-   recreates the barrel from the map, or it remembers in a place not yet
-   found. Test in game: smash a barrel, walk well away (as far as C → C2),
-   come back and see whether it is there; save next to it both times.
+1. **What else retires a SCID.** Smashing and killing do; the list also
+   grows with one-time gizmos as the game runs (D2 → D3 added 26). Which
+   commands and triggers retire themselves, and whether picking up a
+   map-placed item does, is not yet sorted out. Also: what
+   `m_scidbitscoll` bits other than `0x10000` (a spent spawner bush) mean.
 2. **The write order.** 0.3–0.4 % of entries (a handful of member names) are
    written after a later sibling's subtree. A writer needs the rule for when, or
    proof that the original loads a save laid out in plain tree order (it reads

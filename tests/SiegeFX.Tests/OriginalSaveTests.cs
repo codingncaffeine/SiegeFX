@@ -113,7 +113,7 @@ public class XferTreeTests
     }
 
     [Fact]
-    public void Loaded_nodes_join_every_frustum_and_read_like_a_map_guid()
+    public void Loaded_nodes_saved_objects_and_retired_scids_come_from_their_paths()
     {
         static XferBuilder.Node Owned(string name, params uint[] guids) => new(name,
             [new XferBuilder.Node("m_prevownednodes", [.. guids.Select((g, i) =>
@@ -124,10 +124,15 @@ public class XferTreeTests
                 Owned("0", 0xb803530c, 0x5353287c), Owned("1", 0x5353287c, 0x0c5303b8)))),
             new XferBuilder.Node("godb", new XferBuilder.Node("m_globaldb",
                 new XferBuilder.Node("0", XferBuilder.Int("m_scid", 0x01c00009)),
-                new XferBuilder.Node("1", XferBuilder.Int("m_scid", 0x01c0001d))))));
+                new XferBuilder.Node("1", XferBuilder.Int("m_scid", 0x01c0001d))),
+                new XferBuilder.Node("m_retiredscidcoll",
+                    new XferBuilder.Node("0", XferBuilder.Int("_value", 0x01c00008)),
+                    new XferBuilder.Node("1", XferBuilder.Int("_value", 0x01c00427))))));
         Assert.Equal(new HashSet<uint> { 0xb803530c, 0x5353287c, 0x0c5303b8 }, OriginalWorldFacts.LoadedNodes(t));
         Assert.Equal(new HashSet<uint> { 0x01c00009, 0x01c0001d }, OriginalWorldFacts.ObjectScids(t));
+        Assert.Equal(new HashSet<uint> { 0x01c00008, 0x01c00427 }, OriginalWorldFacts.RetiredScids(t));
         Assert.Empty(OriginalWorldFacts.LoadedNodes(Sample()));
+        Assert.Empty(OriginalWorldFacts.RetiredScids(Sample()));
     }
 
     [Fact]
@@ -373,23 +378,24 @@ public class MapPlacementsTests
     }
 
     [Fact]
-    public void Placements_carry_their_node_and_whether_single_player_gets_them()
+    public void Placements_are_found_by_a_set_of_scids_and_carry_their_node()
     {
         var path = Path.Combine(Path.GetTempPath(), $"siegefx-{Guid.NewGuid():N}.dsmap");
         var w = new TankWriter();
         w.Add("/world/maps/map_world/regions/fh_r1/objects/non_interactive.gas", Encoding.ASCII.GetBytes(
             "[t:barrel_glb_fh_r1,n:0x01C00009] { [placement] { position = 1.5,0,-2.25,0xb803530c; } }\n" +
             "[t:barrel_glb_fh_r1,n:0x01C0000A] { [placement] { position = 0,0,0,0x5353287c; } }\n" +
-            "[t:crate_glb_fh_r1,n:0x01C0001D] { [common] { is_single_player = false; } [placement] { position = 0,0,0,0xB803530C; } }\n" +
+            "[t:crate_glb_fh_r1,n:0x01C0001D] { [placement] { position = 0,0,0,0xB803530C; } }\n" +
             "[t:trigger_generic,n:0x01C00480] { }"));
         try
         {
             w.Write(path, DateTime.UtcNow);
             using var tank = TankFile.Open(path);
-            var r = MapPlacements.OnNodes(new TankReader(tank), new HashSet<uint> { 0xb803530c });
+            var r = MapPlacements.WithScids(new TankReader(tank), new HashSet<uint> { 0x01C00009, 0x01C0001D, 0x01C00480, 0x02000001 });
             Assert.Equal([
                 new MapPlacement("fh_r1", "non_interactive.gas", "barrel_glb_fh_r1", 0x01C00009, 0xb803530c),
-                new MapPlacement("fh_r1", "non_interactive.gas", "crate_glb_fh_r1", 0x01C0001D, 0xb803530c, MultiplayerOnly: true),
+                new MapPlacement("fh_r1", "non_interactive.gas", "crate_glb_fh_r1", 0x01C0001D, 0xb803530c),
+                new MapPlacement("fh_r1", "non_interactive.gas", "trigger_generic", 0x01C00480),
             ], r.Matches);
         }
         finally { File.Delete(path); }

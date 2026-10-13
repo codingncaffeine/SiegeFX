@@ -65,8 +65,9 @@ public static class OriginalWorldFacts
     public static bool? TutorialTips(XferTree world) =>
         world.Find(UiGamePath)?.Value("tutorial_tips")?.AsBool;
 
-    /// <summary>Game objects saved in the world: everything on the loaded
-    /// nodes, plus creatures, items, triggers and changed props from elsewhere.</summary>
+    /// <summary>Game objects saved in the world. Decor (trees, bushes,
+    /// furniture) is never saved, and untouched props only while their area
+    /// is loaded; the map supplies the rest.</summary>
     public static int ObjectCount(XferTree world) =>
         world.Find(ObjectsPath)?.Children.Count() ?? 0;
 
@@ -78,6 +79,19 @@ public static class OriginalWorldFacts
         var set = new HashSet<uint>();
         foreach (var o in world.Find(ObjectsPath)?.Children ?? [])
             if (o.Value("m_scid")?.AsUInt32 is uint scid) set.Add(scid);
+        return set;
+    }
+
+    public const string RetiredPath = "/godb/m_retiredscidcoll";
+
+    /// <summary>Map placements the game must not create again: smashed
+    /// barrels, killed monsters (whose corpses may still be saved), used-up
+    /// gizmos. Kept for the whole game, whether or not the area is loaded.</summary>
+    public static IReadOnlySet<uint> RetiredScids(XferTree world)
+    {
+        var set = new HashSet<uint>();
+        foreach (var e in world.Find(RetiredPath)?.Children ?? [])
+            if (e.Value("_value")?.AsUInt32 is uint scid) set.Add(scid);
         return set;
     }
 
