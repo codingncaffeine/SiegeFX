@@ -82,6 +82,13 @@ public static class OriginalWorldFacts
         return set;
     }
 
+    public const string MapPath = "/m_pworldterrain/m_pmap";
+
+    /// <summary>The difficulty world the game runs in (<c>m_mpworldname</c>:
+    /// <c>"normal"</c> in DS1 saves, <c>"regular"</c> in the LoA save).</summary>
+    public static string? WorldName(XferTree world) =>
+        world.Find(MapPath)?.Value("m_mpworldname")?.AsText;
+
     public const string RetiredPath = "/godb/m_retiredscidcoll";
 
     /// <summary>Map placements the game must not create again: smashed

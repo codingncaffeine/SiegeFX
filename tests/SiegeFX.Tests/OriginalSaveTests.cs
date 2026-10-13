@@ -133,6 +133,7 @@ public class XferTreeTests
         Assert.Equal(new HashSet<uint> { 0x01c00008, 0x01c00427 }, OriginalWorldFacts.RetiredScids(t));
         Assert.Empty(OriginalWorldFacts.LoadedNodes(Sample()));
         Assert.Empty(OriginalWorldFacts.RetiredScids(Sample()));
+        Assert.Null(OriginalWorldFacts.WorldName(Sample()));
     }
 
     [Fact]
@@ -352,6 +353,13 @@ public class OriginalSaveTests
 
 public class MapPlacementsTests
 {
+    [Theory]
+    [InlineData("actor.gas", null)]
+    [InlineData("regular/actor.gas", "regular")]
+    [InlineData("veteran/sub/actor.gas", "veteran")]
+    public void A_placement_names_its_world_folder(string file, string? world) =>
+        Assert.Equal(world, new MapPlacement("r", file, "t", 1).World);
+
     [Fact]
     public void Placements_are_found_by_scid_or_template_in_any_region()
     {
@@ -398,6 +406,7 @@ public class MapPlacementsTests
                 new MapPlacement("fh_r1", "non_interactive.gas", "crate_glb_fh_r1", 0x01C0001D, 0xb803530c),
                 new MapPlacement("fh_r1", "non_interactive.gas", "trigger_generic", 0x01C00480),
             ], r.Matches);
+            Assert.All(r.Matches, m => Assert.Null(m.World));
             // The same SCIDs mean other objects in another map.
             Assert.Equal(0, MapPlacements.WithScids(new TankReader(tank), "map_expansion", scids).FilesScanned);
         }

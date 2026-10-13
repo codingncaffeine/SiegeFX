@@ -7,7 +7,13 @@ namespace SiegeFX.OriginalSaves;
 /// <summary>A placement in a map: which region and objects file holds it,
 /// its <c>[t:template,n:scid]</c> header, and the terrain node its
 /// <c>[placement] position</c> is anchored to.</summary>
-public sealed record MapPlacement(string Region, string File, string Template, uint Scid, uint? Node = null);
+public sealed record MapPlacement(string Region, string File, string Template, uint Scid, uint? Node = null)
+{
+    /// <summary>The folder between <c>objects/</c> and the file, when there
+    /// is one. LoA's map places each object once per difficulty world, under
+    /// a folder per world, all with the same SCID; DS1's map has none.</summary>
+    public string? World => File.IndexOf('/') is int i and > 0 ? File[..i] : null;
+}
 
 /// <summary>Finds placements anywhere in a map tank (every
 /// <c>regions/*/objects/*.gas</c>), to match objects in an original save

@@ -251,7 +251,20 @@ are placements in `World.dsmap`: 36 `cmd_camera_command`, 4
 smashed barrels. The 2019 save has 7 007 entries and the LoA save 3 005.
 SCIDs are unique only within one map: LoA's `map_expansion`
 (`Expansion.dsmap`) reuses DS1's numbers, so a save's retired SCIDs must be
-looked up in the map its `info.gas` names. The
+looked up in the map its `info.gas` names. Against `Expansion.dsmap`, the LoA
+save's 3 005 retired SCIDs matched 9 015 placements, about three each, with
+templates repeated as `2W_…` and `3W_…`. That fits a copy of every placement
+per difficulty world (regular, veteran, elite) sharing one SCID, presumably
+in a folder per world under `objects/`. The save names its world in
+`/m_pworldterrain/m_pmap/m_mpworldname`: `"normal"` in every DS1 save,
+`"regular"` in the LoA save. That LoA list is mostly monsters killed, crates
+smashed, doors and triggers.
+
+Which tanks a save was played with is in its `[tank_manifest]`. The LoA save
+lists `Expansion.dsmap` as its only map, and its own `Logic.dsres` and
+`Objects.dsres` (CRCs differ from DS1's); `Voices`, `Sound` and `Terrain`
+have the same CRCs as DS1's. In a LoA install, `Expansion.dsmap`,
+`Expansion.dsres` and `ExpVoices.dsres` are in `DSLOA/`, not `Maps/`. The
 list is sorted by SCID. A smashed barrel leaves nothing else by SCID; its
 debris is in `/godb/m_localdb`, which holds objects made at run time
 (`m_scid = 0xfffffffe`). C2 holds `frag_glb_metal_01` ×4 and
@@ -316,8 +329,9 @@ siegefx save retired <file> <World.dsmap>      # placements the game will not cr
 ```
 
 `retired` looks up every SCID in `m_retiredscidcoll` in the save's own map
-(it refuses a map tank without that map's regions and names the right file)
-and lists them by template; `*` marks the ones still saved (corpses, mostly).
+(it refuses a map tank without that map's regions and names the right file),
+keeps only the save's world when the map has a folder per world (and prints
+the folders it found), and lists them by template; `*` marks the ones still saved (corpses, mostly).
 
 `diff` reports the readable facts first (info, party, orders, items, quests,
 flags, tips), then counts value changes per world section. `skritengine` and

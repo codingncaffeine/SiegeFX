@@ -112,10 +112,25 @@ static class SaveCommands
                                     (mapTank is null ? "" : $"; pass {mapTank}"));
             return 3;
         }
-        Console.WriteLine($"{mapName}: {retired.Count} retired SCID(s), {r.Matches.Count} found in the map" +
-                          $"{(r.Matches.Count < retired.Count ? $" ({retired.Count - r.Matches.Count} not in this map)" : "")}; " +
+        // A map with a folder per difficulty world places each object once
+        // per world under one SCID; keep the save's world.
+        var matches = r.Matches;
+        var worlds = matches.Select(p => p.World).OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase).Order().ToList();
+        var worldName = OriginalWorldFacts.WorldName(s.World);
+        if (worlds.Count > 0)
+        {
+            bool use = worldName is not null && worlds.Contains(worldName, StringComparer.OrdinalIgnoreCase);
+            Console.WriteLine($"world folders: {string.Join(", ", worlds)}; the save's world is {worldName ?? "?"}" +
+                              (use ? $", so only {worldName}/ (and placements outside any world folder) are counted"
+                                   : ", which matches none, so every folder is counted"));
+            if (use) matches = matches.Where(p => p.World is null || p.World.Equals(worldName, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+        int found = matches.Select(p => p.Scid).Distinct().Count();
+        Console.WriteLine($"{mapName}: {retired.Count} retired SCID(s), {found} found in the map" +
+                          $"{(found < retired.Count ? $" ({retired.Count - found} not in this map)" : "")}" +
+                          $"{(matches.Count > found ? $", {matches.Count} placements (some SCIDs placed more than once)" : "")}; " +
                           "* = still saved (a corpse, or an object kept with its new state)");
-        foreach (var g in r.Matches.GroupBy(p => p.Template).OrderBy(g => g.Key, StringComparer.Ordinal))
+        foreach (var g in matches.GroupBy(p => p.Template).OrderBy(g => g.Key, StringComparer.Ordinal))
         {
             var list = g.ToList();
             var shown = all ? list : list.Take(6).ToList();
