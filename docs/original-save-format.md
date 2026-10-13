@@ -236,10 +236,14 @@ Roughly in order of how much they block importing and writing saves.
    in another region is dead or a chest is open? Candidates: a compact list elsewhere in the tree,
    or `misc`/`world_state`. Test: kill something, walk two regions away, save,
    and search the tree for its SCID.
-2. **Does `m_scid` equal SiegeFX's actor SCID?** Edgaar is
-   `m_scid = 0x01c00b13`. Check with
-   `siegefx region actors "<…>/Maps/World.dsmap" /world/maps/map_world/regions/fh_r1 | grep -i edgaar`.
-   If they match, world import can key objects by SCID.
+2. **Does `m_scid` equal the map's placement SCID?** Edgaar is
+   `m_scid = 0x01c00b13` in the save. Placements are written
+   `[t:<template>,n:<scid>]` in `<region>/objects/actor.gas`, and SiegeFX takes
+   its SCIDs from that `n:` field, so extract the file and look:
+   `siegefx tank extract "<…>/Maps/World.dsmap" /world/maps/map_world/regions/fh_r1/objects/actor.gas actor.gas`
+   then `grep -i edgaar actor.gas`. (`siegefx region actors` only prints a
+   tally and the first eight placements.) If they match, world import can key
+   objects by SCID.
 3. **The write order.** 0.3–0.4 % of entries (a handful of member names) are
    written after a later sibling's subtree. A writer needs the rule for when, or
    proof that the original loads a save laid out in plain tree order (it reads
