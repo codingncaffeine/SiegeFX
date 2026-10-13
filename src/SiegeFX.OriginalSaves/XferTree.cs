@@ -271,7 +271,9 @@ public sealed class XferValue : XferEntry
         for (int i = 0; i < n; i++)
         {
             r[i] = BinaryPrimitives.ReadSingleLittleEndian(Raw.Span[(i * 4)..]);
-            if (!float.IsFinite(r[i]) || MathF.Abs(r[i]) > 1e6f || r[i] != 0 && MathF.Abs(r[i]) < 1e-6f) return null;
+            // A small int read as a float is subnormal; a real coordinate
+            // near zero (-2e-8 after a physics settle) is not.
+            if (!float.IsFinite(r[i]) || MathF.Abs(r[i]) > 1e6f || float.IsSubnormal(r[i])) return null;
         }
         return r;
     }

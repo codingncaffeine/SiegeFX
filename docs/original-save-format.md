@@ -275,6 +275,17 @@ debris is in `/godb/m_localdb`, which holds objects made at run time
 `/m_psim/m_objects` their physics state. `siegefx save retired` lists a
 save's retired placements by template.
 
+**Picked-up items stay saved under their map SCID.** Picking up the Fire
+Shot scroll (`spell_fireshot`, `0x01c00274`, saves "no tips" → "Fire Shot")
+retires nothing of its own. The same object stays in `m_globaldb` with
+`m_parent` = the hero's goid (`0x09000087`), `m_isinsideinventory` 0 → 1,
+`m_isallclients` 0 → 1, `m_bidentified` 0 → 1, `is_visible` 1 → 0, and its
+position now the hero's. Its one-shot pickup trigger (`receive_world_message
+we_picked_up` → `send_world_message we_trigger_deactivate` to `0x01c00afa`)
+is removed from the object. `party.gas` lists the item too. One
+`trigger_generic` (`0x01c007c3`) was retired in the same few seconds; whether
+the pickup caused it is not known.
+
 Monsters killed are kept with `ls_dead_normal` wherever they are. In A→A2 the
 fence-smashing krug `0x01c005ca` and Norick (`0x01c007c0`, who dies in the
 scripted bridge collapse) are still saved, dead, at the crypt; in the twelve
@@ -312,7 +323,7 @@ state for objects that must remember it whether or not they are loaded:
 |---|---|---|
 | base → moved | walked a few steps | `info.gas` `teleport` |
 | moved → no tips | turned tips off | `/uigame` `tutorial_tips` 1 → 0 |
-| no tips → picked up Fire Shot | picked up a spell | `party.gas` inventory `spell_fireshot` with grid slot |
+| no tips → picked up Fire Shot | picked up a spell | `party.gas` inventory `spell_fireshot` with grid slot; the map object stays saved with `m_parent` = the hero, not retired |
 | Fire Shot → kill | killed a krug scavenger | `party.gas` skills (+4 melee XP, 64/27/9 split); the corpse stays in `godb` |
 | kill → D2 | second kill, bow, barrel, 6 gold | gold 30 → 36 twice; `spell_zap` and a club dropped; bow in `il_active_ranged_weapon`; +4 XP again |
 | D3 → D4 | Defend → Hold Fire | `combat_orders` `co_limited` → `co_hold` |
@@ -359,12 +370,12 @@ they always show churn and are listed last.
 Roughly in order of how much they block importing and writing saves.
 
 1. **What else retires a SCID.** Smashing and killing do; opening a door
-   does not (its state is in `m_scidbitscoll`). The list also grows with
-   one-time gizmos as the game runs (D2 → D3 added 26), and the LoA save
-   has 88 doors on it, some of them breakable cage doors: are the rest
-   broken, or opened by scripts? Whether picking up a map-placed item
-   retires it is not known either, nor what the other `m_scidbitscoll`
-   bits mean.
+   (its state is in `m_scidbitscoll`) and picking up an item (it stays saved,
+   parented to whoever carries it) do not. The list also grows with one-time
+   gizmos as the game runs (D2 → D3 added 26), and the LoA save has 88 doors
+   on it, some of them breakable cage doors: are the rest broken, or opened
+   by scripts? What happens to a picked-up item that is then drunk, sold or
+   dropped is not known, nor what the other `m_scidbitscoll` bits mean.
 2. **The write order.** 0.3–0.4 % of entries (a handful of member names) are
    written after a later sibling's subtree. A writer needs the rule for when, or
    proof that the original loads a save laid out in plain tree order (it reads

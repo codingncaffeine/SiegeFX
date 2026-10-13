@@ -153,6 +153,21 @@ public class XferTreeTests
     }
 
     [Fact]
+    public void A_position_near_zero_still_reads_as_one_but_ints_do_not()
+    {
+        var b = new byte[16];
+        BinaryPrimitives.WriteSingleLittleEndian(b, -7.82f);
+        BinaryPrimitives.WriteSingleLittleEndian(b.AsSpan(4), -2.2e-8f);
+        BinaryPrimitives.WriteSingleLittleEndian(b.AsSpan(8), -12f);
+        BinaryPrimitives.WriteUInt32BigEndian(b.AsSpan(12), 0xd037f9ef);
+        var root = Load(new XferBuilder.Node("", new XferBuilder.Val("position", b), new XferBuilder.Val("ids", Ints()))).Root;
+        Assert.Equal("[16] ~pos (-7.82, -0, -12) node 0xd037f9ef", root.Value("position")!.Display());
+        Assert.StartsWith("[12] 05000000", root.Value("ids")!.Display());
+
+        static byte[] Ints() { var ints = new byte[12]; BinaryPrimitives.WriteInt32LittleEndian(ints, 5); return ints; }
+    }
+
+    [Fact]
     public void A_small_number_is_not_read_as_wide_text()
     {
         var v = Load(new XferBuilder.Node("", XferBuilder.Int("m_magic", 0x08d9))).Root.Value("m_magic")!;
