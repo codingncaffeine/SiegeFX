@@ -395,6 +395,13 @@ public sealed class PlayerSnapshot
     /// melee default).</summary>
     public int ActiveSlot { get; set; } = -1;
 
+    /// <summary>SC-FC-HERO — the hero's standing field-command orders, in the
+    /// same 0/1/2 encoding as <see cref="CompanionSnapshot.MoveOrder"/>.
+    /// -1 = save predates the field; the load path keeps the DS1 defaults.</summary>
+    public int MoveOrder { get; set; } = -1;
+    public int AtkOrder  { get; set; } = -1;
+    public int TgtOrder  { get; set; } = -1;
+
     /// <summary>Auto-grown attributes from level-ups. Re-applied to the
     /// player's stats block on load so MaxLife/MaxMana stay consistent.</summary>
     public float Strength     { get; set; }
