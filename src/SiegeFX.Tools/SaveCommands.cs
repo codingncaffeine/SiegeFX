@@ -10,7 +10,8 @@ static class SaveCommands
         "usage: siegefx save inspect <file> [--all]                  summary: save info, party, quests, flags\n" +
         "       siegefx save tree    <file> [--path=/world] [--depth=N] [--find=TEXT]\n" +
         "                                                            the world tree (world.xidx + world.xdat)\n" +
-        "       siegefx save diff    <a> <b> [--all] [--ignore=n1,n2] what changed between two saves";
+        "       siegefx save diff    <a> <b> [--all] [--ignore=n1,n2] what changed between two saves\n" +
+        "       siegefx save locate  <World.dsmap> <0xSCID | template>  where a save object was placed in the map";
 
     public static int Dispatch(string[] a)
     {
@@ -24,6 +25,7 @@ static class SaveCommands
             "inspect" when files.Count == 1 => Inspect(OriginalSave.Open(files[0]), Flag("all")),
             "tree" when files.Count == 1 => Tree(OriginalSave.Open(files[0]), Opt("path") ?? "/",
                                                  int.TryParse(Opt("depth"), out var d) ? d : int.MaxValue, Opt("find")),
+            "locate" when files.Count == 2 => Locate(files[0], files[1]),
             "diff" when files.Count == 2 => Diff(OriginalSave.Open(files[0]), OriginalSave.Open(files[1]), Flag("all"),
                                                  (Opt("ignore") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)),
             _ => Fail(),
@@ -73,6 +75,19 @@ static class SaveCommands
         foreach (var f in all ? flags : flags.Take(20)) Console.WriteLine($"    {f.Key} = {f.Value}");
         if (!all && flags.Count > 20) Console.WriteLine("    … (--all for the rest)");
         return 0;
+    }
+
+    // ── locate ─────────────────────────────────────────────────────────────
+    static int Locate(string mapPath, string query)
+    {
+        using var tank = SiegeFX.Core.Tank.TankFile.Open(mapPath);
+        var r = MapPlacements.Find(new SiegeFX.Core.Tank.TankReader(tank), query);
+        foreach (var m in r.Matches)
+            Console.WriteLine($"{m.Region,-24} {m.File,-22} [t:{m.Template},n:0x{m.Scid:x8}]");
+        Console.WriteLine($"{r.Matches.Count} match(es) in {r.FilesScanned} object file(s) across {r.RegionsScanned} region(s)" +
+                          (r.Errors.Count > 0 ? $"; {r.Errors.Count} file(s) unreadable:" : ""));
+        foreach (var e in r.Errors.Take(5)) Console.WriteLine($"  {e}");
+        return r.FilesScanned == 0 ? 3 : 0;
     }
 
     // ── tree ───────────────────────────────────────────────────────────────

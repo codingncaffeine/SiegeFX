@@ -219,6 +219,8 @@ siegefx save tree <file> --path=/world/m_pvictory --depth=2
 siegefx save tree <file> --find=edgaar # every node and value mentioning a name
 siegefx save diff <before> <after>     # what changed, clocks and timers hidden
 siegefx save diff <a> <b> --all        # including clocks and timers
+siegefx save locate <World.dsmap> 0x01c00b13   # where a save object was placed in the map
+siegefx save locate <World.dsmap> edgaar       # placements by template name
 ```
 
 `diff` reports the readable facts first (info, party, orders, items, quests,
@@ -238,12 +240,11 @@ Roughly in order of how much they block importing and writing saves.
    and search the tree for its SCID.
 2. **Does `m_scid` equal the map's placement SCID?** Edgaar is
    `m_scid = 0x01c00b13` in the save. Placements are written
-   `[t:<template>,n:<scid>]` in `<region>/objects/actor.gas`, and SiegeFX takes
-   its SCIDs from that `n:` field, so extract the file and look:
-   `siegefx tank extract "<…>/Maps/World.dsmap" /world/maps/map_world/regions/fh_r1/objects/actor.gas actor.gas`
-   then `grep -i edgaar actor.gas`. (`siegefx region actors` only prints a
-   tally and the first eight placements.) If they match, world import can key
-   objects by SCID.
+   `[t:<template>,n:<scid>]` in the map's `regions/*/objects/*.gas`, and
+   SiegeFX takes its SCIDs from that `n:` field. Check with
+   `siegefx save locate "<…>/Maps/World.dsmap" 0x01c00b13` and
+   `siegefx save locate "<…>/Maps/World.dsmap" edgaar`. If the SCID finds
+   Edgaar, world import can key objects by SCID.
 3. **The write order.** 0.3–0.4 % of entries (a handful of member names) are
    written after a later sibling's subtree. A writer needs the rule for when, or
    proof that the original loads a save laid out in plain tree order (it reads

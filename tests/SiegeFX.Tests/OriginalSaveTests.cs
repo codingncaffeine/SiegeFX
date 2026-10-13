@@ -326,3 +326,31 @@ public class OriginalSaveTests
         finally { File.Delete(path); }
     }
 }
+
+public class MapPlacementsTests
+{
+    [Fact]
+    public void Placements_are_found_by_scid_or_template_in_any_region()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"siegefx-{Guid.NewGuid():N}.dsmap");
+        var w = new TankWriter();
+        w.Add("/world/maps/map_world/regions/fh_r1/objects/actor.gas",
+              Encoding.ASCII.GetBytes("[t:edgaar,n:0x01C00B13] { }\n[t:krug_scout,n:0x01C00002] { }"));
+        w.Add("/world/maps/map_world/regions/fh_r2/objects/non_interactive.gas",
+              Encoding.ASCII.GetBytes("[t:edgaar_hut,n:0x01D00001] { }"));
+        w.Add("/world/maps/map_world/regions/fh_r2/terrain_nodes/nodes.gas", Encoding.ASCII.GetBytes("[t:x,n:0x01C00B13] { }"));
+        try
+        {
+            w.Write(path, DateTime.UtcNow);
+            using var tank = TankFile.Open(path);
+            var map = new TankReader(tank);
+
+            var byScid = MapPlacements.Find(map, "0x01c00b13");
+            Assert.Equal(new MapPlacement("fh_r1", "actor.gas", "edgaar", 0x01C00B13), Assert.Single(byScid.Matches));
+            Assert.Equal((2, 2), (byScid.FilesScanned, byScid.RegionsScanned));
+
+            Assert.Equal(["edgaar", "edgaar_hut"], MapPlacements.Find(map, "edgaar").Matches.Select(m => m.Template));
+        }
+        finally { File.Delete(path); }
+    }
+}
