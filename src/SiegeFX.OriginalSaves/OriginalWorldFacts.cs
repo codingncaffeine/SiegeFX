@@ -65,8 +65,35 @@ public static class OriginalWorldFacts
     public static bool? TutorialTips(XferTree world) =>
         world.Find(UiGamePath)?.Value("tutorial_tips")?.AsBool;
 
-    /// <summary>Game objects saved in the world (only the area around the
-    /// party — see the open questions in the format doc).</summary>
+    /// <summary>Game objects saved in the world: everything on the loaded
+    /// nodes, plus creatures, items, triggers and changed props from elsewhere.</summary>
     public static int ObjectCount(XferTree world) =>
         world.Find(ObjectsPath)?.Children.Count() ?? 0;
+
+    /// <summary>The map SCIDs of the saved game objects (<c>m_scid</c>;
+    /// objects made at run time carry <c>0xfffffffe</c> and live in
+    /// <c>/godb/m_localdb</c> instead).</summary>
+    public static IReadOnlySet<uint> ObjectScids(XferTree world)
+    {
+        var set = new HashSet<uint>();
+        foreach (var o in world.Find(ObjectsPath)?.Children ?? [])
+            if (o.Value("m_scid")?.AsUInt32 is uint scid) set.Add(scid);
+        return set;
+    }
+
+    public const string FrustumsPath = "/m_pworldterrain/siegeengine/m_frustumcoll";
+
+    /// <summary>The terrain nodes loaded when the game saved: the union of
+    /// every frustum's <c>m_prevownednodes</c>. A node GUID is stored in the
+    /// byte order its text form reads (as in a position's node), so it is
+    /// read big-endian to compare with the map's <c>0x…</c> GUIDs.</summary>
+    public static IReadOnlySet<uint> LoadedNodes(XferTree world)
+    {
+        var set = new HashSet<uint>();
+        foreach (var frustum in world.Find(FrustumsPath)?.Children ?? [])
+            foreach (var n in frustum.Child("m_prevownednodes")?.Children ?? [])
+                if (n.Value("_value") is { Raw.Length: 4 } v)
+                    set.Add(System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(v.Raw.Span));
+        return set;
+    }
 }

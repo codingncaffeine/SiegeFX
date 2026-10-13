@@ -5,8 +5,11 @@ using SiegeFX.Core.Tank;
 namespace SiegeFX.OriginalSaves;
 
 /// <summary>A placement in a map: which region and objects file holds it,
-/// and its <c>[t:template,n:scid]</c> header.</summary>
-public sealed record MapPlacement(string Region, string File, string Template, uint Scid);
+/// its <c>[t:template,n:scid]</c> header, the terrain node its
+/// <c>[placement] position</c> is anchored to, and whether
+/// <c>[common] is_single_player = false</c> keeps it out of single player.</summary>
+public sealed record MapPlacement(string Region, string File, string Template, uint Scid,
+                                  uint? Node = null, bool MultiplayerOnly = false);
 
 /// <summary>Finds placements anywhere in a map tank (every
 /// <c>regions/*/objects/*.gas</c>), to match objects in an original save
@@ -20,7 +23,16 @@ public static class MapPlacements
     /// (<c>0x01c00b13</c>), otherwise a template name containing it.</summary>
     public static SearchResult Find(TankReader map, string query)
     {
-        uint? scid = TryParseScid(query);
+        uint? scid = TryParseHex(query);
+        return Where(map, p => scid is not null ? p.Scid == scid : p.Template.Contains(query, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>Placements anchored to one of <paramref name="nodes"/>.</summary>
+    public static SearchResult OnNodes(TankReader map, IReadOnlySet<uint> nodes) =>
+        Where(map, p => p.Node is uint n && nodes.Contains(n));
+
+    static SearchResult Where(TankReader map, Func<MapPlacement, bool> match)
+    {
         var matches = new List<MapPlacement>();
         var errors = new List<string>();
         var regions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -39,16 +51,37 @@ public static class MapPlacements
             foreach (var node in doc.Roots)
             {
                 if (!TemplateStore.TryParseHeader(node.Header, out var tpl, out var n)) continue;
-                var id = TryParseScid(n);
-                if (id is null) continue;
-                bool hit = scid is not null ? id == scid : tpl.Contains(query, StringComparison.OrdinalIgnoreCase);
-                if (hit) matches.Add(new MapPlacement(region, path[(o + "/objects/".Length)..], tpl, id.Value));
+                if (TryParseHex(n) is not uint id) continue;
+                var p = new MapPlacement(region, path[(o + "/objects/".Length)..], tpl, id, PlacementNode(node), MultiplayerOnly(node));
+                if (match(p)) matches.Add(p);
             }
         }
         return new SearchResult(matches, files, regions.Count, errors);
     }
 
-    static uint? TryParseScid(string s)
+    /// <summary>The node GUID, the fourth field of <c>position = x,y,z,0xGUID</c>.</summary>
+    static uint? PlacementNode(GasNode node)
+    {
+        var position = Attribute(Section(node, "placement"), "position");
+        if (position is null) return null;
+        var parts = position.Split(',');
+        return parts.Length == 4 ? TryParseHex(parts[3]) : null;
+    }
+
+    static bool MultiplayerOnly(GasNode node) =>
+        Attribute(Section(node, "common"), "is_single_player")?.Trim().Equals("false", StringComparison.OrdinalIgnoreCase) ?? false;
+
+    static GasNode? Section(GasNode node, string header) =>
+        node.Children.FirstOrDefault(c => string.Equals(c.Header, header, StringComparison.OrdinalIgnoreCase));
+
+    static string? Attribute(GasNode? node, string name)
+    {
+        foreach (var a in node?.Attributes ?? [])
+            if (string.Equals(a.Name, name, StringComparison.OrdinalIgnoreCase)) return a.Value;
+        return null;
+    }
+
+    static uint? TryParseHex(string s)
     {
         s = s.Trim();
         if (!s.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) return null;

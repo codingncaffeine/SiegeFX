@@ -180,6 +180,10 @@ entries in file order.
 | Camera | `/m_pworldterrain/siegeengine/m_pcamera` | `m_cameraposition`, `m_targetposition` (positions), `m_upvector`, `m_fieldofview` |
 | Game objects | `/godb/m_globaldb/N` | `m_goid`, `m_scid`, `m_datatemplate` (template name), `m_regionsource`, `m_parent`, flags (`m_isselected`, `m_isinsideinventory`, …), `m_componentcoll/…` (components: skills, conversations, enchantments, triggers…), `m_childcoll` |
 | Triggers | inside an object's `m_componentcoll/…/m_instancetriggers/m_triggers` | conditions and actions with parameters, e.g. `change_quest_state quest_edgaar_basement completed` |
+| Loaded area | `/m_pworldterrain/siegeengine/m_frustumcoll/N` | `id` (a bit per party member), `m_frustumpos`, `m_frustumwidth`, `m_prevownednodes/N/_value` (node GUIDs) |
+| Objects made at run time | `/godb/m_localdb/N` | same layout as `m_globaldb`, `m_scid = 0xfffffffe` (debris, leaves) |
+| Per-SCID bits | `/godb/m_scidbitscoll/N` | `_key` (SCID), `m_bits`, `m_mustrpc` |
+| Saved trigger state | `/world/m_ptriggersys/m_trigbitsdb/N` | `_key/m_ownscid`, `_key/m_trignum`, `_value` |
 
 ### Objects are keyed by the map's SCID
 
@@ -197,21 +201,51 @@ A creature's `aspect` component (one of its `m_componentcoll` entries, whose
 `_name` is `"aspect"`) holds `life_state` (`"ls_dead_normal"` once killed),
 `life` and `max_life` as floats.
 
-**`godb/m_globaldb` keeps the objects of every area visited, not only the
-nearby ones.** In a new game (save "A", 0:02:47, region `fh_r1`) the
-fence-smashing krug `0x01c005ca` and Norick (`0x01c007c0`, who dies in the
-scripted bridge collapse) are dead. After running to the crypt (save "A2",
-0:08:16, region `cr_r1`, 1 113 objects) both are still there and still dead,
-along with 198 farm objects (prefix `0x01c…`): chickens, butterflies, living
-krugs, the farm tools, the narrator, and 161 farm objects passed on the way
-that were not in "A". In twelve earlier saves, every one of the 39 monsters
-that died stays in every later save.
+**What is loaded.** Each party member has a frustum, the area loaded around
+them: `/m_pworldterrain/siegeengine/m_frustumcoll/N` with `id` (one bit
+each: 1, 2, 4 … 128 in an 8-member party), `m_frustumwidth` 45 (metres) and
+`m_prevownednodes`, the terrain nodes it holds. A node GUID there is stored
+in the same byte order as a position's node, so read it big-endian to get
+the `0x…` the map and `info.gas` print. An object's `m_frustummembership` is
+the OR of the frustums it is in. In all six saves checked (C, C2, A2, D7,
+the 2019 save, LoA) it is non-zero exactly for the objects on a loaded node,
+apart from 19 aspect-less objects in the LoA save that sit on a loaded node
+but are in no frustum.
 
-What drops out of later saves is what gets used up or destroyed: one-time
-gizmos (patrol and camera commands, triggers, tutorial tips, use points,
-spawn points), barrels and crates (likely the smashed ones), a door, and a few
-monsters that were last seen alive (likely killed between saves; whether
-some corpses expire is not known).
+**What is saved.** `godb/m_globaldb` holds:
+
+- every object on a loaded node, untouched barrels and all;
+- off the loaded nodes (`m_frustummembership = 0`), only creatures (alive
+  or dead), items, triggers and generators, and props whose state changed:
+  the sarcophagus opened on the way to the crypt (A2), elevators, levers,
+  doors and chests (the LoA save).
+
+Untouched props off the loaded nodes are dropped. In new game "C" the five
+start-area barrels (`0x01c00001`, `…06`, `…0a`, `…6b6`, `…6b8`) are saved;
+in "C2", after running to the next farmhouse, all five are gone although
+nobody touched them. So outside the loaded nodes, a missing object means
+nothing.
+
+**What a smash leaves.** The barrels smashed near the farmhouse in C2 are
+simply missing. They are not in `m_scidbitscoll`, not marked dead, and not
+recorded anywhere else by SCID. What does show is their debris. Objects made
+at run time have `m_scid = 0xfffffffe` and live in `/godb/m_localdb`, and C2
+holds `frag_glb_metal_01` ×4 and `frag_glb_wood_01`–`04` ×2 each: the hoops
+and staves of two barrels. The one barrel hit in D2 left 2 metal and 4 wood
+pieces. `/m_psim/m_objects` holds their physics state. So on a loaded node,
+a missing placement was smashed, picked up or used up (`siegefx save gone`
+lists them). Once that area unloads, nothing remembers the smash (see open
+question 1).
+
+Monsters killed are kept with `ls_dead_normal` wherever they are. In A→A2 the
+fence-smashing krug `0x01c005ca` and Norick (`0x01c007c0`, who dies in the
+scripted bridge collapse) are still saved, dead, at the crypt; in the twelve
+D saves every one of the 39 monsters that died stays in every later save.
+
+`/godb/m_scidbitscoll/N` (`_key` = SCID, `m_bits`, `m_mustrpc`) records a
+few objects only: `generator_bush_01` krug-spawning bushes get `m_bits =
+0x10000` once spent, sound emitters `1`, and a handful of fixed entries
+present from the start of the game.
 
 ### What the auditor records
 
@@ -240,7 +274,8 @@ some corpses expire is not known).
 | D6 → D7 | got Edgaar's quest | quest `bactive` 0 → 1, `talked_with_edgaar_*` flags, kill counters |
 | autosave | — | same format, `is_auto_save = true`, `.dsasave` |
 | D7 + the map | `save locate` for Edgaar's `m_scid` | the save's SCID is the map placement's SCID |
-| new game "A" → "A2" | killed the fence krug, ran to the crypt, opened sarcophagi | farm objects (dead and alive) are still saved at the crypt: `m_globaldb` keeps visited areas |
+| new game "A" → "A2" | killed the fence krug, ran to the crypt, opened sarcophagi | creatures (dead and alive), items and the opened sarcophagus are still saved at the crypt; untouched farm props are not |
+| new game "C" → "C2" | ran to the next farmhouse; the hero and a krug each smashed a barrel | untouched start barrels drop out; the smashed ones are simply missing, with their debris in `m_localdb`. Loaded nodes = `m_frustumcoll` |
 | 2019 DS1 save | 8-member party, 13:56 played | every companion stored like the hero; only the hero gets a portrait file |
 | LoA save, `.dsparty` | — | `is_dsx`, expansion tanks in the manifest, `m_ptransformationmanager` section; `.dsparty` has no world |
 
@@ -255,7 +290,13 @@ siegefx save diff <before> <after>     # what changed, clocks and timers hidden
 siegefx save diff <a> <b> --all        # including clocks and timers
 siegefx save locate <World.dsmap> 0x01c00b13   # where a save object was placed in the map
 siegefx save locate <World.dsmap> edgaar       # placements by template name
+siegefx save gone <file> <World.dsmap>         # placements on the loaded nodes the save lacks
 ```
+
+`gone` lists map placements anchored to a node one of the save's frustums
+holds whose SCID is not in `m_globaldb`: smashed, picked up, drunk, or a
+one-time command that has run. Multiplayer-only placements
+(`is_single_player = false`) are counted apart.
 
 `diff` reports the readable facts first (info, party, orders, items, quests,
 flags, tips), then counts value changes per world section. `skritengine` and
@@ -266,20 +307,16 @@ they always show churn and are listed last.
 
 Roughly in order of how much they block importing and writing saves.
 
-1. **Destroyed vs never loaded.** Since `m_globaldb` keeps visited areas,
-   an object missing from it is either destroyed (smashed barrel, used-up
-   gizmo) or from an area never loaded. How does the original tell the two
-   apart when a region loads? No list of visited regions has turned up by name;
-   candidates are the per-object `m_regionsource` (e.g. `0xaaa10100`) and
-   `/m_pworldterrain/siegeengine/m_globalnodefadecoll/N/m_regionid`. Test:
-   smash a specific barrel, save, and compare against a save that never went
-   near it.
+1. **Do smashed things come back?** On the loaded nodes, a missing placement
+   is gone (see [areas left behind](#life-and-death-and-areas-left-behind)),
+   but nothing records a smash once its area unloads. Either the original
+   recreates the barrel from the map, or it remembers in a place not yet
+   found. Test in game: smash a barrel, walk well away (as far as C → C2),
+   come back and see whether it is there; save next to it both times.
 2. **The write order.** 0.3–0.4 % of entries (a handful of member names) are
    written after a later sibling's subtree. A writer needs the rule for when, or
    proof that the original loads a save laid out in plain tree order (it reads
-   through the index, so it may not care). A writer needs either the rule, or proof that the original
-   loads a save whose entries are laid out differently (it reads through the
-   index, so it may not care).
+   through the index, so it may not care).
 3. **What the original checks on load.** Does it verify `fubi_manifest`,
    the tank manifest CRCs, or the tank's own CRCs? Test by changing one byte of
    a copy (e.g. gold in `party.gas`) and loading it.

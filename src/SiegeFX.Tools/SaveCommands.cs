@@ -11,7 +11,9 @@ static class SaveCommands
         "       siegefx save tree    <file> [--path=/world] [--depth=N] [--find=TEXT]\n" +
         "                                                            the world tree (world.xidx + world.xdat)\n" +
         "       siegefx save diff    <a> <b> [--all] [--ignore=n1,n2] what changed between two saves\n" +
-        "       siegefx save locate  <World.dsmap> <0xSCID | template>  where a save object was placed in the map";
+        "       siegefx save locate  <World.dsmap> <0xSCID | template>  where a save object was placed in the map\n" +
+        "       siegefx save gone    <file> <World.dsmap> [--all]   map objects on the loaded nodes that the save\n" +
+        "                                                            no longer has (smashed, picked up, used up)";
 
     public static int Dispatch(string[] a)
     {
@@ -26,6 +28,7 @@ static class SaveCommands
             "tree" when files.Count == 1 => Tree(OriginalSave.Open(files[0]), Opt("path") ?? "/",
                                                  int.TryParse(Opt("depth"), out var d) ? d : int.MaxValue, Opt("find")),
             "locate" when files.Count == 2 => Locate(files[0], files[1]),
+            "gone" when files.Count == 2 => Gone(OriginalSave.Open(files[0]), files[1], Flag("all")),
             "diff" when files.Count == 2 => Diff(OriginalSave.Open(files[0]), OriginalSave.Open(files[1]), Flag("all"),
                                                  (Opt("ignore") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)),
             _ => Fail(),
@@ -87,6 +90,35 @@ static class SaveCommands
         Console.WriteLine($"{r.Matches.Count} match(es) in {r.FilesScanned} object file(s) across {r.RegionsScanned} region(s)" +
                           (r.Errors.Count > 0 ? $"; {r.Errors.Count} file(s) unreadable:" : ""));
         foreach (var e in r.Errors.Take(5)) Console.WriteLine($"  {e}");
+        return r.FilesScanned == 0 ? 3 : 0;
+    }
+
+    // ── gone ───────────────────────────────────────────────────────────────
+    // The save keeps every object on the nodes loaded around the party; off
+    // them it drops untouched props. So a placement on a loaded node that the
+    // save lacks was smashed, taken or used up. Elsewhere, absence means
+    // nothing (docs/original-save-format.md, "areas left behind").
+    static int Gone(OriginalSave s, string mapPath, bool all)
+    {
+        if (s.World is null) { Console.Error.WriteLine("no world in this file (a .dsparty)"); return 1; }
+        var loaded = OriginalWorldFacts.LoadedNodes(s.World);
+        var saved = OriginalWorldFacts.ObjectScids(s.World);
+        using var tank = SiegeFX.Core.Tank.TankFile.Open(mapPath);
+        var r = MapPlacements.OnNodes(new SiegeFX.Core.Tank.TankReader(tank), loaded);
+        var gone = r.Matches.Where(p => !saved.Contains(p.Scid)).ToList();
+        var mpOnly = gone.Count(p => p.MultiplayerOnly);
+        gone.RemoveAll(p => p.MultiplayerOnly);
+
+        Console.WriteLine($"{loaded.Count} loaded node(s); {r.Matches.Count} map placement(s) on them, " +
+                          $"{r.Matches.Count - gone.Count - mpOnly} in the save, {gone.Count} gone" +
+                          (mpOnly > 0 ? $" (+{mpOnly} multiplayer-only, never placed in single player)" : ""));
+        foreach (var g in gone.GroupBy(p => p.Template).OrderBy(g => g.Key.StartsWith("cmd_", StringComparison.Ordinal) || g.Key.StartsWith("trigger_", StringComparison.Ordinal)).ThenBy(g => g.Key, StringComparer.Ordinal))
+        {
+            var list = g.ToList();
+            var shown = all ? list : list.Take(6).ToList();
+            Console.WriteLine($"  {g.Key,-28} {list.Count,3}  {string.Join(" ", shown.Select(p => $"0x{p.Scid:x8}"))}{(shown.Count < list.Count ? " …" : "")}");
+        }
+        if (r.Errors.Count > 0) Console.WriteLine($"{r.Errors.Count} map file(s) unreadable, first: {r.Errors[0]}");
         return r.FilesScanned == 0 ? 3 : 0;
     }
 

@@ -113,6 +113,24 @@ public class XferTreeTests
     }
 
     [Fact]
+    public void Loaded_nodes_join_every_frustum_and_read_like_a_map_guid()
+    {
+        static XferBuilder.Node Owned(string name, params uint[] guids) => new(name,
+            [new XferBuilder.Node("m_prevownednodes", [.. guids.Select((g, i) =>
+                new XferBuilder.Node(i.ToString(), new XferBuilder.Val("_value", Guid(g))))])]);
+        static byte[] Guid(uint g) { var b = new byte[4]; BinaryPrimitives.WriteUInt32BigEndian(b, g); return b; }
+        var t = Load(new XferBuilder.Node("",
+            new XferBuilder.Node("m_pworldterrain", new XferBuilder.Node("siegeengine", new XferBuilder.Node("m_frustumcoll",
+                Owned("0", 0xb803530c, 0x5353287c), Owned("1", 0x5353287c, 0x0c5303b8)))),
+            new XferBuilder.Node("godb", new XferBuilder.Node("m_globaldb",
+                new XferBuilder.Node("0", XferBuilder.Int("m_scid", 0x01c00009)),
+                new XferBuilder.Node("1", XferBuilder.Int("m_scid", 0x01c0001d))))));
+        Assert.Equal(new HashSet<uint> { 0xb803530c, 0x5353287c, 0x0c5303b8 }, OriginalWorldFacts.LoadedNodes(t));
+        Assert.Equal(new HashSet<uint> { 0x01c00009, 0x01c0001d }, OriginalWorldFacts.ObjectScids(t));
+        Assert.Empty(OriginalWorldFacts.LoadedNodes(Sample()));
+    }
+
+    [Fact]
     public void A_position_reads_its_node_id_as_info_gas_prints_it()
     {
         var b = new byte[16];
@@ -350,6 +368,29 @@ public class MapPlacementsTests
             Assert.Equal((2, 2), (byScid.FilesScanned, byScid.RegionsScanned));
 
             Assert.Equal(["edgaar", "edgaar_hut"], MapPlacements.Find(map, "edgaar").Matches.Select(m => m.Template));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Placements_carry_their_node_and_whether_single_player_gets_them()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"siegefx-{Guid.NewGuid():N}.dsmap");
+        var w = new TankWriter();
+        w.Add("/world/maps/map_world/regions/fh_r1/objects/non_interactive.gas", Encoding.ASCII.GetBytes(
+            "[t:barrel_glb_fh_r1,n:0x01C00009] { [placement] { position = 1.5,0,-2.25,0xb803530c; } }\n" +
+            "[t:barrel_glb_fh_r1,n:0x01C0000A] { [placement] { position = 0,0,0,0x5353287c; } }\n" +
+            "[t:crate_glb_fh_r1,n:0x01C0001D] { [common] { is_single_player = false; } [placement] { position = 0,0,0,0xB803530C; } }\n" +
+            "[t:trigger_generic,n:0x01C00480] { }"));
+        try
+        {
+            w.Write(path, DateTime.UtcNow);
+            using var tank = TankFile.Open(path);
+            var r = MapPlacements.OnNodes(new TankReader(tank), new HashSet<uint> { 0xb803530c });
+            Assert.Equal([
+                new MapPlacement("fh_r1", "non_interactive.gas", "barrel_glb_fh_r1", 0x01C00009, 0xb803530c),
+                new MapPlacement("fh_r1", "non_interactive.gas", "crate_glb_fh_r1", 0x01C0001D, 0xb803530c, MultiplayerOnly: true),
+            ], r.Matches);
         }
         finally { File.Delete(path); }
     }
