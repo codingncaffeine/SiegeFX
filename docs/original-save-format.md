@@ -258,7 +258,7 @@ templates are prefixed `2W_` and `3W_`). DS1's `World.dsmap` has no such
 folders. The save names its world in `/m_pworldterrain/m_pmap/m_mpworldname`:
 `"normal"` in every DS1 save, `"regular"` in the LoA save. Looked up in
 `regular/` only, all 3 005 of the LoA save's retired SCIDs are found, once
-each: about 2 400 monsters killed, about 250 crates smashed, 87 doors, 282
+each: about 2 300 monsters killed, about 240 crates smashed, 88 doors, 282
 triggers, 26 cutscene commands, and spent generators (`gen_explode_*`,
 `dsx_darkgenerator_*`).
 
@@ -347,7 +347,7 @@ Roughly in order of how much they block importing and writing saves.
 
 1. **What else retires a SCID.** Smashing and killing do; the list also
    grows with one-time gizmos as the game runs (D2 → D3 added 26), and the
-   LoA save has 87 doors on it. Whether opening a door retires it (or only
+   LoA save has 88 doors on it. Whether opening a door retires it (or only
    breaking one), which commands and triggers retire themselves, and whether
    picking up a map-placed item does, is not yet sorted out. Also: what
    `m_scidbitscoll` bits other than `0x10000` (a spent spawner bush) mean.
