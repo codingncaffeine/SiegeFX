@@ -191,16 +191,27 @@ also the SCID SiegeFX gives the actor. Evidence: Edgaar is
 `fh_r1  actor.gas  [t:edgaar,n:0x01c00b13]` against the same install. World
 import can therefore match saved objects to SiegeFX actors by SCID.
 
-### Life and death
+### Life and death, and areas left behind
 
 A creature's `aspect` component (one of its `m_componentcoll` entries, whose
 `_name` is `"aspect"`) holds `life_state` (`"ls_dead_normal"` once killed),
-`life` and `max_life` as floats. Across twelve saves from the first ten
-minutes, every monster that died (39 of them) stays in `godb` as a corpse in
-every later save, including the fence-smashing krug `0x01c005ca` killed first.
-What drops out of later saves is mostly one-time gizmos (patrol commands,
-triggers, tutorial tips), smashed barrels, and living creatures in areas left
-behind.
+`life` and `max_life` as floats.
+
+**`godb/m_globaldb` keeps the objects of every area visited, not only the
+nearby ones.** In a new game (save "A", 0:02:47, region `fh_r1`) the
+fence-smashing krug `0x01c005ca` and Norick (`0x01c007c0`, who dies in the
+scripted bridge collapse) are dead. After running to the crypt (save "A2",
+0:08:16, region `cr_r1`, 1 113 objects) both are still there and still dead,
+along with 198 farm objects (prefix `0x01c…`): chickens, butterflies, living
+krugs, the farm tools, the narrator, and 161 farm objects passed on the way
+that were not in "A". In twelve earlier saves, every one of the 39 monsters
+that died stays in every later save.
+
+What drops out of later saves is what gets used up or destroyed: one-time
+gizmos (patrol and camera commands, triggers, tutorial tips, use points,
+spawn points), barrels and crates (likely the smashed ones), a door, and a few
+monsters that were last seen alive (likely killed between saves; whether
+some corpses expire is not known).
 
 ### What the auditor records
 
@@ -229,6 +240,7 @@ behind.
 | D6 → D7 | got Edgaar's quest | quest `bactive` 0 → 1, `talked_with_edgaar_*` flags, kill counters |
 | autosave | — | same format, `is_auto_save = true`, `.dsasave` |
 | D7 + the map | `save locate` for Edgaar's `m_scid` | the save's SCID is the map placement's SCID |
+| new game "A" → "A2" | killed the fence krug, ran to the crypt, opened sarcophagi | farm objects (dead and alive) are still saved at the crypt: `m_globaldb` keeps visited areas |
 | 2019 DS1 save | 8-member party, 13:56 played | every companion stored like the hero; only the hero gets a portrait file |
 | LoA save, `.dsparty` | — | `is_dsx`, expansion tanks in the manifest, `m_ptransformationmanager` section; `.dsparty` has no world |
 
@@ -254,14 +266,14 @@ they always show churn and are listed last.
 
 Roughly in order of how much they block importing and writing saves.
 
-1. **Areas you've left.** `godb` holds only objects near the party — between
-   122 and 412 in the first ten minutes, 1 497 in a large LoA save — yet no
-   corpse has dropped out of a later save so far, because none of those saves
-   went far enough for a fight site to unload. Where does the original remember
-   a death or a smashed barrel once its area unloads? Test: kill something,
-   travel well away (e.g. on to Stonebridge), save, and check whether the dead
-   SCIDs (`0x01c005ca` and the others) are still in `godb` — if not, search the
-   tree for them elsewhere.
+1. **Destroyed vs never loaded.** Since `m_globaldb` keeps visited areas,
+   an object missing from it is either destroyed (smashed barrel, used-up
+   gizmo) or from an area never loaded. How does the original tell the two
+   apart when a region loads? No list of visited regions has turned up by name;
+   candidates are the per-object `m_regionsource` (e.g. `0xaaa10100`) and
+   `/m_pworldterrain/siegeengine/m_globalnodefadecoll/N/m_regionid`. Test:
+   smash a specific barrel, save, and compare against a save that never went
+   near it.
 2. **The write order.** 0.3–0.4 % of entries (a handful of member names) are
    written after a later sibling's subtree. A writer needs the rule for when, or
    proof that the original loads a save laid out in plain tree order (it reads
