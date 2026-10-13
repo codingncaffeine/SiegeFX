@@ -124,19 +124,21 @@ public class XferTreeTests
                 Owned("0", 0xb803530c, 0x5353287c), Owned("1", 0x5353287c, 0x0c5303b8)))),
             new XferBuilder.Node("godb", new XferBuilder.Node("m_globaldb",
                 new XferBuilder.Node("0", XferBuilder.Int("m_scid", 0x01c00009)),
-                new XferBuilder.Node("1", XferBuilder.Int("m_scid", 0x01c0001d))),
+                new XferBuilder.Node("1", XferBuilder.Int("m_scid", 0x01c0001d)),
+                new XferBuilder.Node("2", XferBuilder.Int("m_goid", 0x1a020059), XferBuilder.Int("m_scid", unchecked((int)0xfffffffe)))),
                 new XferBuilder.Node("m_scidbitscoll",
                     new XferBuilder.Node("0", XferBuilder.Int("_key", 0x01c000ab), XferBuilder.Int("m_bits", 5), XferBuilder.Bool("m_mustrpc", false))),
                 new XferBuilder.Node("m_retiredscidcoll",
                     new XferBuilder.Node("0", XferBuilder.Int("_value", 0x01c00008)),
                     new XferBuilder.Node("1", XferBuilder.Int("_value", 0x01c00427))))));
         Assert.Equal(new HashSet<uint> { 0xb803530c, 0x5353287c, 0x0c5303b8 }, OriginalWorldFacts.LoadedNodes(t));
-        Assert.Equal(new HashSet<uint> { 0x01c00009, 0x01c0001d }, OriginalWorldFacts.ObjectScids(t));
+        Assert.Equal(new HashSet<uint> { 0x01c00009, 0x01c0001d, 0xfffffffe }, OriginalWorldFacts.ObjectScids(t));
         Assert.Equal(new HashSet<uint> { 0x01c00008, 0x01c00427 }, OriginalWorldFacts.RetiredScids(t));
         Assert.Empty(OriginalWorldFacts.LoadedNodes(Sample()));
         Assert.Empty(OriginalWorldFacts.RetiredScids(Sample()));
         Assert.Null(OriginalWorldFacts.WorldName(Sample()));
         Assert.Equal([0x01c00009u, 0x01c0001du], OriginalWorldFacts.ObjectsByScid(t).Keys.Order());
+        Assert.Equal([0x1a020059u], OriginalWorldFacts.RunTimeObjectsByGoid(t).Keys);
         Assert.Equal(new Dictionary<uint, uint> { [0x01c000ab] = 5 }, OriginalWorldFacts.ScidBits(t));
     }
 

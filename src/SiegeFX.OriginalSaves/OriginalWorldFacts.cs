@@ -119,6 +119,17 @@ public static class OriginalWorldFacts
         return map;
     }
 
+    /// <summary>The saved game objects made at run time (<c>m_scid =
+    /// 0xfffffffe</c>: loot, bought items, spawned monsters, the hero), by
+    /// <c>m_goid</c>, which stays the same from save to save.</summary>
+    public static IReadOnlyDictionary<uint, XferNode> RunTimeObjectsByGoid(XferTree world)
+    {
+        var map = new Dictionary<uint, XferNode>();
+        foreach (var o in world.Find(ObjectsPath)?.Children ?? [])
+            if (o.Value("m_scid")?.AsUInt32 == 0xfffffffe && o.Value("m_goid")?.AsUInt32 is uint goid) map.TryAdd(goid, o);
+        return map;
+    }
+
     public const string ScidBitsPath = "/godb/m_scidbitscoll";
 
     /// <summary>Per-SCID bits (<c>m_bits</c>), kept whether or not the

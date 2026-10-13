@@ -339,6 +339,20 @@ static class SaveCommands
         }
         if (limit != int.MaxValue && Math.Max(changed.Count, Math.Max(come.Count, gone.Count)) > limit)
             Console.WriteLine("    … (--all, or --object=TEXT for one object's values)");
+
+        // Loot, bought items and spawned monsters have no map SCID; match them
+        // by goid. They are never retired: used up or sold, they just go.
+        var ga = OriginalWorldFacts.RunTimeObjectsByGoid(a);
+        var gb = OriginalWorldFacts.RunTimeObjectsByGoid(b);
+        string Run(XferNode o) => $"goid 0x{o.Value("m_goid")?.AsUInt32:x8} {o.Value("m_datatemplate")?.AsText ?? "?"}" +
+                                  (o.Value("m_isinsideinventory")?.AsBool == true ? $" (carried by 0x{o.Value("m_parent")?.AsUInt32:x8})" : "");
+        bool RunMatch(XferNode o) => filter is null || Run(o).Contains(filter, StringComparison.OrdinalIgnoreCase);
+        var rCome = gb.Where(kv => !ga.ContainsKey(kv.Key) && RunMatch(kv.Value)).OrderBy(kv => kv.Key).Select(kv => kv.Value).ToList();
+        var rGone = ga.Where(kv => !gb.ContainsKey(kv.Key) && RunMatch(kv.Value)).OrderBy(kv => kv.Key).Select(kv => kv.Value).ToList();
+        Console.WriteLine($"  objects made at run time (no SCID){(filter is null ? "" : $" matching \"{filter}\"")}: " +
+                          $"{rCome.Count} came into the save, {rGone.Count} left it");
+        foreach (var o in rCome.Take(limit)) Console.WriteLine($"    + {Run(o)}");
+        foreach (var o in rGone.Take(limit)) Console.WriteLine($"    - {Run(o)}");
     }
 
     /// <summary>Every value under <paramref name="root"/>, keyed by its path
