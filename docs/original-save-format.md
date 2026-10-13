@@ -1,0 +1,435 @@
+# The original game's save format
+
+What Dungeon Siege 1 and *Legends of Aranna* write when you save, as far as it
+has been worked out, and what is still open. Everything here was learned from
+saves made for this purpose, one change apart, and read with SiegeFX's own
+tools; nothing comes from the leaked source. When you solve one of the
+[open questions](#open-questions), move it up into the known sections with the
+evidence.
+
+The reader is the `src/SiegeFX.OriginalSaves` library, kept out of the
+engine assemblies the parity ledger scans since its field names come from
+save files, not game data. The CLI is
+`siegefx save inspect | tree | diff | locate | retired` (see [Tools](#tools)).
+
+## Files
+
+| Extension | Written for | Contents |
+|---|---|---|
+| `.dssave` | Save Game | `info.gas`, `party.gas`, `portrait-0.bmp`, `thumb.bmp`, `world.xidx`, `world.xdat` |
+| `.dsasave` | Autosave | Same files; `info.gas` says `is_auto_save = true`, screen name `[Auto-Save]` |
+| `.dsparty` | Multiplayer character | `info.gas`, `party.gas`, `portrait-0.bmp` only — no world |
+
+Saves sit in `Documents\Dungeon Siege\Save\` (DS1) and
+`Documents\Dungeon Siege LOA\Save\` (LoA). There is also an `is_quick_save`
+flag in `info.gas`; no quicksave has been examined yet.
+
+Each file is a **tank archive** — the same container as the game's `.dsres`
+data — with zlib-compressed entries, one directory, product id `DSig`,
+priority `User`, flag `AllowMultiplayerXfer`, creator `!GPG`. The tank's title
+is the save's screen name and its author the player's name.
+
+**Tank "product version" is a build stamp.** The header's three version
+words hold 16-bit halves: word 2 = month (high) and year (low), word 3 =
+build (high) and day (low). `0x000707D3, 0x00020002` → `2003.07.0202`, which
+is exactly the `msqa:2003.07.0202` in `info.gas`. Word 1 was `0x00050000` in
+every file seen; its meaning is unknown. `siegefx tank info` prints the raw
+words; `OriginalSave.BuildStamp` decodes them.
+
+## info.gas
+
+Plain GAS text, one `[info]` block. What the original's load menu shows.
+
+| Field | Example | Notes |
+|---|---|---|
+| `screen_name` | `"D (0-02-25)"` | Name in the load list; the time is play time |
+| `hero_name`, `player_name` | `"D"` | |
+| `map_name`, `map_screen_name` | `map_world`, `"Kingdom of Ehb"` | `map_expansion` / `"Legends of Aranna"` for LoA; `multiplayer_world` / `"Utraean Peninsula"` in a `.dsparty` |
+| `region` | `fh_r1` | Region the hero is in |
+| `teleport` | `map_world:n:-0.98,0.91,-0.09,0x5353287c` | Hero position: x, y, z inside one terrain node, then the node id |
+| `time_elapsed`, `time_elapsed_text` | `145.808601`, `"0:02:25"` | Play time in seconds |
+| `save_time`, `save_time_text` | `134363309084250000` | Windows FILETIME (100 ns ticks since 1601, UTC) |
+| `save_duration` | `0.115552` | Seconds the save took |
+| `is_auto_save`, `is_quick_save` | `false` | |
+| `is_dsx` | `true` | Present (true) in LoA files only |
+| `is_retail_content`, `single_player`, `product_compile_mode` | `true`, `true`, `"Retail"` | |
+| `product_version` | `1.11.1.1486 (msqa:2003.07.0202)` | DS1 1.11; LoA writes `1.50.0.0056 (msqa:2003.10.1601)` |
+| `file_name` | full path of the save | |
+| `[fubi_manifest]` | `digest`, and `crc32` of `DungeonSiege.exe` | Ties the save to the game executable |
+| `[tank_manifest]` | one block per loaded data tank | `file_name`, `tank_type`, `guid`, `data_crc32`, `index_crc32`, `utc_build_time`, `version` |
+
+The tank manifest identifies the exact game data a save was made with: the
+same install produced the same CRCs in every save, and a 2019 save from an
+earlier install lists different `Logic.dsres`/`Objects.dsres` CRCs. The LoA
+save lists `Expansion.dsmap` as its only map, and LoA's own `Logic.dsres` and
+`Objects.dsres`; its `Voices`, `Sound` and `Terrain` CRCs match DS1's. In a
+LoA install, `Expansion.dsmap`, `Expansion.dsres` and `ExpVoices.dsres` are
+in `DSLOA/`, not `Maps/`; the `MpWorld.dsmap` in its `Maps/` is
+byte-identical to DS1's (same SHA-256).
+
+## party.gas
+
+Plain GAS text. `[party] { [members] { [0] { [member] {…} } … } [party] { gold; hero_index; } }`.
+Every party member — hero, companions, pack mule — has the same shape.
+
+| Field | Example | Notes |
+|---|---|---|
+| `screen_name`, `template_name`, `actor_class` | `"D"`, `farmgirl`, `"Farmer"` | `actor_class` is the title DS1 shows (Farmer, Squire, Champion…); empty for the pack mule |
+| `gold` | `30` | Also in the trailing `[party]` block; both changed together |
+| `movement_orders`, `combat_orders`, `focus_orders`, `disposition_orders` | see [Orders](#field-commands-orders) | Per member |
+| `selected_active_location` | `il_active_melee_weapon` | Active weapon slot |
+| `custom_head`, `pack_only`, `grid_x_offset`, `grid_y_offset`, `m_clientcachedengagedobject` | | Not yet interpreted |
+| `[inventory]` | `[N] { template_name; inv_location; equip_slot; grid_x; grid_y; gold_value; }` | See below |
+| `[skills]` | `<skill>_level`, `<skill>_xp` | strength, dexterity, intelligence, melee, ranged, nature_magic, combat_magic, and `uber` (the overall character level) |
+| `[skins]` | `0 = b_c_gah_fg_skin_010,b_c_gah_fg_hair_007;` | Appearance textures |
+
+**Inventory.** Row order is not meaningful — two saves seconds apart listed the
+same 18 items in a different order. Equipped items carry `equip_slot`
+(`es_feet`, `es_chest`, `es_spellbook`, `es_weapon_hand`, `es_shield_hand`…)
+or an active `inv_location` (`il_active_melee_weapon`,
+`il_active_ranged_weapon`) and no grid position. Pack items have `grid_x`,
+`grid_y` in the inventory window's pixels: 32-pixel cells, the first at
+(255, 30).
+
+**Skills and XP.** Levels are fractional (`melee_level = 1.00195` is just past
+level 1). Killing a krug scavenger gave 4 melee XP, twice, and both times the
+attributes rose by 64 % / 27 % / 9 % of it (strength / dexterity /
+intelligence: 2.56 / 1.08 / 0.36). `uber_xp` tracks the total.
+
+### Field Commands orders
+
+Each value below was observed in a save written right after setting that
+button in the original game.
+
+| Panel row | Field | Value → button | SiegeFX encoding |
+|---|---|---|---|
+| Movement | `movement_orders` | `mo_free` Move Freely · `mo_limited` Engage · `mo_hold` Hold Ground | 0 · 1 · 2 |
+| Attack | `combat_orders` | `co_free` Attack Freely · `co_limited` Defend · `co_hold` Hold Fire | 0 · 1 · 2 |
+| Targeting | `focus_orders` | `fo_closest` Closest · `fo_strongest` Strongest · `fo_weakest` Weakest | 0 · 1 · 2 |
+| (none) | `disposition_orders` | `ad_defensive` everywhere, except `ad_offensive` on LoA's Kraal | — |
+
+The hero has orders like every companion, so a faithful import or save
+carries the hero's orders too.
+
+## The world: world.xidx + world.xdat
+
+A tree of named values. Both files start with an 8-byte magic and are
+little-endian.
+
+### world.xdat (`DSigDXfr`)
+
+16-byte header (`DSigDXfr`, `u32` version `0x00010000`, `u32` 0), then entries.
+An entry is a **NUL-terminated name followed by the raw value bytes**. A child
+node is just its name (no value bytes). Nothing marks types or lengths.
+
+### world.xidx (`DSigIXfr`)
+
+```
+"DSigIXfr"  u32 version (0x00010000)  u32 0  u32 nodeCount
+then nodeCount records, node 0 = root:
+    u32 valueCount, valueCount × u32  data offset of a value entry's name
+    u32 childCount, childCount × (u32 data offset of the child's name, u32 child node number)
+```
+
+Verified on 14 saves (5 k – 98 k nodes): the records consume the index
+exactly, every node but the root is referenced exactly once (a tree), and
+every offset lands on a name.
+
+### Values
+
+A value runs from the end of its name to the next indexed entry in the data
+file, so its **size is the only type evidence**:
+
+| Size | Reading | Examples |
+|---|---|---|
+| 1 | bool | `tutorial_tips`, `bactive`, `m_constructed` |
+| 4 | int, float or id | `m_goid`, `m_scid`, `m_currentstate`; floats look like `1065353216` = 1.0 |
+| 8 | double | `m_currenttime` |
+| 12 | three floats (a vector) | `m_upvector` = (0, 1, 0) |
+| 16 | position: three floats + terrain node id | `m_cameraposition` |
+| NUL-terminated | text | `m_code` = `"success"`, `sname` = `"quest_edgaar_basement"` |
+| ends in two zero bytes | UTF-16 text | `sscreenname` = `"Clear Edgaar's Basement"`, `sspeaker` |
+
+**Node ids are stored in the byte order `info.gas` prints them**, unlike the
+rest of the file: `teleport … 0x5353287c` is stored `53 53 28 7c`, so read a
+position's last four bytes (and `m_prevownednodes` values) big-endian.
+
+Name prefixes help: `b…` bool, `s…` string, `m_p…` pointer, `m_…` member;
+names ending in `$` belong to skrit (script) property stores.
+
+### Order in the data file
+
+The data file is a depth-first walk of the tree, with a node's values and
+children **interleaved in write order** (the index files them into two
+lists), with one exception: **0.3–0.4 % of entries** (201 of 46 041 in a
+fresh save, 1 805 of 603 085 in the big LoA save) are values written *after* a
+later sibling's whole subtree. They are always the same few members —
+`m_pblendgroup`, `orientation`, `m_skrit`, `jat_use`,
+`m_screenplayervisiblecount`, `m_wantsdraws`, `m_bforceget` — which looks
+like a second pass that fills in references once their targets are written.
+The reader doesn't care (offsets come from the index) and keeps each node's
+entries in file order.
+
+### Top-level sections
+
+`skritengine`, `m_pworldterrain`, `world`, `services`, `godb`, `m_pmcp`,
+`m_pflamethrower`, `m_psim`, `screenplayer`, `tattoogame`, `uicamera`,
+`uigame`, `gridboxes`, `misc` — and in LoA also `m_ptransformationmanager`
+(after `m_psim`).
+
+### Known paths
+
+| What | Path | Fields |
+|---|---|---|
+| Quests | `/world/m_pvictory/m_quests/N/_value` | `sname`, `sscreenname` (UTF-16), `sspeaker` (UTF-16), `bactive`, `bcompleted`, `bviewed`, `id`, `order`, `currentorder`, `events/…` |
+| Script flags and counters | `/world/m_pgameauditor/m_entries/N` | `m_key` plus `m_bool`, `m_int`, `m_float`, `m_double`, `m_string`, `m_tag` (one slot used) |
+| "Show tips" option | `/uigame` → `tutorial_tips` | bool |
+| Camera | `/m_pworldterrain/siegeengine/m_pcamera` | `m_cameraposition`, `m_targetposition` (positions), `m_upvector`, `m_fieldofview` |
+| Game objects | `/godb/m_globaldb/N` | `m_goid`, `m_scid`, `m_datatemplate` (template name), `m_regionsource`, `m_parent`, flags (`m_isselected`, `m_isinsideinventory`, …), `m_componentcoll/…` (components: skills, conversations, enchantments, triggers…), `m_childcoll` |
+| Triggers | inside an object's `m_componentcoll/…/m_instancetriggers/m_triggers` | conditions and actions with parameters, e.g. `change_quest_state quest_edgaar_basement completed` |
+| Loaded area | `/m_pworldterrain/siegeengine/m_frustumcoll/N` | `id` (a bit per party member), `m_frustumpos`, `m_frustumwidth`, `m_prevownednodes/N/_value` (node GUIDs) |
+| Objects made at run time | `/godb/m_localdb/N` | same layout as `m_globaldb`, `m_scid = 0xfffffffe` (debris, leaves) |
+| Placements never to create again | `/godb/m_retiredscidcoll/N` | `_value` (SCID), sorted |
+| Per-SCID bits | `/godb/m_scidbitscoll/N` | `_key` (SCID), `m_bits`, `m_mustrpc` |
+| Saved trigger state | `/world/m_ptriggersys/m_trigbitsdb/N` | `_key/m_ownscid`, `_key/m_trignum`, `_value` |
+
+### Objects are keyed by the map's SCID
+
+A game object's `m_scid` is the SCID of the map placement it came from — the
+`n:` in `[t:<template>,n:<scid>]` in `regions/<region>/objects/*.gas`, which is
+also the SCID SiegeFX gives the actor. Evidence: Edgaar is
+`m_scid = 0x01c00b13`, `m_datatemplate = "edgaar"` in the save, and
+`siegefx save locate World.dsmap 0x01c00b13` and `… edgaar` both return
+`fh_r1  actor.gas  [t:edgaar,n:0x01c00b13]` against the same install. World
+import can therefore match saved objects to SiegeFX actors by SCID.
+
+### What is loaded
+
+Each party member has a frustum, the area loaded around them:
+`/m_pworldterrain/siegeengine/m_frustumcoll/N` with `id` (one bit each: 1,
+2, 4 … 128 in an 8-member party), `m_frustumwidth` 45 (metres) and
+`m_prevownednodes`, the terrain nodes it holds. An object's
+`m_frustummembership` is the OR of the frustums it is in. In all six saves
+checked (C, C2, A2, D7, the 2019 save, LoA) it is non-zero exactly for the
+objects on a loaded node, apart from 19 aspect-less objects in the LoA save
+that sit on a loaded node but are in no frustum.
+
+### What is saved, and what the map supplies
+
+`godb/m_globaldb` holds game objects, not decor: in C2, 659 trees, bushes,
+cornstalks, reeds and pieces of furniture placed on loaded nodes are missing
+(across all the saves, only a lightable lamp stand in D7 and two chairs in
+the LoA save are of that kind), so the map supplies them every time. Of the
+rest it holds:
+
+- every object on a loaded node, untouched barrels included;
+- off the loaded nodes (`m_frustummembership = 0`), only creatures (alive
+  or dead), items, triggers and generators, and props whose state changed:
+  the sarcophagus opened on the way to the crypt (A2), elevators, levers,
+  doors and chests (the LoA save).
+
+Untouched props off the loaded nodes are dropped. In new game "C" the five
+start-area barrels (`0x01c00001`, `…06`, `…0a`, `…6b6`, `…6b8`) are saved;
+in "C2", after running to the next farmhouse, all five are gone although
+nobody touched them. **So a missing object means "as the map placed it",
+unless its SCID is retired** (next section) or its state is in
+[`m_scidbitscoll`](#per-scid-bits).
+
+What is kept off the loaded nodes does not last for ever: in F5, after
+about four minutes deep in the crypt, the farm's chickens, butterflies, rake,
+shovel and Norick's corpse are gone from the save (Norick stays retired, so
+he does not come back). The rule for when such objects are let go is not
+known.
+
+A creature's `aspect` component (the `m_componentcoll` entry whose `_name`
+is `"aspect"`) holds `life_state` (`"ls_dead_normal"` once killed), `life`
+and `max_life` as floats. Killed monsters stay saved, dead, while they are
+kept at all: in A → A2 the fence-smashing krug `0x01c005ca` and Norick
+(`0x01c007c0`, who dies in the scripted bridge collapse) are still saved at
+the crypt, and in the twelve D saves every one of the 39 monsters that died
+stays in every later save.
+
+### Retired placements
+
+`/godb/m_retiredscidcoll/N/_value`, sorted by SCID, lists the map placements
+the game must not create again, for the whole game and whether or not their
+area is loaded:
+
+| Saves | Change | Added to the list |
+|---|---|---|
+| C → C2 | the hero and a krug each smashed a barrel | `0x01c00008`, `0x01c00427`: both `barrel_glb_fh_r1`, nothing else |
+| A → A2 | ran to the crypt | `0x01c00427` again (the krug smashes the same barrel every new game), plus 7 others along the way |
+| Fire Shot → kill | killed a krug | `0x01c005ca`, which is also still saved as a corpse |
+| kill → D2 | hit a barrel | `0x01c006b6`, a start-area barrel |
+| F2 → F5 | drank a crypt potion to the end | `0x0600026d` `potion_health_medium`, plus the monsters killed |
+
+Smashed, killed or used up retires a placement; opening a door and picking
+up an item do not (see below). A smashed barrel leaves nothing else by SCID:
+its debris is in `/godb/m_localdb`, which holds objects made at run time
+(`m_scid = 0xfffffffe`; C2 holds `frag_glb_metal_01` ×4 and
+`frag_glb_wood_01`–`04` ×2 each, the hoops and staves of two barrels), and
+`/m_psim/m_objects` holds their physics state.
+
+A new game already has 44 entries, mostly its opening cutscene. All 47 in C2
+are placements in `World.dsmap`: 36 `cmd_camera_command`, 4
+`trigger_generic`, `cmd_enter_nis`, `dog_sleeping`,
+`door_grs_farmhouse_breakable`, a `spider` (`0x08d000b7`), Norick and the two
+smashed barrels. The 2019 save has 7 007 entries and the LoA save 3 005.
+
+**Look them up in the save's own map and world.** SCIDs are unique only
+within one map: LoA's `map_expansion` (`Expansion.dsmap`) reuses DS1's
+numbers. `Expansion.dsmap` also places every object once per difficulty
+world, in `objects/regular/`, `objects/veteran/` and `objects/elite/`, all
+three copies under one SCID (veteran and elite templates are prefixed `2W_`
+and `3W_`); DS1's `World.dsmap` has no such folders. The save names its
+world in `/m_pworldterrain/m_pmap/m_mpworldname`: `"normal"` in every DS1
+save, `"regular"` in the LoA save. Looked up in `regular/` only, all 3 005 of
+the LoA save's retired SCIDs are found, once each: about 2 300 monsters
+killed, about 240 crates smashed, 88 doors, 282 triggers, 26 cutscene
+commands, and spent generators (`gen_explode_*`, `dsx_darkgenerator_*`).
+
+### Items: picked up, used up, made at run time
+
+**Picked up, an item keeps its map SCID.** Picking up the Fire Shot scroll
+(`spell_fireshot`, `0x01c00274`, saves "no tips" → "Fire Shot") retires
+nothing of its own. The same object stays in `m_globaldb` with `m_parent` =
+the hero's goid (`0x09000087`), `m_isinsideinventory` 0 → 1,
+`m_isallclients` 0 → 1, `m_bidentified` 0 → 1, `is_visible` 1 → 0, and its
+position now the hero's. Its one-shot pickup trigger (`receive_world_message
+we_picked_up` → `send_world_message we_trigger_deactivate` to `0x01c00afa`)
+is removed from the object, and `party.gas` lists the item. One
+`trigger_generic` (`0x01c007c3`) was retired in the same few seconds; whether
+the pickup caused it is not known.
+
+**Used up, it is retired.** F1 → F2 picked up a `potion_health_medium`
+(`0x0600026d`) in the crypt: nothing retired. F2 → F5 drank it to the end:
+`party.gas` drops it and `0x0600026d` is retired, which is what stops the
+map placing it again.
+
+**Run-time objects have no SCID.** Loot (monster drops, chest contents),
+bought items, gold piles, monsters spawned by generators and the hero itself
+(the farm girl, goid `0x09000087`) are in `m_globaldb` with `m_scid =
+0xfffffffe` and `m_ispcontentgenerated = 1`, owned through `m_parent` (a
+party member, or the monster that will drop it: krugs carry their daggers
+and spell books from the start). They keep their `m_goid` from save to save
+(all 70 of D3's are in D4 unchanged). Having no placement, they are never
+retired: used up, sold or dropped and left, they are simply gone. So few
+carried items have a map SCID at all: 2 in D7 (the Fire Shot and
+`potion_mana_small` `0x01c0007e`), 4 in the 2019 save, 1 in the LoA save.
+
+### Per-SCID bits
+
+`/godb/m_scidbitscoll/N` (`_key` = SCID, `m_bits`, `m_mustrpc`) keeps
+state for objects that must remember it whether or not they are loaded:
+
+- **Doors.** The farmhouse door `0x01c000ab` (`door_grs_farmhouse`) is
+  `0x5` closed and `0x9` open: saves E (closed) → E2 (opened) → E3 (closed
+  again) go `0x5 → 0x9 → 0x5`. The door object itself changes only
+  `does_block_path` (in its `m_componentcoll/3`) `1 → 0 → 1`. Opening a door
+  does not retire it.
+- `generator_bush_01` krug-spawning bushes get `0x10000` once spent; sound
+  emitters (`emt_sound_act`) `0x1`.
+- In the crypt (F1 → F2 → F5): `torch_activate` torches switch between
+  `0xf` and `0x5`; a `container_cav_01_cr_r1` gets `0x1` once opened;
+  `cmd_selection_toggle`, `cmd_animation_command` get `0x1` and
+  `cmd_alignment_changer` `0x3` once run.
+- The 2019 and LoA saves carry many more, with values `0x1`, `0x3`, `0x9`,
+  `0x11`, `0x19`; their meaning per template is not worked out.
+
+### What the auditor records
+
+`/world/m_pgameauditor/m_entries` holds more than script flags:
+
+- `talked_with_edgaar_once`, `talked_with_edgaar_twice` — conversation flags
+  (SiegeFX's `World.Bools` holds the same kind of thing).
+- `ge_player_kill_<template>` — kills per monster type (e.g.
+  `ge_player_kill_krug_scavenger = 24`).
+- `chance_to_hit_bonus_versus_<template>` — a to-hit bonus against monster
+  types you have killed many of (`0.09` at 18 krug scavenger kills, `0.15` at
+  24). **SiegeFX has no such mechanic** — a parity gap.
+- `was_party_member_<goid>`.
+
+## What each experiment showed
+
+| Saves (one change apart) | Change made in game | Where it showed |
+|---|---|---|
+| base → moved | walked a few steps | `info.gas` `teleport` |
+| moved → no tips | turned tips off | `/uigame` `tutorial_tips` 1 → 0 |
+| no tips → picked up Fire Shot | picked up a spell | `party.gas` inventory `spell_fireshot` with grid slot; the map object stays saved with `m_parent` = the hero, not retired |
+| Fire Shot → kill | killed a krug scavenger | `party.gas` skills (+4 melee XP, 64/27/9 split); the corpse stays in `godb` |
+| kill → D2 | second kill, bow, barrel, 6 gold | gold 30 → 36 twice; `spell_zap` and a club dropped; bow in `il_active_ranged_weapon`; +4 XP again |
+| D3 → D4 | Defend → Hold Fire | `combat_orders` `co_limited` → `co_hold` |
+| D5, D6, D7 | the remaining order buttons | completes the [orders table](#field-commands-orders) |
+| D6 → D7 | got Edgaar's quest | quest `bactive` 0 → 1, `talked_with_edgaar_*` flags, kill counters |
+| autosave | — | same format, `is_auto_save = true`, `.dsasave` |
+| D7 + the map | `save locate` for Edgaar's `m_scid` | the save's SCID is the map placement's SCID |
+| new game "A" → "A2" | killed the fence krug, ran to the crypt, opened sarcophagi | creatures (dead and alive), items and the opened sarcophagus are still saved at the crypt; untouched farm props are not |
+| new game "C" → "C2" | ran to the next farmhouse; the hero and a krug each smashed a barrel | the two barrels join `m_retiredscidcoll`; untouched start barrels drop out of `m_globaldb`; loaded nodes = `m_frustumcoll` |
+| new game "E" → "E2" → "E3" | opened the farmhouse door, then closed it | door's `m_scidbitscoll` bits `0x5 → 0x9 → 0x5`, `does_block_path` `1 → 0 → 1`; nothing retired |
+| new game "A": F1 → F2 → F5 | picked up a crypt potion, then drank it all; killed the ruby gargoyle | pickup retires nothing; using it up retires `0x0600026d`; torches and containers keep state in `m_scidbitscoll` |
+| 2019 DS1 save | 8-member party, 13:56 played | every companion stored like the hero; only the hero gets a portrait file |
+| LoA save, `.dsparty` | — | `is_dsx`, expansion tanks in the manifest, `m_ptransformationmanager` section; `.dsparty` has no world |
+
+## Tools
+
+```
+siegefx save inspect <file>            # save info, party (orders, skills, gear), quests, flags
+siegefx save inspect <file> --all      # every pack item, quest and flag
+siegefx save tree <file> --path=/world/m_pvictory --depth=2
+siegefx save tree <file> --find=edgaar # every node and value mentioning a name
+siegefx save diff <before> <after>     # what changed, clocks and timers hidden
+siegefx save diff <a> <b> --all        # including clocks and timers
+siegefx save diff <a> <b> --object=door  # every value that changed on matching objects
+siegefx save locate <World.dsmap> 0x01c00b13   # where a save object was placed in the map
+siegefx save locate <World.dsmap> edgaar       # placements by template name
+siegefx save retired <file> <World.dsmap>      # placements the game will not create again
+```
+
+`retired` looks up every SCID in `m_retiredscidcoll` in the save's own map
+(it refuses a map tank without that map's regions and names the right
+file), keeps only the save's world when the map has a folder per world (and
+prints the folders it found), and lists them by template; `*` marks the ones
+still saved (corpses, mostly).
+
+`diff` reports, in order:
+
+1. the readable facts: info, party (orders, skills, items), quests, flags,
+   tips;
+2. SCIDs newly retired and changed `m_scidbitscoll` bits;
+3. game objects matched by SCID (which came into the save, which left it,
+   which changed and by how many values) and run-time objects matched by
+   goid (which came, which left). `--object=TEXT` keeps only the objects
+   whose template or id contains TEXT, prints every changed value, and stops
+   there;
+4. value changes per world section, then the values themselves.
+   `skritengine` and `godb` are positional lists (one new object shifts
+   every later index), so they always show churn and are listed last.
+
+## Open questions
+
+Roughly in order of how much they block importing and writing saves.
+
+1. **What else retires a SCID.** Smashing, killing and using up a map item
+   do; opening a door (its state is in `m_scidbitscoll`) and picking up an
+   item do not. The list also grows with one-time gizmos as the game runs
+   (D2 → D3 added 26), and the LoA save has 88 doors on it, some of them
+   breakable cage doors: are the rest broken, or opened by scripts? Selling
+   or dropping a map item is not tested yet, nor when objects kept off the
+   loaded nodes are let go, nor what most `m_scidbitscoll` bits mean.
+2. **The write order.** 0.3–0.4 % of entries (a handful of member names) are
+   written after a later sibling's subtree. A writer needs the rule for when, or
+   proof that the original loads a save laid out in plain tree order (it reads
+   through the index, so it may not care).
+3. **What the original checks on load.** Does it verify `fubi_manifest`,
+   the tank manifest CRCs, or the tank's own CRCs? Test by changing one byte of
+   a copy (e.g. gold in `party.gas`) and loading it.
+4. **Unread `party.gas` fields:** `custom_head`, `pack_only`,
+   `grid_x_offset`/`grid_y_offset`, `m_clientcachedengagedobject`,
+   `disposition_orders` (seen: `ad_defensive`, `ad_offensive`).
+5. **Value types without a size hint:** 4-byte values are int, float or id —
+   the reader only guesses. A table of known field types would end the guessing.
+6. **Quicksave:** the extension and whether anything else differs.
+7. **Tank header word 1** (`0x00050000` in every file) and the `[fubi_manifest]`
+   `digest`.
+8. **The to-hit-bonus formula** behind `chance_to_hit_bonus_versus_*` (it is
+   not a flat amount per kill: 18 kills → 0.09, 24 → 0.15).

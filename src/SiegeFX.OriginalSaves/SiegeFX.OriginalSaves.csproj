@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Reads saves written by the original game (.dssave, .dsasave, .dsparty).
+       Kept out of SiegeFX.Core on purpose: the parity ledger counts the names
+       the engine assemblies use as evidence of what game data the engine reads,
+       and this library's field names come from save files, not game data. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>SiegeFX.OriginalSaves</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SiegeFX.Core\SiegeFX.Core.csproj" />
+  </ItemGroup>
+
+</Project>
