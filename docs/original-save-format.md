@@ -282,7 +282,12 @@ retires nothing of its own. The same object stays in `m_globaldb` with
 `m_isallclients` 0 → 1, `m_bidentified` 0 → 1, `is_visible` 1 → 0, and its
 position now the hero's. Its one-shot pickup trigger (`receive_world_message
 we_picked_up` → `send_world_message we_trigger_deactivate` to `0x01c00afa`)
-is removed from the object. `party.gas` lists the item too. One
+is removed from the object. `party.gas` lists the item too. Few carried
+items have a map SCID at all: loot dropped by monsters or chests is made at
+run time (`m_scid = 0xfffffffe`) and cannot be retired. Map items inside an
+inventory: 2 in D7 (the Fire Shot and `potion_mana_small` `0x01c0007e`), 4 in
+the 2019 save, 1 in the LoA save. No retired SCID belongs to an item still in
+an inventory in any save. One
 `trigger_generic` (`0x01c007c3`) was retired in the same few seconds; whether
 the pickup caused it is not known.
 
@@ -374,8 +379,9 @@ Roughly in order of how much they block importing and writing saves.
    parented to whoever carries it) do not. The list also grows with one-time
    gizmos as the game runs (D2 → D3 added 26), and the LoA save has 88 doors
    on it, some of them breakable cage doors: are the rest broken, or opened
-   by scripts? What happens to a picked-up item that is then drunk, sold or
-   dropped is not known, nor what the other `m_scidbitscoll` bits mean.
+   by scripts? What happens to a map item that is then drunk, sold or
+   dropped is not known (test: drink D7's `potion_mana_small` `0x01c0007e`
+   between two saves), nor what the other `m_scidbitscoll` bits mean.
 2. **The write order.** 0.3–0.4 % of entries (a handful of member names) are
    written after a later sibling's subtree. A writer needs the rule for when, or
    proof that the original loads a save laid out in plain tree order (it reads
