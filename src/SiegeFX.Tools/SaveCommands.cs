@@ -103,8 +103,16 @@ static class SaveCommands
         var retired = OriginalWorldFacts.RetiredScids(s.World);
         var saved = OriginalWorldFacts.ObjectScids(s.World);
         using var tank = SiegeFX.Core.Tank.TankFile.Open(mapPath);
-        var r = MapPlacements.WithScids(new SiegeFX.Core.Tank.TankReader(tank), retired);
-        Console.WriteLine($"{retired.Count} retired SCID(s), {r.Matches.Count} found in the map" +
+        var mapName = s.Info.MapName;
+        var r = MapPlacements.WithScids(new SiegeFX.Core.Tank.TankReader(tank), mapName, retired);
+        if (r.FilesScanned == 0)
+        {
+            var mapTank = s.Info.TankManifest.FirstOrDefault(t => t.TankType == "tank_map")?.FileName;
+            Console.Error.WriteLine($"{Path.GetFileName(mapPath)} has no regions of {mapName}, this save's map" +
+                                    (mapTank is null ? "" : $"; pass {mapTank}"));
+            return 3;
+        }
+        Console.WriteLine($"{mapName}: {retired.Count} retired SCID(s), {r.Matches.Count} found in the map" +
                           $"{(r.Matches.Count < retired.Count ? $" ({retired.Count - r.Matches.Count} not in this map)" : "")}; " +
                           "* = still saved (a corpse, or an object kept with its new state)");
         foreach (var g in r.Matches.GroupBy(p => p.Template).OrderBy(g => g.Key, StringComparer.Ordinal))

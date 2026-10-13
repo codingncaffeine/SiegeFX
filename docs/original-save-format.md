@@ -243,8 +243,15 @@ not their area is loaded. Evidence:
 | Fire Shot → kill | `0x01c005ca`, the krug killed, which is also still saved as a corpse |
 | kill → D2 (hit a barrel) | `0x01c006b6`, a start-area barrel |
 
-A new game already has 44 entries (Norick `0x01c007c0`, who dies in the
-opening, among them); the 2019 save has 7 007 and the LoA save 3 005. The
+A new game already has 44 entries, mostly its opening cutscene. All 47 in C2
+are placements in `World.dsmap`: 36 `cmd_camera_command`, 4
+`trigger_generic`, `cmd_enter_nis`, `dog_sleeping`,
+`door_grs_farmhouse_breakable`, a `spider` (`0x08d000b7`), Norick
+(`0x01c007c0`, dies in the opening; his corpse is still saved) and the two
+smashed barrels. The 2019 save has 7 007 entries and the LoA save 3 005.
+SCIDs are unique only within one map: LoA's `map_expansion`
+(`Expansion.dsmap`) reuses DS1's numbers, so a save's retired SCIDs must be
+looked up in the map its `info.gas` names. The
 list is sorted by SCID. A smashed barrel leaves nothing else by SCID; its
 debris is in `/godb/m_localdb`, which holds objects made at run time
 (`m_scid = 0xfffffffe`). C2 holds `frag_glb_metal_01` ×4 and
@@ -308,8 +315,9 @@ siegefx save locate <World.dsmap> edgaar       # placements by template name
 siegefx save retired <file> <World.dsmap>      # placements the game will not create again
 ```
 
-`retired` looks up every SCID in `m_retiredscidcoll` in the map and lists
-them by template; `*` marks the ones still saved (corpses, mostly).
+`retired` looks up every SCID in `m_retiredscidcoll` in the save's own map
+(it refuses a map tank without that map's regions and names the right file)
+and lists them by template; `*` marks the ones still saved (corpses, mostly).
 
 `diff` reports the readable facts first (info, party, orders, items, quests,
 flags, tips), then counts value changes per world section. `skritengine` and

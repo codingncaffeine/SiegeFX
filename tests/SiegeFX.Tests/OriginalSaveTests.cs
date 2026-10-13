@@ -378,7 +378,7 @@ public class MapPlacementsTests
     }
 
     [Fact]
-    public void Placements_are_found_by_a_set_of_scids_and_carry_their_node()
+    public void Placements_are_found_by_scids_within_one_map_and_carry_their_node()
     {
         var path = Path.Combine(Path.GetTempPath(), $"siegefx-{Guid.NewGuid():N}.dsmap");
         var w = new TankWriter();
@@ -391,12 +391,15 @@ public class MapPlacementsTests
         {
             w.Write(path, DateTime.UtcNow);
             using var tank = TankFile.Open(path);
-            var r = MapPlacements.WithScids(new TankReader(tank), new HashSet<uint> { 0x01C00009, 0x01C0001D, 0x01C00480, 0x02000001 });
+            var scids = new HashSet<uint> { 0x01C00009, 0x01C0001D, 0x01C00480, 0x02000001 };
+            var r = MapPlacements.WithScids(new TankReader(tank), "map_world", scids);
             Assert.Equal([
                 new MapPlacement("fh_r1", "non_interactive.gas", "barrel_glb_fh_r1", 0x01C00009, 0xb803530c),
                 new MapPlacement("fh_r1", "non_interactive.gas", "crate_glb_fh_r1", 0x01C0001D, 0xb803530c),
                 new MapPlacement("fh_r1", "non_interactive.gas", "trigger_generic", 0x01C00480),
             ], r.Matches);
+            // The same SCIDs mean other objects in another map.
+            Assert.Equal(0, MapPlacements.WithScids(new TankReader(tank), "map_expansion", scids).FilesScanned);
         }
         finally { File.Delete(path); }
     }

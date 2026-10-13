@@ -25,12 +25,16 @@ public static class MapPlacements
         return Where(map, p => scid is not null ? p.Scid == scid : p.Template.Contains(query, StringComparison.OrdinalIgnoreCase));
     }
 
-    /// <summary>The placements whose SCID is in <paramref name="scids"/>.</summary>
-    public static SearchResult WithScids(TankReader map, IReadOnlySet<uint> scids) =>
-        Where(map, p => scids.Contains(p.Scid));
+    /// <summary>The placements of map <paramref name="mapName"/> (the
+    /// <c>map_name</c> in a save's info.gas) whose SCID is in
+    /// <paramref name="scids"/>. SCIDs are only unique within one map: DS1's
+    /// <c>map_world</c> and LoA's <c>map_expansion</c> reuse the same numbers.</summary>
+    public static SearchResult WithScids(TankReader map, string mapName, IReadOnlySet<uint> scids) =>
+        Where(map, p => scids.Contains(p.Scid), mapName);
 
-    static SearchResult Where(TankReader map, Func<MapPlacement, bool> match)
+    static SearchResult Where(TankReader map, Func<MapPlacement, bool> match, string? mapName = null)
     {
+        var mapDir = mapName is null ? null : $"/maps/{mapName}/";
         var matches = new List<MapPlacement>();
         var errors = new List<string>();
         var regions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -40,6 +44,7 @@ public static class MapPlacements
             int r = path.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase);
             int o = path.IndexOf("/objects/", StringComparison.OrdinalIgnoreCase);
             if (r < 0 || o < r || !path.EndsWith(".gas", StringComparison.OrdinalIgnoreCase)) continue;
+            if (mapDir is not null && !path.Contains(mapDir, StringComparison.OrdinalIgnoreCase)) continue;
             var region = path[(r + "/regions/".Length)..o];
             regions.Add(region);
             files++;
