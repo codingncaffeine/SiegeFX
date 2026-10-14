@@ -3684,7 +3684,8 @@ static int CmdRegionChaseSim(string[] a)
 ///              wrong-way starts (the first meter heads away from the click)
 ///              and long detours (walked more than 2.5x the straight line).
 ///   approach — an attack order on a target 5-40u away with --range (a bow),
-///              driven tick by tick through the game's HeroApproach rules.
+///              driven tick by tick through the game's HeroApproach rules:
+///              path to the target, stop the tick it is in reach.
 ///              IN-REACH / GAVE-UP (no path) / PINNED. The line test is the
 ///              nav mesh's blocked-prop test; the game's sight test also
 ///              casts against terrain, which this tool does not load.
@@ -3835,7 +3836,7 @@ static int CmdRegionHeroSim(string[] a)
         buf.Clear();
         bool reachable = NavPathfinder.TryFindPath(mesh, startTri, targetTri, buf, ws, traversal);
         var hero = NewHero(start);
-        hero.SetTarget(HeroApproach.PointInReach(start, target, range));
+        hero.SetTarget(target);
         string outcome = "PINNED";
         float budget = initial / MathF.Max(1f, speed) * 4f + 10f;
         for (float t = 0f; t < budget; t += dt)
@@ -3846,7 +3847,7 @@ static int CmdRegionHeroSim(string[] a)
             var step = HeroApproach.Decide(d, range, lineBlocked, hero.PathBlocked);
             if (step == HeroApproachStep.Act) { outcome = "IN-REACH"; break; }
             if (step == HeroApproachStep.GiveUp) { outcome = "GAVE-UP"; break; }
-            hero.SetTarget(step == HeroApproachStep.CloseIn ? target : HeroApproach.PointInReach(pos, target, range));
+            hero.SetTarget(target);   // as the game does: path to the target, stop when in reach
             hero.Tick(dt);
         }
         approachOutcomes[outcome] = approachOutcomes.GetValueOrDefault(outcome) + 1;

@@ -8,7 +8,9 @@ public enum HeroApproachStep
 {
     /// <summary>In reach with a clear line: act now.</summary>
     Act,
-    /// <summary>Out of reach: walk to a point just inside it.</summary>
+    /// <summary>Out of reach: keep walking toward the target. Path to the
+    /// target itself (or, for a prop that blocks its own footprint, to a free
+    /// spot by it); this check ends the walk as soon as the hero is in reach.</summary>
     WalkIntoReach,
     /// <summary>In reach but the line is blocked: keep closing on the target
     /// until it clears, as a chasing monster does.</summary>
@@ -17,10 +19,11 @@ public enum HeroApproachStep
     GiveUp,
 }
 
-/// <summary>The hero's walk-up to a clicked target. The order stands until it
-/// is carried out, the target is gone, the player gives another order, or the
-/// target can't be reached; there is no distance at which the hero gives up.
-/// The reach comes from the data (the weapon's or spell's range).</summary>
+/// <summary>The hero's walk-up to a clicked target, decided again every tick.
+/// The order stands until it is carried out, the target is gone, the player
+/// gives another order, or the target can't be reached; there is no distance
+/// at which the hero gives up, so a long way round is walked like any other
+/// path. The reach comes from the data (the weapon's or spell's range).</summary>
 public static class HeroApproach
 {
     /// <param name="distXZ">Plan-view distance from the hero to the target.</param>
