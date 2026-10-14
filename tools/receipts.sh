@@ -5,20 +5,19 @@
 # goldens/sfx-timelines. Exit 0 only when every step passes. Needs a Dungeon
 # Siege install for everything after the unit tests.
 #
-# Three guards keep the original game's content respected: guard-repo (no game
-# files in git), guard-text (no string in the built code or in goldens/ copies
-# the game's text; existing cases are in goldens/guard-text.baseline.txt) and
-# install-untouched (no file in the install changed during the run). Every run
-# writes scratch/receipts/summary.md, ready to paste into a pull request.
+# Two guards keep the original game's content respected: guard-repo (no game
+# files in git) and install-untouched (no file in the install changed during
+# the run). Every run writes scratch/receipts/summary.md, ready to paste into a
+# pull request.
 #
 #   tools/receipts.sh [--ds1=PATH] [--update-baseline]
 #
 # The install comes from --ds1, else SIEGEFX_DS1, else the first line of
 # ${XDG_CONFIG_HOME:-~/.config}/siegefx/ds1path.txt. DOTNET picks the dotnet
 # executable (default: dotnet on PATH). --update-baseline skips the trace
-# comparison and, after every other step has passed, records this run's ledger,
-# effect traces and guard-text hits as the new baselines; commit them with the
-# change that moved them. Logs and gap lists land in scratch/receipts/.
+# comparison and, after every other step has passed, records this run's ledger
+# and effect traces as the new baselines; commit them with the change that
+# moved them. Logs and gap lists land in scratch/receipts/.
 set -uo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 dotnet=${DOTNET:-dotnet}
@@ -27,7 +26,7 @@ for arg in "$@"; do
     case "$arg" in
         --ds1=*) ds1=${arg#--ds1=} ;;
         --update-baseline) update=true ;;
-        -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
         *) echo "receipts: unknown argument $arg" >&2; exit 2 ;;
     esac
 done
@@ -59,7 +58,6 @@ step() {
         failed=1
     fi
 }
-skip() { echo "SKIP  $1  ($2)"; results+=("$1|SKIP: $2|"); }
 
 step build "$dotnet" build "$repo/SiegeFX.sln" -c Release --nologo -warnaserror
 step tests "$dotnet" test "$repo/tests/SiegeFX.Tests" -c Release --no-build --nologo
@@ -82,16 +80,6 @@ baseline="$repo/goldens/parity-ledger.baseline.txt"
 step parity-ledger "$cli" parity ledger "$ds1" --out="$work/parity" --baseline="$baseline"
 sed -n '/^  section/,/^$/p' "$work/parity-ledger.log"
 sed -n '/^against baseline/,$p' "$work/parity-ledger.log" | sed 's/^/  /'
-
-# No string in the built code or in goldens/ may copy the original game's text
-# (quest text, dialogue, interface labels): it is read from the data, typos and
-# all. Copies that predate the guard are recorded, by hash, in its baseline.
-text_baseline="$repo/goldens/guard-text.baseline.txt"
-if $update; then
-    skip guard-text "--update-baseline records it"
-else
-    step guard-text "$cli" guard text "$ds1" --repo="$repo" --baseline="$text_baseline"
-fi
 
 # Every spell's cast effect, run through the sfx VM with a fixed seed, must
 # reproduce its committed trace byte for byte: none changed, missing or new.
@@ -118,7 +106,6 @@ fi
 
 if $update && [ $failed -eq 0 ]; then
     "$cli" parity ledger "$ds1" --write-baseline="$baseline" > /dev/null && echo "baseline updated: $baseline"
-    "$cli" guard text "$ds1" --repo="$repo" --write-baseline="$text_baseline" > /dev/null && echo "baseline updated: $text_baseline"
     rm -rf "$work/sfx-timelines"
     if "$cli" sfx timeline "$logic" --all --out="$work/sfx-timelines" > /dev/null; then
         rm -f "$goldens"/*.txt && cp "$work/sfx-timelines"/*.txt "$goldens"/

@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!-- Defensive checks that tools/receipts.sh runs: no game content in the
-       repository, no original text retyped into the code, and the install
-       left untouched. Kept out of the engine assemblies on purpose: the
+       repository, and the install left untouched. Kept out of the engine
+       assemblies on purpose: the
        parity ledger counts their string literals as names the engine reads,
        and the file signatures and extensions here are not game data. -->
   <PropertyGroup>
