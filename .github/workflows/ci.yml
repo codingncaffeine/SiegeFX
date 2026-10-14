@@ -1,7 +1,8 @@
 name: CI
 
 # Every push to main and every pull request: build the whole solution on Linux
-# and on Windows with warnings as errors and run the data-free unit tests; and
+# and on Windows with warnings as errors and run the data-free unit tests and
+# the game's self-tests; and
 # build the release artifacts (publish.sh), launch the Linux tarball as shipped
 # (packaging/smoke-test.sh) and keep the artifacts for a week. The checks that
 # need a Dungeon Siege install (the parity ledger, the effect traces, the menu
@@ -57,6 +58,23 @@ jobs:
       # minutes with a dump.
       - name: Unit tests
         run: dotnet test tests/SiegeFX.Tests -c Release --no-build --blame-hang --blame-hang-timeout 2m --logger "console;verbosity=normal" --results-directory TestResults
+
+      # The game's self-tests build their own data, so they need no install:
+      # a save written and read back, a dialogue tree parsed, and a host and
+      # client playing over loopback. tools/receipts.sh runs the same three.
+      - name: Game self-tests
+        shell: bash
+        timeout-minutes: 5
+        env:
+          ALSOFT_DRIVERS: "null"
+        run: |
+          failed=0
+          for t in save dialogue net; do
+            echo "::group::selftest-$t"
+            dotnet src/SiegeFX.Runtime/bin/Release/net10.0/SiegeFX.dll --selftest-$t || { echo "::error::selftest-$t failed"; failed=1; }
+            echo "::endgroup::"
+          done
+          exit $failed
 
       - name: Keep the hang dumps
         if: failure()
