@@ -187,6 +187,7 @@ echo  114. SC-MP-EOS P3 NET ROUND-TRIP  - headless host^<-^>client: join+snapsho
 echo  115. FRONTEND CHROME SHOTS        - offscreen PNG receipts of the MainMenu + SinglePlayer chrome (goldens\frontend-shots; compare vs retail)
 echo  116. ENDGAME: GOM ARENA           - spawn in gom2 with dev console (tilde: god/kill) + debug spells; kill Gom then Super Gom = quest complete + VICTORY card
 echo  117. ENEMY CHASE-SIM AUDIT        - headless directed-movement audit (walker-vs-A* divergence, incl. generator children); new-game region set + optional all-region sweep
+echo  118. MUSIC PLAYER                 - every music track in Sound.dsres: play, stop, filter, extract one or all (siegefx music browse)
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -310,6 +311,7 @@ if /i "%CHOICE%"=="114" goto T114
 if /i "%CHOICE%"=="115" goto T115
 if /i "%CHOICE%"=="116" goto T116
 if /i "%CHOICE%"=="117" goto T117
+if /i "%CHOICE%"=="118" goto T118
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2709,6 +2711,18 @@ echo.
 "%TOOL%" region chase-sim "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" /world/maps/map_world/regions/fh_r1,/world/maps/map_world/regions/bc_r1,/world/maps/map_world/regions/fh_r1a,/world/maps/map_world/regions/hc_r1,/world/maps/map_world/regions/path2crypts
 echo.
 pause
+goto MENU
+
+:T118
+echo.
+echo --- MUSIC PLAYER: every track in Sound.dsres ---
+echo [A numbered menu of the game's music, streamed through SiegeFX's own
+echo  MusicPlayer while the menu stays usable: type a number to play, S to
+echo  stop, N/P for next/previous, F text to filter, X n to extract one track
+echo  or XA all shown to your Music\SiegeFX folder, Q to come back here.]
+echo.
+"%TOOL%" music browse "%DS1%"
+echo.
 goto MENU
 
 :BUILD

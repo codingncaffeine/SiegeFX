@@ -11179,9 +11179,10 @@ static void DumpLayer(TsdStore.Layer l, int idx)
 
 static int DispatchMusic(string[] a)
 {
-    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx music <list|play|selftest> ..."); return 1; }
+    if (a.Length == 0) { Console.Error.WriteLine("usage: siegefx music <browse|list|play|selftest> ..."); return 1; }
     return a[0].ToLowerInvariant() switch
     {
+        "browse"   => MusicBrowser.Run(a[1..]),
         "list"     => CmdMusicList(a[1..]),
         "play"     => CmdMusicPlay(a[1..]),
         "selftest" => CmdMusicSelftest(a[1..]),

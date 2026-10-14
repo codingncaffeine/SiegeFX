@@ -189,6 +189,7 @@ menu() {
     printf '%s\n' " 115. FRONTEND CHROME SHOTS        - offscreen PNG receipts of the MainMenu + SinglePlayer chrome (goldens/frontend-shots; compare vs retail)"
     printf '%s\n' " 116. ENDGAME: GOM ARENA           - spawn in gom2 with dev console (tilde: god/kill) + debug spells; kill Gom then Super Gom = quest complete + VICTORY card"
     printf '%s\n' " 117. ENEMY CHASE-SIM AUDIT        - headless directed-movement audit (walker-vs-A* divergence, incl. generator children); new-game region set + optional all-region sweep"
+    printf '%s\n' " 118. MUSIC PLAYER                 - every music track in Sound.dsres: play, stop, filter, extract one or all (siegefx music browse)"
     echo
     printf '%s\n' "  B.  Rebuild (dotnet build -c Release)"
     printf '%s\n' "  Q.  Quit"
@@ -2331,6 +2332,17 @@ T117() {
     echo
     pause
 }
+T118() {
+    echo
+    printf '%s\n' "--- MUSIC PLAYER: every track in Sound.dsres ---"
+    printf '%s\n' "[A numbered menu of the game's music, streamed through SiegeFX's own"
+    printf '%s\n' " MusicPlayer while the menu stays usable: type a number to play, S to"
+    printf '%s\n' " stop, N/P for next/previous, F text to filter, X n to extract one track"
+    printf '%s\n' " or XA all shown to your Music/SiegeFX folder, Q to come back here.]"
+    echo
+    "$TOOL" music browse "${DS1}"; ERRORLEVEL=$?
+    echo
+}
 
 while true; do
     menu
@@ -2453,6 +2465,7 @@ while true; do
         115) T115 ;;
         116) T116 ;;
         117) T117 ;;
+        118) T118 ;;
         b) build ;;
         q) exit 0 ;;
     esac
