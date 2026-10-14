@@ -503,7 +503,7 @@ static class ParityLedger
                 .Select(f => Path.Combine(engineDir, f)).Where(File.Exists));
     }
 
-    static string? FindEngineDir()
+    internal static string? FindEngineDir()
     {
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent)
         {

@@ -50,6 +50,7 @@ try
         "weapons"   => DispatchWeapons(args[1..]),
         "parity"    => ParityLedger.Dispatch(args[1..]),
         "save"      => SaveCommands.Dispatch(args[1..]),
+        "guard"     => GuardCommands.Dispatch(args[1..]),
         _      => UnknownCommand(args[0]),
     };
 }
@@ -85,6 +86,7 @@ static void PrintUsage()
     Console.WriteLine();
     Console.WriteLine("Usage:");
     Console.WriteLine("  siegefx save inspect|tree|diff <file.dssave> ...   (saves from the original game)");
+    Console.WriteLine("  siegefx guard repo|text|install ...                (receipts' content guards)");
     Console.WriteLine("  siegefx parity ledger <install> [--engine=DIR] [--out=DIR] [--baseline=FILE] [--write-baseline=FILE]");
     Console.WriteLine("  siegefx tank info    <tank>");
     Console.WriteLine("  siegefx tank list    <tank> [--prefix=PATH] [--ext=.EXT]");

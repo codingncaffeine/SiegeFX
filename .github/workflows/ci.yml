@@ -1,7 +1,8 @@
 name: CI
 
 # Every push to main and every pull request: build the whole solution on Linux
-# and on Windows with warnings as errors and run the data-free unit tests; and
+# and on Windows with warnings as errors, run the data-free unit tests and check
+# that no game content is committed; and
 # build the release artifacts (publish.sh), launch the Linux tarball as shipped
 # (packaging/smoke-test.sh) and keep the artifacts for a week. The checks that
 # need a Dungeon Siege install (the parity ledger, the effect traces, the menu
@@ -52,6 +53,12 @@ jobs:
       - name: test-all.sh is what test-all.bat generates
         if: runner.os == 'Linux'
         run: tools/test-menu.sh --check
+
+      # No game files in the repository: SiegeFX ships none of the original
+      # game (the same check tools/receipts.sh runs as guard-repo).
+      - name: No game content in the repository
+        if: runner.os == 'Linux'
+        run: dotnet src/SiegeFX.Tools/bin/Release/net10.0/siegefx.dll guard repo .
 
       # Every test is named as it passes; one that hangs is stopped after two
       # minutes with a dump.

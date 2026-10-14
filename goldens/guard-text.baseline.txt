@@ -1,0 +1,4 @@
+# Strings in the code or in goldens/ that copy the original game's text, recorded when
+# the text guard was added so only new copies fail. Each line is where the string is
+# and a hash of its words (never the text itself). Shrink this file by reading the
+# text from the game data instead; regenerate with tools/receipts.sh --update-baseline.

@@ -25,6 +25,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SiegeFX.Core\SiegeFX.Core.csproj" />
     <ProjectReference Include="..\..\src\SiegeFX.OriginalSaves\SiegeFX.OriginalSaves.csproj" />
+    <ProjectReference Include="..\..\src\SiegeFX.Guards\SiegeFX.Guards.csproj" />
   </ItemGroup>
 
 </Project>

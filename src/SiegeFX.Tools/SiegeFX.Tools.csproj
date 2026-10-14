@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\SiegeFX.Core\SiegeFX.Core.csproj" />
     <ProjectReference Include="..\SiegeFX.OriginalSaves\SiegeFX.OriginalSaves.csproj" />
+    <ProjectReference Include="..\SiegeFX.Guards\SiegeFX.Guards.csproj" />
     <!-- Phase 22-SC-MUSIC-FOLD — pulls in AudioEngine + MusicPlayer + NLayer
          + Silk.NET.OpenAL transitively. Replaced the SiegeFX.Runtime project
          reference that was bringing in 13MB of GLFW + OpenGL native runtimes
