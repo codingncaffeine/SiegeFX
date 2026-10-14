@@ -14980,6 +14980,7 @@ void main()
                 // lf_human_player gate; computer-only zones are
                 // rejected as paths.
                 Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+                PartialPathFallback = true,
                 DiagnosticLogging = true,
             };
             if (pendingTarget is { } tgt) _playerFollower.SetTarget(tgt);
@@ -21682,6 +21683,7 @@ void main()
                         _playerFollower = new SiegeFX.Core.Nav.NavFollower(nav, pos, speed)
                         {
                             Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+                            PartialPathFallback = true,
                             DiagnosticLogging = true,
                         };
                     }
@@ -21765,6 +21767,7 @@ void main()
                         _playerFollower = new SiegeFX.Core.Nav.NavFollower(nav, pos, speed)
                         {
                             Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+                            PartialPathFallback = true,
                             DiagnosticLogging = true,
                         };
                     }
@@ -22376,7 +22379,7 @@ void main()
                 var pos = _playerFollower.Position;
                 var speed = _playerFollower.Speed;
                 _playerFollower = new SiegeFX.Core.Nav.NavFollower(nav, pos, speed)
-                { Traversal = SiegeFX.Core.Nav.NavTraversal.Player, DiagnosticLogging = true };
+                { Traversal = SiegeFX.Core.Nav.NavTraversal.Player, PartialPathFallback = true, DiagnosticLogging = true };
             }
         }
     }
@@ -24804,29 +24807,33 @@ void main()
                             float ddx = after.X - tp.X;
                             float ddz = after.Z - tp.Z;
                             float pdist = MathF.Sqrt(ddx * ddx + ddz * ddz);
-                            if (pdist > MeleeChaseGiveUp)
+                            // SC-PATHING — the line is the melee approach
+                            // (obstacle, e.g. a fence) or the bow's sight
+                            // (a building); a blocked line keeps the hero
+                            // closing in until it clears.
+                            bool lineBlocked = pdist <= r && (_weaponIsRanged
+                                ? IsSightBlocked(after, tp)
+                                : _navMesh is not null && _navMesh.SegmentCrossesBlocked(after, tp));
+                            switch (SiegeFX.Core.Actors.HeroApproach.Decide(pdist, r, lineBlocked, _playerFollower.PathBlocked))
                             {
-                                Console.WriteLine(
-                                    $"click-attack: gave up on {pat.Actor.Template.Name} " +
-                                    $"(dist={pdist:F1}u)");
-                                _pendingAttackTarget = null;
-                            }
-                            else if (pdist <= r
-                                     && !(!_weaponIsRanged && _navMesh is not null
-                                          && _navMesh.SegmentCrossesBlocked(after, tp))
-                                     && !(_weaponIsRanged && IsSightBlocked(after, tp)))
-                            {
-                                PerformPlayerSwing(pat, atk);
-                                _pendingAttackTarget = null;
-                            }
-                            else
-                            {
-                                // SC-PATHING — out of reach OR the melee
-                                // approach is obstacle-blocked (fence) OR the
-                                // bow's sight line is occluded (building):
-                                // keep walking; the A* routes around now that
-                                // blockers mark the mesh.
-                                _playerFollower.SetTarget(ComputeApproachPoint(after, tp, r));
+                                case SiegeFX.Core.Actors.HeroApproachStep.Act:
+                                    PerformPlayerSwing(pat, atk);
+                                    // A swing can't start mid-cast or mid-drink:
+                                    // keep the order until one does.
+                                    if (_playerSwing is not null) _pendingAttackTarget = null;
+                                    break;
+                                case SiegeFX.Core.Actors.HeroApproachStep.GiveUp:
+                                    Console.WriteLine(
+                                        $"click-attack: gave up on {pat.Actor.Template.Name} " +
+                                        $"(dist={pdist:F1}u, no path)");
+                                    _pendingAttackTarget = null;
+                                    break;
+                                case SiegeFX.Core.Actors.HeroApproachStep.CloseIn:
+                                    _playerFollower.SetTarget(tp);
+                                    break;
+                                default:
+                                    _playerFollower.SetTarget(ComputeApproachPoint(after, tp, r));
+                                    break;
                             }
                         }
                     }
@@ -24860,24 +24867,28 @@ void main()
                             float cdx = after.X - pcPos.X;
                             float cdz = after.Z - pcPos.Z;
                             float cdist = MathF.Sqrt(cdx * cdx + cdz * cdz);
-                            if (cdist > MeleeChaseGiveUp)
+                            bool cBlocked = cdist <= pcSpell!.CastRange && IsSightBlocked(after, pcPos);
+                            switch (SiegeFX.Core.Actors.HeroApproach.Decide(cdist, pcSpell.CastRange, cBlocked, _playerFollower.PathBlocked))
                             {
-                                Console.WriteLine($"click-cast: gave up (dist={cdist:F1}u)");
-                                _pendingCastTarget = null;
-                                _pendingCastProp = null;
-                            }
-                            else if (cdist <= pcSpell!.CastRange && !IsSightBlocked(after, pcPos))
-                            {
-                                BeginPlayerCast(_pendingCastSlot, pcSpell,
-                                    _pendingCastTarget, _pendingCastProp,
-                                    _progression?.Level ?? 1);
-                                _pendingCastTarget = null;
-                                _pendingCastProp = null;
-                            }
-                            else
-                            {
-                                _playerFollower.SetTarget(ComputeApproachPoint(
-                                    after, pcPos, MathF.Max(1.5f, pcSpell.CastRange * 0.9f)));
+                                case SiegeFX.Core.Actors.HeroApproachStep.Act:
+                                    BeginPlayerCast(_pendingCastSlot, pcSpell,
+                                        _pendingCastTarget, _pendingCastProp,
+                                        _progression?.Level ?? 1);
+                                    _pendingCastTarget = null;
+                                    _pendingCastProp = null;
+                                    break;
+                                case SiegeFX.Core.Actors.HeroApproachStep.GiveUp:
+                                    Console.WriteLine($"click-cast: gave up (dist={cdist:F1}u, no path)");
+                                    _pendingCastTarget = null;
+                                    _pendingCastProp = null;
+                                    break;
+                                case SiegeFX.Core.Actors.HeroApproachStep.CloseIn:
+                                    _playerFollower.SetTarget(pcPos);
+                                    break;
+                                default:
+                                    _playerFollower.SetTarget(ComputeApproachPoint(
+                                        after, pcPos, MathF.Max(1.5f, pcSpell.CastRange * 0.9f)));
+                                    break;
                             }
                         }
                     }
@@ -24898,30 +24909,33 @@ void main()
                             float bdx = after.X - bPos.X;
                             float bdz = after.Z - bPos.Z;
                             float bdist = MathF.Sqrt(bdx * bdx + bdz * bdz);
-                            if (bdist > MeleeChaseGiveUp)
-                            {
-                                Console.WriteLine($"click-break: gave up on {pbp.Template} (dist={bdist:F1}u)");
-                                _pendingBreakProp = null;
-                            }
                             // SC-PROP-BREAK-REACH — reach-only melee gate (see
                             // TryClickBreak): no line-of-nav check for breakables,
                             // so a clustered barrel isn't walled off by its
                             // neighbours' (or its own) does_block_path footprint.
-                            else if (bdist <= bReach
-                                     && !(_weaponIsRanged && IsSightBlocked(after, bPos)))
+                            bool bBlocked = bdist <= bReach && _weaponIsRanged && IsSightBlocked(after, bPos);
+                            switch (SiegeFX.Core.Actors.HeroApproach.Decide(bdist, bReach, bBlocked, _playerFollower.PathBlocked))
                             {
-                                // PerformPropBreak no-ops while a swing/cast is
-                                // in flight — keep the latch so the next tick
-                                // retries instead of dropping the click.
-                                if (_playerSwing is null && _playerCast is null)
-                                {
-                                    PerformPropBreak(pbp, bAtk);
+                                case SiegeFX.Core.Actors.HeroApproachStep.Act:
+                                    // PerformPropBreak no-ops while a swing/cast is
+                                    // in flight — keep the latch so the next tick
+                                    // retries instead of dropping the click.
+                                    if (_playerSwing is null && _playerCast is null)
+                                    {
+                                        PerformPropBreak(pbp, bAtk);
+                                        _pendingBreakProp = null;
+                                    }
+                                    break;
+                                case SiegeFX.Core.Actors.HeroApproachStep.GiveUp:
+                                    Console.WriteLine($"click-break: gave up on {pbp.Template} (dist={bdist:F1}u, no path)");
                                     _pendingBreakProp = null;
-                                }
-                            }
-                            else
-                            {
-                                _playerFollower.SetTarget(FindWalkableApproach(after, bPos, bReach));
+                                    break;
+                                case SiegeFX.Core.Actors.HeroApproachStep.CloseIn:
+                                    _playerFollower.SetTarget(bPos);
+                                    break;
+                                default:
+                                    _playerFollower.SetTarget(FindWalkableApproach(after, bPos, bReach));
+                                    break;
                             }
                         }
                     }
@@ -28545,6 +28559,7 @@ void main()
             _playerFollower = new SiegeFX.Core.Nav.NavFollower(navMesh, spawnPos, speed)
             {
                 Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+                PartialPathFallback = true,
                 // SC-NAV-STAIR-DIAG — player-only nav diag log. Lets us see
                 // [nav-target] / [nav-stuck] for the player's path without
                 // the 347 NPC wanderers drowning the output.
@@ -30278,10 +30293,6 @@ void main()
     // reach" falls back to MeleeReachFallback; only authored long-reach
     // weapons (polearms, two-handers) override it.
     private const float MeleeReachAttackRangeThreshold = 1.5f;
-    // Phase 12-SC-1 — once latched, abandon the walk-up if the target wandered
-    // farther than this. Bigger than reach so a moving krug doesn't break the
-    // chase mid-stride; smaller than aggro so we don't track across the map.
-    private const float MeleeChaseGiveUp = 14f;
     // Phase 12-SC-1 — pending click-attack target. Set when the player RMBs an
     // enemy beyond reach: the follower walks up, and once inside MeleeReach the
     // per-tick check fires the actual swing through PerformPlayerSwing.
@@ -30622,9 +30633,6 @@ void main()
 
     static Vector3 ComputeApproachPoint(Vector3 from, Vector3 toCenter, float stopShortBy)
     {
-        var d = new Vector3(toCenter.X - from.X, 0f, toCenter.Z - from.Z);
-        float len = d.Length();
-        if (len < 1e-3f) return from;
         // Phase 21-SC-BARREL-FOLD — DS1 stops the hero at the edge of
         // swing reach, not deep inside it. Pre-fold's 0.8x stand-off had
         // the hero plant 0.4u past the reach boundary toward the target,
@@ -30635,9 +30643,7 @@ void main()
         // clears the target's body bubble for the typical hero/krug
         // pairing. Eyes-on the user expects "stands close to but not on
         // top of" — that's this distance.
-        float walk = MathF.Max(0f, len - stopShortBy * 0.95f);
-        var dir = d / len;
-        return new Vector3(from.X + dir.X * walk, toCenter.Y, from.Z + dir.Z * walk);
+        return SiegeFX.Core.Actors.HeroApproach.PointInReach(from, toCenter, stopShortBy);
     }
 
     /// <summary>SC-PROP-BREAK-REACH — pick a WALKABLE stand point to approach a

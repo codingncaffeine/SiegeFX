@@ -189,6 +189,7 @@ menu() {
     printf '%s\n' " 115. FRONTEND CHROME SHOTS        - offscreen PNG receipts of the MainMenu + SinglePlayer chrome (goldens/frontend-shots; compare vs retail)"
     printf '%s\n' " 116. ENDGAME: GOM ARENA           - spawn in gom2 with dev console (tilde: god/kill) + debug spells; kill Gom then Super Gom = quest complete + VICTORY card"
     printf '%s\n' " 117. ENEMY CHASE-SIM AUDIT        - headless directed-movement audit (walker-vs-A* divergence, incl. generator children); new-game region set + optional all-region sweep"
+    printf '%s\n' " 119. HERO MOVE-SIM AUDIT          - headless hero movement: random clicks (wrong-way starts, detours, stuck) + bow walk-up to targets 5-40u away; new-game region set"
     echo
     printf '%s\n' "  B.  Rebuild (dotnet build -c Release)"
     printf '%s\n' "  Q.  Quit"
@@ -2331,6 +2332,21 @@ T117() {
     echo
     pause
 }
+T119() {
+    echo
+    printf '%s\n' "--- HERO MOVE-SIM AUDIT (headless hero movement, new-game set) ---"
+    printf '%s\n' "[From random standing points in the fh_r1 set: (1) clicks the ground"
+    printf '%s\n' " 5-40u away and walks the hero there with its own follower settings,"
+    printf '%s\n' " counting wrong-way starts, long detours and STUCK/PINNED walks;"
+    printf '%s\n' " (2) orders an attack on a target 5-40u away with a 10u bow and drives"
+    printf '%s\n' " the game's walk-up rules tick by tick: IN-REACH, GAVE-UP (no path) or"
+    printf '%s\n' " PINNED. Prints start/goal points to replay failures. Append --diag"
+    printf '%s\n' " for the follower's own nav logging.]"
+    echo
+    "$TOOL" region hero-sim "${DS1}/Maps/World.dsmap" "${DS1}/Resources/Terrain.dsres" /world/maps/map_world/regions/fh_r1,/world/maps/map_world/regions/bc_r1,/world/maps/map_world/regions/fh_r1a,/world/maps/map_world/regions/hc_r1,/world/maps/map_world/regions/path2crypts; ERRORLEVEL=$?
+    echo
+    pause
+}
 
 while true; do
     menu
@@ -2453,6 +2469,7 @@ while true; do
         115) T115 ;;
         116) T116 ;;
         117) T117 ;;
+        119) T119 ;;
         b) build ;;
         q) exit 0 ;;
     esac
