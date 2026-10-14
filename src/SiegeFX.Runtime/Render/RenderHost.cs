@@ -13611,8 +13611,9 @@ void main()
         }
         catch (Exception ex) { Console.WriteLine($"  map template load failed: {ex.Message}"); }
         // SS-CUSTOM (GAME-4) — map-local quests: world/maps/<map>/quests/quests.gas
-        // (the retail per-map quest file). Custom maps carry their own journal
-        // entries this way; missing file = shipped catalog only.
+        // (the retail map ships one; custom maps carry their own journal
+        // entries this way). The data gives the text; catalog rows keep their
+        // goals. Missing file = shipped catalog only.
         try
         {
             var norm = regionPath.Replace('\\', '/');
@@ -13623,7 +13624,7 @@ void main()
                 var qBytes = mapReader.ExtractToMemory(questsPath);
                 var qDoc = SiegeFX.Core.Assets.GasDocument.Load(qBytes);
                 int merged = SiegeFX.Core.Actors.QuestCatalog.MergeFromGas(qDoc);
-                if (merged > 0) Console.WriteLine($"  map quests: {merged} custom quest definition(s)");
+                if (merged > 0) Console.WriteLine($"  map quests: {merged} quest(s) from {questsPath}");
             }
         }
         catch { /* no map-local quests — the shipped catalog stands */ }
