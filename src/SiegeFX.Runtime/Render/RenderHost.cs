@@ -30241,6 +30241,12 @@ void main()
     // 1-3 profile to keep the kill loop playable until the stat fix lands in
     // Phase 13e.
     private const float ClickAttackRadius = 3f;
+    // The ground-disc fallback behind the on-screen pick for attack clicks
+    // (and the "is this an attack click" gate): a click near a lone enemy's
+    // feet still attacks it. It was ClickAttackRadius, from before the
+    // screen pick existed; 3u around the click swallowed every escape click
+    // near the hero while gremals swarmed him.
+    private const float ClickAttackFallbackRadius = 1.5f;
     // SC-CURSOR-ARBITRATION — breakable props are small stationary targets
     // (a barrel body is ~0.5-1u); picking them with the full 3u combat
     // radius let a barrel across the table steal clicks and the cursor
@@ -30459,7 +30465,7 @@ void main()
             && s.Actor.Stats.IsCombatant && (forceAtk || s.IsEvilAligned) && s.IsSelectable);
         if (best is null)
         {
-            float bestDist = ClickAttackRadius;
+            float bestDist = ClickAttackFallbackRadius;
             foreach (var s in _actors)
             {
                 if (s.IsDead) continue;
@@ -30714,7 +30720,7 @@ void main()
             if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-FADED + SC-PICK-YBAND
             var p = s.CurrentTransform.Translation;
             float dx = p.X - hit.X, dz = p.Z - hit.Z;
-            if (dx * dx + dz * dz < ClickAttackRadius * ClickAttackRadius) return true;
+            if (dx * dx + dz * dz < ClickAttackFallbackRadius * ClickAttackFallbackRadius) return true;
         }
         return false;
     }
@@ -30779,10 +30785,18 @@ void main()
     private bool TryClickToBreakProp(Vector3 groundHit)
     {
         if (_player is null) return false;
-        StaticPropInstance? best = null;
-        // SC-CURSOR-ARBITRATION — props pick with their own tighter radius
-        // (see ClickBreakableRadius) instead of the 3u combat radius.
-        float bestDist = ClickBreakableRadius;
+        // SC-SCREEN-PICK — the breakable drawn under the cursor wins. The
+        // ground disc alone missed crates clicked from bow range: the cursor
+        // ray passes over the crate and meets the ground well behind it.
+        // Only decline for a pile when the cursor is actually OVER it; the
+        // old ground-distance yield made a pile near the barrels swallow
+        // deliberate barrel clicks (and vice versa).
+        var screen = PickInteractiveAtCursor(_currentMousePos);
+        if (screen.Pile is not null) return false;
+        StaticPropInstance? best = screen.Prop;
+        // SC-CURSOR-ARBITRATION — the ground fallback picks props with their
+        // own tighter radius (see ClickBreakableRadius).
+        float bestDist = best is null ? ClickBreakableRadius : 0f;
         foreach (var prop in _staticProps)
         {
             if (!prop.IsBreakable || prop.IsDestroyed) continue;
@@ -30793,10 +30807,6 @@ void main()
             if (d < bestDist) { bestDist = d; best = prop; }
         }
         if (best is null) return false;
-        // SC-SCREEN-PICK — only decline for a pile when the cursor is
-        // actually OVER it; the old ground-distance yield made a pile near
-        // the barrels swallow deliberate barrel clicks (and vice versa).
-        if (PickInteractiveAtCursor(_currentMousePos).Pile is not null) return false;
 
         var attackerStats = GetPlayerAttackStats();
         float reach = PlayerEngageReach(attackerStats);
