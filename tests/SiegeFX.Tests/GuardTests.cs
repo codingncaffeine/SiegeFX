@@ -63,6 +63,11 @@ public class GameTextIndexTests
         ("Logic.dsres:/ui/x.gas", "OK"),
         ("Logic.dsres:/spl_spell.gas", "Robo-Suit Minigun"),
         ("Logic.dsres:/paths.gas", "art/bitmaps/gui/in_game/inventory/backpack_open"),
+        ("Logic.dsres:/ui/user_education_tooltips.gas", "Load a saved game"),
+        ("MpWorld.dsmap:/conversations.gas", "Hail, friend. Are you sure you want to be exploring the Great Northern Forest?"),
+        ("Logic.dsres:/config/input_bindings.gas", "Camera: Zoom Out"),
+        ("Logic.dsres:/config/input_bindings.gas", "Chat Window (Send to Team)"),
+        ("Logic.dsres:/ui/user_education_tooltips.gas", "Drag ring here to equip"),
     ]);
 
     [Theory]
@@ -71,6 +76,9 @@ public class GameTextIndexTests
     [InlineData("clear edgaar's basement")]                                 // a whole short title
     [InlineData("Started: Clear Edgaar's Basement")]                        // ...inside a longer string
     [InlineData("Equipped the Robo-Suit Minigun")]                            // the spell's title, typed out
+    [InlineData("Camera: Zoom Out")]                                          // a whole short string, however short its words
+    [InlineData("Chat Window (Send to Team)")]                                // a whole five-word string with plain words
+    [InlineData("Drag ring here to equip")]
     public void Copies_are_found(string s) => Assert.NotNull(Index.Match(s));
 
     [Theory]
@@ -80,6 +88,9 @@ public class GameTextIndexTests
     [InlineData("OK")]                             // game strings under three words are not indexed
     [InlineData("SaveStore wrote {0} bytes to {1}")]
     [InlineData("# sfx timeline  script=robo_suit_minigun  ticks=40  dt=0.050  seed=1")]   // an identifier naming the spell
+    [InlineData("ARE YOU SURE YOU WANT TO EXIT TO THE MAIN MENU WITHOUT SAVING?")]           // common phrasing shared with a conversation
+    [InlineData("Do you want to load a saved game?")]                                       // a short, plain tooltip inside other words
+    [InlineData("Press to zoom out the camera")]                                            // the short string's words, not in order
     [InlineData("Krug_have_taken_over_my_basement")]                                       // an identifier, no whitespace
     [InlineData("loading art/bitmaps/gui/in_game/inventory/backpack_open now")]             // a path: no whitespace in the game value
     public void Everything_else_passes(string s) => Assert.Null(Index.Match(s));

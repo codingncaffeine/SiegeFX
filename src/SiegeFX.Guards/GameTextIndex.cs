@@ -15,16 +15,24 @@ public sealed record TextMatch(string GameText, string Source);
 /// compared lowercased, with punctuation ignored. Only text with whitespace
 /// counts, on both sides, and an underscore stays inside its word: an
 /// identifier such as <c>robo_suit_minigun</c> is how code names data, not
-/// a copy of the spell's title "Robo-Suit Minigun".</summary>
+/// a copy of the spell's title "Robo-Suit Minigun". Common phrasing does not
+/// count: five shared words need two of five or more letters ("are you sure
+/// you want" has none), and a short game string inside a longer one needs
+/// 15 letters ("load a saved game" has 14). A string that IS a whole game
+/// string ("Camera: Zoom Out") always counts.</summary>
 public sealed class GameTextIndex
 {
     public const int WindowWords = 5;
     public const int ShortMinWords = 3;
     public const int ShortMinChars = 16;
+    public const int LongWordChars = 5;
+    public const int MinLongWords = 2;
+    public const int ShortInsideMinLetters = 15;
 
     readonly List<(string Source, string Text)> _texts = new();
     readonly Dictionary<ulong, int> _windows = new();   // hash of 5 words → text index
     readonly Dictionary<ulong, int> _shorts = new();    // hash of a whole short string → text index
+    readonly Dictionary<ulong, int> _wholes = new();    // hash of every whole string → text index
 
     public int TextCount => _texts.Count;
 
@@ -42,6 +50,7 @@ public sealed class GameTextIndex
         if (words.Length < ShortMinWords) return;
         int id = _texts.Count;
         _texts.Add((source, text));
+        _wholes.TryAdd(Hash(words, 0, words.Length), id);
         if (words.Length < WindowWords)
         {
             if (text.Trim().Length >= ShortMinChars) _shorts.TryAdd(Hash(words, 0, words.Length), id);
@@ -57,13 +66,18 @@ public sealed class GameTextIndex
         if (!HasWhitespace(s)) return null;
         var words = Words(s);
         if (words.Length < ShortMinWords) return null;
+        // A word-for-word copy of a whole game string, however plain.
+        if (_wholes.TryGetValue(Hash(words, 0, words.Length), out var whole)
+            && Words(_texts[whole].Text).SequenceEqual(words))
+            return new TextMatch(_texts[whole].Text, _texts[whole].Source);
         for (int i = 0; i + WindowWords <= words.Length; i++)
-            if (_windows.TryGetValue(Hash(words, i, WindowWords), out var id) && Confirm(id, words, i, WindowWords))
+            if (_windows.TryGetValue(Hash(words, i, WindowWords), out var id) && Confirm(id, words, i, WindowWords)
+                && Distinctive(words, i, WindowWords, whole: false, window: true))
                 return new TextMatch(_texts[id].Text, _texts[id].Source);
         for (int len = Math.Min(WindowWords - 1, words.Length); len >= ShortMinWords; len--)
             for (int i = 0; i + len <= words.Length; i++)
                 if (_shorts.TryGetValue(Hash(words, i, len), out var id) && Confirm(id, words, i, len)
-                    && Words(_texts[id].Text).Length == len)
+                    && Words(_texts[id].Text).Length == len && Distinctive(words, i, len, whole: len == words.Length, window: false))
                     return new TextMatch(_texts[id].Text, _texts[id].Source);
         return null;
     }
@@ -82,6 +96,20 @@ public sealed class GameTextIndex
     }
 
     static bool HasWhitespace(string s) => s.Any(char.IsWhiteSpace);
+
+    /// <summary>Whether the matched words say something particular rather
+    /// than share common phrasing (see the class summary).</summary>
+    static bool Distinctive(string[] words, int start, int count, bool whole, bool window)
+    {
+        if (whole) return true;
+        int longWords = 0, letters = 0;
+        for (int k = start; k < start + count; k++)
+        {
+            if (words[k].Length >= LongWordChars) longWords++;
+            letters += words[k].Length;
+        }
+        return window ? longWords >= MinLongWords : letters >= ShortInsideMinLetters;
+    }
 
     /// <summary>Lowercased words: letters, digits, underscores and inner apostrophes.</summary>
     public static string[] Words(string s)
