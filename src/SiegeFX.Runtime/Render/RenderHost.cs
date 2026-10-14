@@ -26377,6 +26377,25 @@ void main()
         var vp = _camera.GetViewProjection((float)size.X / size.Y);
         ActorRenderState? best = null;
         float bestScore = float.MaxValue;
+        // How far the cursor ray travels before it meets the ground. An actor
+        // farther from the camera than that (with a margin for its body) is
+        // behind what the cursor is on: a tiny figure in the distance drawn
+        // near the click, or one over a rise.
+        var eye = _camera.Position;
+        float groundDist = float.MaxValue;
+        if (_navMesh is not null && Matrix4x4.Invert(vp, out var invVp))
+        {
+            float ndcX = cursorPx.X / size.X * 2f - 1f, ndcY = 1f - cursorPx.Y / size.Y * 2f;
+            var nh = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), invVp);
+            var fh = Vector4.Transform(new Vector4(ndcX, ndcY, 1f, 1f), invVp);
+            if (MathF.Abs(nh.W) > 1e-6f && MathF.Abs(fh.W) > 1e-6f)
+            {
+                var n = new Vector3(nh.X, nh.Y, nh.Z) / nh.W;
+                var rd = new Vector3(fh.X, fh.Y, fh.Z) / fh.W - n;
+                if (rd.LengthSquared() > 1e-8f && _navMesh.TryRaycast(n, rd, rd.Length(), out _, out var gp))
+                    groundDist = Vector3.Distance(eye, gp);
+            }
+        }
         bool Project(Vector3 world, out Vector2 px, out float depth)
         {
             var h = Vector4.Transform(new Vector4(world, 1f), vp);
@@ -26407,9 +26426,32 @@ void main()
             if (d > radius) continue;
             // Nearest-to-cursor wins; near-ties go to the closer actor.
             float score = d + depth * 0.05f;
-            if (score < bestScore) { bestScore = score; best = s; }
+            if (score >= bestScore) continue;
+            if (Vector3.Distance(eye, feet + new Vector3(0f, 1.0f, 0f)) > groundDist + 3f) continue;
+            if (HiddenFromCamera(feet)) continue;
+            bestScore = score; best = s;
         }
         return best;
+    }
+
+    /// <summary>You click what you see: true when terrain the camera treats
+    /// as solid (<see cref="CameraBoundsHitDistance"/>: camera-blocking
+    /// nodes, minus faded and hidden upper-layer ones) stands between the
+    /// camera and both the actor's chest and head. A monster behind a hill
+    /// or a wall used to be picked whenever its outline fell under the
+    /// cursor, and the hero set off on a long walk round to reach it.</summary>
+    private bool HiddenFromCamera(Vector3 feet)
+    {
+        var eye = _camera.Position;
+        return Blocked(feet + new Vector3(0f, 1.0f, 0f)) && Blocked(feet + new Vector3(0f, 1.8f, 0f));
+
+        bool Blocked(Vector3 p)
+        {
+            var d = p - eye;
+            float len = d.Length();
+            if (len < 1f) return false;
+            return CameraBoundsHitDistance(eye, d / len, len - 0.5f) < len - 0.5f;
+        }
     }
 
     private ActorRenderState? PickHoverActor()
@@ -30391,10 +30433,18 @@ void main()
         var dir  = far_ - near;
         if (dir.LengthSquared() < 1e-8f || MathF.Abs(dir.Y) < 1e-4f) return false;
 
-        float planeY = _player.CurrentTransform.Translation.Y;
-        float t = (planeY - near.Y) / dir.Y;
-        if (t < 0f) return false;
-        var groundHit = near + dir * t;
+        // The ground under the cursor: where the ray meets the walk mesh, as a
+        // move click resolves it. The plane at the hero's height is the
+        // fallback only: clicking a slope that rises above the hero put that
+        // plane's point far beyond the hill, beside some unseen monster.
+        Vector3 groundHit;
+        if (_navMesh is null || !_navMesh.TryRaycast(near, dir, dir.Length(), out _, out groundHit))
+        {
+            float planeY = _player.CurrentTransform.Translation.Y;
+            float t = (planeY - near.Y) / dir.Y;
+            if (t < 0f) return false;
+            groundHit = near + dir * t;
+        }
 
         // SC-SCREEN-PICK — you attack what you SEE: the projected-body
         // pick replaces the old plane-at-player-Y XZ radius (which missed
@@ -30422,7 +30472,7 @@ void main()
                 float dx = pos.X - groundHit.X;
                 float dz = pos.Z - groundHit.Z;
                 float d  = MathF.Sqrt(dx * dx + dz * dz);
-                if (d < bestDist) { bestDist = d; best = s; }
+                if (d < bestDist && !HiddenFromCamera(pos)) { bestDist = d; best = s; }
             }
         }
         if (best is null)
