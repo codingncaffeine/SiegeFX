@@ -61,6 +61,8 @@ public class GameTextIndexTests
         ("Logic.dsres:/world/contentdb/quests/quests.gas", "Clear Edgaar's Basement"),
         ("World.dsmap:/conversations/edgaar.gas", "Krug have taken over my basement! Please, clear them out before they eat my turnips."),
         ("Logic.dsres:/ui/x.gas", "OK"),
+        ("Logic.dsres:/spl_spell.gas", "Robo-Suit Minigun"),
+        ("Logic.dsres:/paths.gas", "art/bitmaps/gui/in_game/inventory/backpack_open"),
     ]);
 
     [Theory]
@@ -68,6 +70,7 @@ public class GameTextIndexTests
     [InlineData("Quest: KRUG  have taken, over my basement -- go!")]        // case and punctuation ignored
     [InlineData("clear edgaar's basement")]                                 // a whole short title
     [InlineData("Started: Clear Edgaar's Basement")]                        // ...inside a longer string
+    [InlineData("Equipped the Robo-Suit Minigun")]                            // the spell's title, typed out
     public void Copies_are_found(string s) => Assert.NotNull(Index.Match(s));
 
     [Theory]
@@ -76,6 +79,9 @@ public class GameTextIndexTests
     [InlineData("Edgaar's Basement")]              // part of a short string
     [InlineData("OK")]                             // game strings under three words are not indexed
     [InlineData("SaveStore wrote {0} bytes to {1}")]
+    [InlineData("# sfx timeline  script=robo_suit_minigun  ticks=40  dt=0.050  seed=1")]   // an identifier naming the spell
+    [InlineData("Krug_have_taken_over_my_basement")]                                       // an identifier, no whitespace
+    [InlineData("loading art/bitmaps/gui/in_game/inventory/backpack_open now")]             // a path: no whitespace in the game value
     public void Everything_else_passes(string s) => Assert.Null(Index.Match(s));
 
     [Fact]

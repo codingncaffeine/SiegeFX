@@ -12,7 +12,10 @@ public sealed record TextMatch(string GameText, string Source);
 /// checked for copied passages. A string matches when it holds five
 /// consecutive words of one game string, or a whole short game string
 /// (three or four words, 16+ characters, such as a quest title). Words are
-/// compared lowercased, with punctuation ignored.</summary>
+/// compared lowercased, with punctuation ignored. Only text with whitespace
+/// counts, on both sides, and an underscore stays inside its word: an
+/// identifier such as <c>robo_suit_minigun</c> is how code names data, not
+/// a copy of the spell's title "Robo-Suit Minigun".</summary>
 public sealed class GameTextIndex
 {
     public const int WindowWords = 5;
@@ -34,6 +37,7 @@ public sealed class GameTextIndex
 
     void Add(string source, string text)
     {
+        if (!HasWhitespace(text)) return;
         var words = Words(text);
         if (words.Length < ShortMinWords) return;
         int id = _texts.Count;
@@ -50,6 +54,7 @@ public sealed class GameTextIndex
     /// <summary>The game text <paramref name="s"/> copies, if any.</summary>
     public TextMatch? Match(string s)
     {
+        if (!HasWhitespace(s)) return null;
         var words = Words(s);
         if (words.Length < ShortMinWords) return null;
         for (int i = 0; i + WindowWords <= words.Length; i++)
@@ -76,7 +81,9 @@ public sealed class GameTextIndex
         return false;
     }
 
-    /// <summary>Lowercased words: letters, digits and inner apostrophes.</summary>
+    static bool HasWhitespace(string s) => s.Any(char.IsWhiteSpace);
+
+    /// <summary>Lowercased words: letters, digits, underscores and inner apostrophes.</summary>
     public static string[] Words(string s)
     {
         var words = new List<string>();
@@ -85,7 +92,7 @@ public sealed class GameTextIndex
         {
             char c = s[i];
             bool inner = c == '\'' && sb.Length > 0 && i + 1 < s.Length && char.IsLetterOrDigit(s[i + 1]);
-            if (char.IsLetterOrDigit(c) || inner) sb.Append(char.ToLowerInvariant(c));
+            if (char.IsLetterOrDigit(c) || c == '_' || inner) sb.Append(char.ToLowerInvariant(c));
             else if (sb.Length > 0) { words.Add(sb.ToString()); sb.Clear(); }
         }
         if (sb.Length > 0) words.Add(sb.ToString());
