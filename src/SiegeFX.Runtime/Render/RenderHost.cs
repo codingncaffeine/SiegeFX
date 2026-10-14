@@ -747,6 +747,7 @@ public sealed class RenderHost : IDisposable
         }
         Console.WriteLine($"[auto-defend] engaging {foe.Actor.Template.Name}");
         _pendingAttackTarget = foe; // the walk-up drive swings + auto-attacks
+        _pendingAttackLeash = radius;
     }
 
     private void EnsureBloodTextures()
@@ -10277,6 +10278,7 @@ void main()
                     // explicit orders (SC-SELECT-MOVE).
                     if (_selectedPartyIdx.Contains(0))
                     {
+                        EndPlayerAttackLoop();
                         _playerFollower?.SetTarget(_playerFollower.Position);
                         _pendingAttackTarget = null;
                         _pendingCastTarget = null;
@@ -24814,7 +24816,16 @@ void main()
                             bool lineBlocked = pdist <= r && (_weaponIsRanged
                                 ? IsSightBlocked(after, tp)
                                 : _navMesh is not null && _navMesh.SegmentCrossesBlocked(after, tp));
-                            switch (SiegeFX.Core.Actors.HeroApproach.Decide(pdist, r, lineBlocked, _playerFollower.PathBlocked))
+                            var step = SiegeFX.Core.Actors.HeroApproach.Decide(pdist, r, lineBlocked, _playerFollower.PathBlocked);
+                            if (step != SiegeFX.Core.Actors.HeroApproachStep.Act && pdist > _pendingAttackLeash)
+                            {
+                                Console.WriteLine(
+                                    $"[auto-defend] {pat.Actor.Template.Name} is {pdist:F1}u away, past the " +
+                                    $"movement order's {_pendingAttackLeash:F1}u: not following");
+                                _playerFollower.SetTarget(after);
+                                _pendingAttackTarget = null;
+                            }
+                            else switch (step)
                             {
                                 case SiegeFX.Core.Actors.HeroApproachStep.Act:
                                     // In reach: stop the walk here (it was
@@ -29460,6 +29471,7 @@ void main()
             RequestLockedUseNear(hit);
             if (heroSelected)
             {
+                EndPlayerAttackLoop();
                 _playerFollower.SetTarget(hit);
                 // ALPHA-2 USE-POINTS — a queued lever pull walks to the lever's
                 // authored stand spot (the farm winch's is ON the elevator grate, so
@@ -30305,6 +30317,24 @@ void main()
     // enemy beyond reach: the follower walks up, and once inside MeleeReach the
     // per-tick check fires the actual swing through PerformPlayerSwing.
     private ActorRenderState? _pendingAttackTarget;
+    // SC-FC-HERO — how far the target may be for the walk-up to go on: no
+    // limit for a target the player clicked; the movement order's reach
+    // (Hold Ground / Engage / Move Freely) for one auto-defend picked, so
+    // Hold Ground doesn't chase.
+    private float _pendingAttackLeash = float.PositiveInfinity;
+
+    /// <summary>A move or stop order ends the hero's attack loop: the swing
+    /// or cast in progress is dropped (a blow not yet landed never lands)
+    /// and no next one starts. Without this the loop restarted on its own
+    /// target after the order: the hero fired while running, or turned back
+    /// to chase what the player was retreating from.</summary>
+    private void EndPlayerAttackLoop()
+    {
+        if (_playerSwing is null && _playerCast is null) return;
+        _playerSwing = null;
+        _playerCast = null;
+        _player?.Actor.Host.OverrideAnimIndex(-1, 0f);
+    }
     // SC-CAST-APPROACH — pending walk-up-and-cast latch: clicking an enemy
     // (or breakable) beyond the active spell's CastRange runs the hero into
     // range and re-initiates the cast, mirroring the melee/bow walk-up
@@ -30447,6 +30477,7 @@ void main()
         // SC-PATHING-LOS — a bow needs SIGHT: an enemy behind a building is
         // in range but the shot would fly through the wall; approach until
         // the sight line clears (DS1's FindClearLosPoint behavior).
+        _pendingAttackLeash = float.PositiveInfinity;   // a clicked target is followed anywhere
         bool meleeObstructed = !_weaponIsRanged && _navMesh is not null
             && _navMesh.SegmentCrossesBlocked(pPos, tPos);
         bool rangedSightBlocked = _weaponIsRanged && IsSightBlocked(pPos, tPos);
