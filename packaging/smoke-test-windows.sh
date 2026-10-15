@@ -79,7 +79,9 @@ if [ "$result" = running ]; then echo "PASS  running after ${secs}s"; else echo 
 log=$(ls -tr "$logs"/session-*.log 2> /dev/null | head -1)
 if [ -n "$log" ]; then
     cp "$log" "$work/session.log"
-    line=$(tr -d '\r' < "$log" | grep -m1 '^\[log\] SiegeFX ')
+    # Session log lines start with the time; compare from "[log]" on.
+    line=$(tr -d '\r' < "$log" | grep -m1 -E '^([0-9:.]+ )?\[log\] SiegeFX ')
+    line="[log]${line#*\[log\]}"
     echo "      $line"
     if [[ "$line" == "[log] SiegeFX $ver+"*"(win-x64)" ]]; then echo "PASS  build line"; else echo "FAIL  build line (expected $ver on win-x64)"; failed=1; fi
 else
