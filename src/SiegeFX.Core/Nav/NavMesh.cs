@@ -298,8 +298,9 @@ public sealed class NavMesh
     /// any triangle, an edge crossing only for small ones. A bed's bounding
     /// disc reached a third of a meter past its foot onto the stair top
     /// beside it and sealed a farmhouse's upper floor. The margin applies
-    /// to centroid containment only; edge crossings test the exact
-    /// footprint.</summary>
+    /// to centroid containment only; an edge crossing seals a small
+    /// triangle only when <see cref="ObstacleRectEdgeDepth"/> of the edge
+    /// lies inside the exact footprint.</summary>
     public int MarkObstacleRect(Vector3 corner, Vector3 axisU, float lenU, Vector3 axisV, float lenV,
                                 float baseY, float topY, string? tag)
     {
@@ -318,10 +319,12 @@ public sealed class NavMesh
         }
         bool Inside((float U, float V) q) => q.U >= u0 && q.U <= u1 && q.V >= v0 && q.V <= v1;
         // Liang-Barsky: does the segment p->q cross the rectangle?
-        // The edge test uses the exact footprint: the margin is for bodies
-        // standing on a tile, and a sliver merely grazing it along a stair
-        // top beside the bed sealed the stair.
-        bool SegmentHits((float U, float V) p, (float U, float V) q)
+        // The edge test uses the exact footprint and needs a real crossing:
+        // at least ObstacleRectEdgeDepth of the edge inside it. The margin
+        // is for bodies standing on a tile, and slivers merely grazing a
+        // bed's or cart's corner at a farmhouse stair foot (the stair's only
+        // link to the floor) sealed the stair.
+        float InsideLength((float U, float V) p, (float U, float V) q)
         {
             const float u0 = 0f, v0 = 0f;
             float u1 = lenU, v1 = lenV;
@@ -334,7 +337,9 @@ public sealed class NavMesh
                 else { if (r < t0) return false; if (r < t1) t1 = r; }
                 return true;
             }
-            return Clip(-du, p.U - u0) && Clip(du, u1 - p.U) && Clip(-dv, p.V - v0) && Clip(dv, v1 - p.V);
+            if (!(Clip(-du, p.U - u0) && Clip(du, u1 - p.U) && Clip(-dv, p.V - v0) && Clip(dv, v1 - p.V)))
+                return 0f;
+            return MathF.Max(0f, t1 - t0) * MathF.Sqrt(du * du + dv * dv);
         }
         string size = $"{lenU:F2}x{lenV:F2}";
         int marked = 0;
@@ -354,13 +359,14 @@ public sealed class NavMesh
             var b = Vertices[Indices[3 * t + 1]];
             var c = Vertices[Indices[3 * t + 2]];
             var la = Local(a); var lb = Local(b); var lc = Local(c);
-            if (!SegmentHits(la, lb) && !SegmentHits(lb, lc) && !SegmentHits(lc, la)) continue;
+            float depth = MathF.Max(InsideLength(la, lb), MathF.Max(InsideLength(lb, lc), InsideLength(lc, la)));
+            if (depth < ObstacleRectEdgeDepth) continue;
             float abx = b.X - a.X, abz = b.Z - a.Z;
             float acx = c.X - a.X, acz = c.Z - a.Z;
             float areaXZ = MathF.Abs(abx * acz - abz * acx) * 0.5f;
             if (areaXZ > EdgeSealMaxAreaXZ) continue;
             Blocked[t] = true;
-            BlockedTag[t] = $"{tag}|rect {size} edge a={areaXZ:F2}";
+            BlockedTag[t] = $"{tag}|rect {size} edge a={areaXZ:F2} in={depth:F2}";
             marked++;
         }
         return marked;
@@ -369,6 +375,10 @@ public sealed class NavMesh
     /// <summary>How far past its own footprint a rectangle obstacle blocks
     /// (see <see cref="MarkObstacleRect"/>): a little clearance for bodies.</summary>
     public const float ObstacleRectMargin = 0.1f;
+
+    /// <summary>How much of a small triangle's edge must lie inside a
+    /// rectangle obstacle's footprint for the edge test to seal it.</summary>
+    public const float ObstacleRectEdgeDepth = 0.4f;
 
     /// <summary>SC-NAV-EDGE-SEAL-AREA — largest XZ triangle area (m²) the
     /// edge-clip test may fully seal. Calibrated from live blame data
