@@ -7302,8 +7302,7 @@ public sealed class RenderHost : IDisposable
     private const float SepMaxPushPerSec = 2.5f;
     private const float SepGatherRadius = 40f;
 
-    private static float BodyRadius(ActorRenderState s)
-        => Math.Clamp(0.40f * s.Actor.Stats.RenderScale, 0.20f, 1.50f);
+    private static float BodyRadius(ActorRenderState s) => s.Actor.Stats.BodyRadius;
 
     /// <summary>SC-NAV-REHOME — point every live follower at a freshly
     /// rebuilt mesh (brains keep their state; each rolls a fresh leg next
