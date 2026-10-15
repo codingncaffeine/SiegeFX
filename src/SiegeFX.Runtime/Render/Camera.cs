@@ -29,6 +29,14 @@ public sealed class Camera
     /// Driven by the host's shake envelope; zero when idle.</summary>
     public Vector3 ShakeOffset { get; set; }
 
+    /// <summary>Where on screen the look target sits, in normalized device
+    /// coordinates (0,0 = centre, -1..1 across). The game camera authors
+    /// <c>camera_y_screen_track = -0.12</c>: the hero rides a little below
+    /// centre, so more of the ground ahead is in view. The projection is
+    /// shifted, so drawing and click picking (both through
+    /// <see cref="GetViewProjection"/>) agree.</summary>
+    public Vector2 ScreenTrack { get; set; }
+
     private const float PitchLimit = MathF.PI / 2f - 0.01f;
 
     public Vector3 Forward
@@ -94,7 +102,15 @@ public sealed class Camera
         => Matrix4x4.CreateLookAt(Position + ShakeOffset, Position + ShakeOffset + Forward, Up);
 
     public Matrix4x4 GetProjection(float aspect)
-        => Matrix4x4.CreatePerspectiveFieldOfView(FovRadians, aspect, NearPlane, FarPlane);
+    {
+        var p = Matrix4x4.CreatePerspectiveFieldOfView(FovRadians, aspect, NearPlane, FarPlane);
+        if (ScreenTrack == Vector2.Zero) return p;
+        // Row vectors: clip.xy += track * clip.w, a shift in NDC.
+        var shift = Matrix4x4.Identity;
+        shift.M41 = ScreenTrack.X;
+        shift.M42 = ScreenTrack.Y;
+        return p * shift;
+    }
 
     // System.Numerics uses row-vector convention (v * M), so the C# composition is
     // View * Projection. We upload with transpose=false, which reinterprets the

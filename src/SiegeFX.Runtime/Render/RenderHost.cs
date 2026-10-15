@@ -8562,6 +8562,8 @@ public sealed class RenderHost : IDisposable
     private float _camAzimuthDefault   = 0.24799f; // character_camera azimuth (rad above horizontal)
     private float _camDistanceDefault  = 8.38f;    // character_camera distance (m)
     private float _camTrackHeight      = 1.51f;    // camera_settings tracking_height_offset
+    private float _camScreenTrackX     = 0f;       // camera_settings camera_x_screen_track
+    private float _camScreenTrackY     = -0.12f;   // camera_settings camera_y_screen_track
     private float _camTiltTime         = 0.75f;    // camera_tilt_time — blocked this long → tilt
     private float _camTiltReturnTime   = 2.0f;     // camera_tilt_return_time — clear this long → untilt
     private float _camAzimuthRate      = 40f * MathF.PI / 180f; // azimuth_degrees_per_second
@@ -8606,6 +8608,8 @@ public sealed class RenderHost : IDisposable
         var cs = Root("/config/camera.gas", "camera_settings");
         var cc = Root("/ui/config/character_camera/character_camera.gas", "character_camera");
         _camTrackHeight    = ReadAttr(cs, "tracking_height_offset", _camTrackHeight);
+        _camScreenTrackX   = ReadAttr(cs, "camera_x_screen_track", _camScreenTrackX);
+        _camScreenTrackY   = ReadAttr(cs, "camera_y_screen_track", _camScreenTrackY);
         _camTiltTime       = ReadAttr(cs, "camera_tilt_time", _camTiltTime);
         _camTiltReturnTime = ReadAttr(cs, "camera_tilt_return_time", _camTiltReturnTime);
         _camAzimuthRate    = ReadAttr(cs, "azimuth_degrees_per_second", _camAzimuthRate * 180f / MathF.PI) * MathF.PI / 180f;
@@ -8613,7 +8617,8 @@ public sealed class RenderHost : IDisposable
         _camAzimuthDefault = ReadAttr(cc, "azimuth", _camAzimuthDefault);
         _camDistanceDefault = ReadAttr(cc, "distance", _camDistanceDefault);
         Console.WriteLine($"  camera: azimuth {_camAzimuthDefault * 180f / MathF.PI:F1}°, " +
-                          $"distance {_camDistanceDefault:F2}, track +{_camTrackHeight:F2}m, " +
+                          $"distance {_camDistanceDefault:F2}, track +{_camTrackHeight:F2}m " +
+                          $"at screen ({_camScreenTrackX:F2},{_camScreenTrackY:F2}), " +
                           $"tilt {_camTiltTime:F2}s/return {_camTiltReturnTime:F2}s");
     }
 
@@ -24103,6 +24108,13 @@ void main()
         // snap below would fight the authored pans.
         UpdateNis((float)dt);
         UpdateSubtitles((float)dt);
+        // SC-CAMERA-GAS — the game camera keeps its tracking point where
+        // [camera_settings] camera_x/y_screen_track put it (the hero a little
+        // below centre); cutscenes, the map overview, the fly and dev cameras
+        // stay centred.
+        _camera.ScreenTrack = _cameraMode == CameraMode.Chase && _player is not null
+            && _nisPhase == NisPhase.Off && !_megaMapActive && !_devFreeCamera
+            ? new Vector2(_camScreenTrackX, _camScreenTrackY) : Vector2.Zero;
         // SC-COMMANDS — T's track/hold toggle: when holding, the chase snap
         // below is skipped entirely so the camera parks where it is while
         // the party walks away (DS1's [camera_track_toggle]).
