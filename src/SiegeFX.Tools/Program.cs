@@ -6009,7 +6009,13 @@ static int CmdTemplatesShow(string[] a)
         foreach (var c in chores.Children)
         {
             var skrit = TemplateStore.FindAttr(c, "skrit") ?? "?";
-            Console.WriteLine($"  [{c.Header}] skrit={skrit}");
+            var stances = TemplateStore.FindAttr(c, "chore_stances");
+            Console.WriteLine($"  [{c.Header}] skrit={skrit}"
+                + (stances is null ? "" : $" stances={stances}"));
+            // The clips each chore picks from (DS1 names them {prefix}{stance}_{suffix}).
+            if (TemplateStore.FindChild(c, "anim_files") is { } anims)
+                foreach (var f in anims.Attributes)
+                    Console.WriteLine($"      {f.Name} = {f.Value}");
         }
     }
     return 0;
