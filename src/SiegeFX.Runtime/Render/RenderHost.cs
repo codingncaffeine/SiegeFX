@@ -740,12 +740,14 @@ public sealed class RenderHost : IDisposable
                 ? _playerSpellbook.Primary : _playerSpellbook.Secondary;
             if (spell is not null && spell.Kind != SiegeFX.Core.Assets.SpellKind.SelfHeal)
             {
-                Console.WriteLine($"[auto-defend] casting at {foe.Actor.Template.Name}");
+                Console.WriteLine($"[auto-defend] casting at {foe.Actor.Template.Name} " +
+                    $"({(wasHit ? "hero was hit" : "Attack Freely scan")})");
                 BeginPlayerCast(slot, spell, foe, prop: null, _progression?.Level ?? 1);
                 return;
             }
         }
-        Console.WriteLine($"[auto-defend] engaging {foe.Actor.Template.Name}");
+        Console.WriteLine($"[auto-defend] engaging {foe.Actor.Template.Name} " +
+            $"({(wasHit ? "hero was hit" : "Attack Freely scan")}, {Vector3.Distance(foe.CurrentTransform.Translation, pp):F1}u away)");
         _pendingAttackTarget = foe; // the walk-up drive swings + auto-attacks
         _pendingAttackLeash = radius;
     }
@@ -12185,8 +12187,10 @@ void main()
                                     }
                                     break;
                                 default:
+                                    _attackClickFromRmb = true;
                                     if (TryClickToAttack(_rmbDownPos))
                                         _audio?.Play(SfxOrderAttack);
+                                    _attackClickFromRmb = false;
                                     break;
                             }
                         }
@@ -24831,6 +24835,10 @@ void main()
                                     // In reach: stop the walk here (it was
                                     // pathing to the target itself).
                                     _playerFollower.SetTarget(after);
+                                    if (_playerSwing is null)
+                                        Console.WriteLine(
+                                            $"click-attack: reached {pat.Actor.Template.Name} " +
+                                            $"(dist={pdist:F1}u, reach={r:F1}u), attacking");
                                     PerformPlayerSwing(pat, atk);
                                     // A swing can't start mid-cast or mid-drink:
                                     // keep the order until one does.
@@ -30376,6 +30384,10 @@ void main()
     /// and no next one starts. Without this the loop restarted on its own
     /// target after the order: the hero fired while running, or turned back
     /// to chase what the player was retreating from.</summary>
+    /// <summary>True while a right-button tap runs the attack click (for the
+    /// order trace in <see cref="TryClickToAttack"/>).</summary>
+    private bool _attackClickFromRmb;
+
     private void EndPlayerAttackLoop()
     {
         if (_playerSwing is null && _playerCast is null) return;
@@ -30552,6 +30564,11 @@ void main()
             return true;
         }
 
+        // SC-ORDER-TRACE — every attack start names what started it, so a
+        // shot the player didn't mean can be traced to its source.
+        Console.WriteLine(
+            $"click-attack: {best.Actor.Template.Name} in reach (dist={playerDist:F1}u, " +
+            $"reach={reach:F1}u, {(_attackClickFromRmb ? "right" : "left")} click)");
         PerformPlayerSwing(best, attackerStats);
         return true;
     }
@@ -35211,11 +35228,14 @@ void main()
                 float dx = tp.X - pp.X, dz = tp.Z - pp.Z;
                 if (dx * dx + dz * dz <= reach * reach)
                 {
+                    if (!ReferenceEquals(tgt, ps.Target))
+                        Console.WriteLine($"attack-loop: switching to {tgt.Actor.Template.Name}");
                     SnapPlayerFacingTo(tp);
                     StartPlayerSwing(tgt, prop: null, ps.Attacker);
                 }
                 else
                 {
+                    Console.WriteLine($"attack-loop: {tgt.Actor.Template.Name} stepped out of reach, following");
                     _pendingAttackTarget = tgt;
                 }
             }
