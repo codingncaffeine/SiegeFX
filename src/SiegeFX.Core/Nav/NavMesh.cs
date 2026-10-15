@@ -297,7 +297,9 @@ public sealed class NavMesh
     /// overload otherwise: the vertical band gate, centroid containment for
     /// any triangle, an edge crossing only for small ones. A bed's bounding
     /// disc reached a third of a meter past its foot onto the stair top
-    /// beside it and sealed a farmhouse's upper floor.</summary>
+    /// beside it and sealed a farmhouse's upper floor. The margin applies
+    /// to centroid containment only; edge crossings test the exact
+    /// footprint.</summary>
     public int MarkObstacleRect(Vector3 corner, Vector3 axisU, float lenU, Vector3 axisV, float lenV,
                                 float baseY, float topY, string? tag)
     {
@@ -316,8 +318,13 @@ public sealed class NavMesh
         }
         bool Inside((float U, float V) q) => q.U >= u0 && q.U <= u1 && q.V >= v0 && q.V <= v1;
         // Liang-Barsky: does the segment p->q cross the rectangle?
+        // The edge test uses the exact footprint: the margin is for bodies
+        // standing on a tile, and a sliver merely grazing it along a stair
+        // top beside the bed sealed the stair.
         bool SegmentHits((float U, float V) p, (float U, float V) q)
         {
+            const float u0 = 0f, v0 = 0f;
+            float u1 = lenU, v1 = lenV;
             float t0 = 0f, t1 = 1f, du = q.U - p.U, dv = q.V - p.V;
             bool Clip(float den, float num)
             {
