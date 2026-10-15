@@ -544,6 +544,7 @@ public sealed class ActorBrain
                     _fidgetMode = 0;
                     EnterChase(targetPos!.Value);
                 }
+                else if (_selfStats.HoldsPosition) { _attackFacing = null; }
                 else if (PatrolRoute is not null) { _attackFacing = null; TickPatrol(dt); }
                 else
                 {
@@ -641,6 +642,9 @@ public sealed class ActorBrain
                     && !(Mode != AttackMode.Melee
                          && SightBlocked?.Invoke(Wander.Position, targetPos!.Value) == true))
                 { EnterAttack(targetPos!.Value); break; }
+                // SC-MO-HOLD — a holding actor never closes in: it faces the
+                // target and waits for it to come into range.
+                if (_selfStats.HoldsPosition) { FaceTarget(targetPos!.Value); break; }
                 // SC-MOB-CAUTIOUS — armed stalkers close in authored
                 // increments: approach CautiousApproachDistance closer, then
                 // stand facing the target for CautiousDownTime, repeat —
@@ -1059,7 +1063,7 @@ public sealed class ActorBrain
             _cautiousGoal = null;
             _cautiousDownTimer = 0f;
         }
-        Wander.Follower.SetTarget(targetPos);
+        if (!_selfStats.HoldsPosition) Wander.Follower.SetTarget(targetPos);
     }
 
     /// <summary>SC-AI-OCZ-FLEE — proximity flee for skittish ambients

@@ -1864,6 +1864,8 @@ public sealed class RenderHost : IDisposable
         // SC-MONSTER-SPECIALS — startup_reveal dormancy: true once this
         // actor has woken (non-dormant templates wake on first check).
         public bool StartupAwakened;
+        // SC-GEN-IN-OBJECT — the template's on-spotted spawn has been rolled.
+        public bool InObjectSpawnRolled;
 
         // SC-DOWNED — play-clock stamp of the collapse; the authored
         // min_unconscious_duration gate measures from here.
@@ -16130,6 +16132,70 @@ void main()
     /// krug_scout patrol pair by the farmhouse), advanced ones hold until a
     /// party member enters trigger_range (bush ambushes), then spawn
     /// num_children_incubating children spawn_period apart.</summary>
+    /// <summary>SC-GEN-IN-OBJECT — a template's [generator_in_object] block:
+    /// a child spawned at the object on a world event, after a delay.</summary>
+    private readonly record struct InObjectGenerator(string Child, string Event, float Delay, float Chance);
+    private readonly Dictionary<string, InObjectGenerator?> _inObjectGenCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<(ActorRenderState Owner, string Child, float TimeLeft)> _pendingInObjectSpawns = new();
+
+    private InObjectGenerator? InObjectGeneratorOf(SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_inObjectGenCache.TryGetValue(tpl.Name, out var hit)) return hit;
+        InObjectGenerator? g = null;
+        if (_templateStore is not null)
+        {
+            string? A(string name) => _templateStore.GetAttribute(tpl, "generator_in_object", name)?.Trim().Trim('"');
+            var child = A("child_template_name");
+            if (!string.IsNullOrEmpty(child))
+            {
+                var ci = System.Globalization.CultureInfo.InvariantCulture;
+                float.TryParse(A("spawn_delay"), System.Globalization.NumberStyles.Float, ci, out var delay);
+                float chance = float.TryParse(A("spawn_chance"), System.Globalization.NumberStyles.Float, ci, out var c) ? c : 1f;
+                g = new InObjectGenerator(child!, (A("spawn_event") ?? "").ToLowerInvariant(), MathF.Max(0f, delay), chance);
+            }
+        }
+        _inObjectGenCache[tpl.Name] = g;
+        return g;
+    }
+
+    /// <summary>Queues the actor's in-object spawn when its template authors
+    /// one for <paramref name="worldEvent"/> and the chance roll passes.</summary>
+    private void QueueInObjectSpawn(ActorRenderState owner, string worldEvent)
+    {
+        if (InObjectGeneratorOf(owner.Actor.Template) is not { } g || g.Event != worldEvent) return;
+        if (g.Chance < 1f && _pileSparkleRng.NextDouble() >= g.Chance) return;
+        _pendingInObjectSpawns.Add((owner, g.Child, g.Delay));
+    }
+
+    /// <summary>Places due in-object spawns: the child template's model as a
+    /// static prop at the owner's spot and facing (the skrubb's burrow stays
+    /// in the ground when the skrubb sinks or dies).</summary>
+    private void TickInObjectSpawns(float dt)
+    {
+        for (int i = _pendingInObjectSpawns.Count - 1; i >= 0; i--)
+        {
+            var (owner, child, left) = _pendingInObjectSpawns[i];
+            left -= dt;
+            if (left > 0f) { _pendingInObjectSpawns[i] = (owner, child, left); continue; }
+            _pendingInObjectSpawns.RemoveAt(i);
+            if (!TryGetGearVisual(child, out var vis))
+            {
+                Console.WriteLine($"[gen-in-object] {owner.Actor.Template.Name}: no model for '{child}'");
+                continue;
+            }
+            _staticProps.Add(new StaticPropInstance
+            {
+                Mesh = vis.Mesh,
+                Texture = vis.Tex,
+                World = owner.CurrentTransform,
+                Template = child,
+                CenterY = owner.CurrentTransform.Translation.Y,
+            });
+            var p = owner.CurrentTransform.Translation;
+            Console.WriteLine($"[gen-in-object] {owner.Actor.Template.Name} placed {child} at ({p.X:F1},{p.Y:F1},{p.Z:F1})");
+        }
+    }
+
     private sealed class GeneratorState
     {
         public uint Scid;
@@ -24400,6 +24466,16 @@ void main()
                             Console.WriteLine($"[reveal] {s.Actor.Template.Name} rises ({(riseIdx >= 0 ? rise : "no rise clip")})");
                         }
                         else s.StartupAwakened = true;
+                    }
+                    // SC-GEN-IN-OBJECT — [generator_in_object] with
+                    // spawn_event = WE_ENEMY_SPOTTED fires the first time the
+                    // actor engages (the skrubb's burrow, hole_grs_02).
+                    if (!s.InObjectSpawnRolled && s.Brain is { } gb
+                        && gb.State is SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
+                                    or SiegeFX.Core.Actors.ActorBrain.BrainState.Attack)
+                    {
+                        s.InObjectSpawnRolled = true;
+                        QueueInObjectSpawn(s, "we_enemy_spotted");
                     }
                     // SC-DROOG-BOW (blindspot E9) — brain_bow.skrit: when a
                     // human-controlled friend enters the outer comfort zone,
@@ -38544,6 +38620,7 @@ void main()
         // settle). Same per-tick cadence as particles; a frag's settled
         // pose then lasts until lifetime expires.
         TickFragDebris(simDt);
+        TickInObjectSpawns(simDt);
         TickDoors(simDt);
         TickElevators(simDt);
         // SC-MOB-ROAM-AUDIT — 15s roam heartbeat to the session log:
