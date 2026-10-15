@@ -209,7 +209,8 @@ jobs:
           done
           logs=("$HOME/Library/Application Support/SiegeFX/logs"/session-*.log)
           log=${logs[${#logs[@]} - 1]}
-          line=$(grep -m1 '^\[log\] SiegeFX ' "$log") || true
+          # Session log lines start with the time; match from "[log]" on.
+          line=$(grep -m1 -E '^([0-9:.]+ )?\[log\] SiegeFX ' "$log") || true
           echo "$line"
           [[ "$line" == *"(osx-arm64)" ]] || { echo "::error::the session log does not name the osx-arm64 runtime"; failed=1; }
           exit $failed

@@ -119,7 +119,10 @@ done
 build_line() {
     local log line
     log=$(newest_log)
-    line=$(grep -m1 '^\[log\] SiegeFX ' "$log") || { echo "no build line in '$log'"; return 1; }
+    # The session log stamps each line with the time; the build line is
+    # compared from its "[log]" on.
+    line=$(grep -m1 -E '^([0-9:.]+ )?\[log\] SiegeFX ' "$log") || { echo "no build line in '$log'"; return 1; }
+    line="[log]${line#*\[log\]}"
     echo "$line"
     if [ -n "$expect" ] && [[ "$line" != "[log] SiegeFX $expect+"* ]]; then
         echo "expected version $expect"; return 1
