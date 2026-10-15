@@ -113,6 +113,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx world  layout      <map-tank> <terrain-tank> [root-region]");
     Console.WriteLine("  siegefx templates list     <tank> [--prefix=P] [--tag=T]");
     Console.WriteLine("  siegefx templates show     <tank> <name>");
+    Console.WriteLine("  siegefx templates clip-heights <Logic.dsres> <name>   (posed model height per chore clip)");
     Console.WriteLine("  siegefx templates stats    <tank> <name | --prefix=P>");
     Console.WriteLine("  siegefx templates combat   <tank> <attacker> <target> [--duels=N] [--seed=K]");
     Console.WriteLine("  siegefx templates loot     <tank> <name> [--rolls=N] [--seed=K]");
@@ -5564,6 +5565,7 @@ static int DispatchTemplates(string[] a)
     {
         "list"   => CmdTemplatesList(a[1..]),
         "show"   => CmdTemplatesShow(a[1..]),
+        "clip-heights" => CmdTemplatesClipHeights(a[1..]),
         "resolve-textures" => CmdTemplatesResolveTextures(a[1..]),
         "stats"  => CmdTemplatesStats(a[1..]),
         "combat" => CmdTemplatesCombat(a[1..]),
@@ -5966,6 +5968,95 @@ static int CmdTemplatesList(string[] a)
         Console.WriteLine($"  [{t.TypeTag}] {t.Name}{parent}");
         shown++;
         if (shown >= 60) { Console.WriteLine($"  ... (showing first 60; {store.Count - shown}+ more)"); break; }
+    }
+    return 0;
+}
+
+/// <summary>`templates clip-heights` — for each clip a template's chores name,
+/// how high the posed model sits at five points through the clip: the
+/// lowest and highest corner overall and per subset (body, mound, ...),
+/// and how many corners are above the actor's ground (Y=0). Shows which
+/// clips leave a burrowing monster's mound above ground and which sink
+/// the whole thing, without loading a level.</summary>
+static int CmdTemplatesClipHeights(string[] a)
+{
+    if (a.Length != 2)
+    {
+        Console.Error.WriteLine("usage: siegefx templates clip-heights <Logic.dsres> <template>");
+        Console.Error.WriteLine("       Objects.dsres is read from beside Logic.dsres");
+        return 1;
+    }
+    var objectsPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(a[0])) ?? ".", "Objects.dsres");
+    if (!File.Exists(objectsPath)) { Console.Error.WriteLine($"no Objects.dsres beside {a[0]}"); return 1; }
+    using var logicTank = TankFile.Open(a[0]);
+    using var objectsTank = TankFile.Open(objectsPath);
+    var (store, _) = TemplateStore.LoadFromTank(new TankReader(logicTank));
+    if (!store.TryGet(a[1], out var t) || t is null) { Console.Error.WriteLine($"template '{a[1]}' not found"); return 1; }
+    var resolver = new AssetResolver();
+    resolver.Add(new TankReader(objectsTank), "Objects.dsres");
+    var model = store.GetAttribute(t, "aspect", "model")?.Trim().Trim('"');
+    var prefix = store.GetAttribute(t, "body", "chore_dictionary", "chore_prefix")?.Trim().Trim('"');
+    if (model is null || prefix is null || !resolver.TryLoadModel(model, out var aspBytes))
+    { Console.Error.WriteLine($"model '{model}' or chore prefix '{prefix}' not found"); return 1; }
+    var mesh = AspMesh.Load(aspBytes);
+    Console.WriteLine($"model {model}: {mesh.Corners.Length} corners, {mesh.Subsets.Length} subset(s), {mesh.BoneCount} bones");
+    Console.WriteLine($"initial_chore = {store.GetAttribute(t, "body", "initial_chore") ?? store.GetAttribute(t, "mind", "initial_chore") ?? "<none>"}");
+
+    // Corner -> subset, through the triangle list.
+    var subsetOf = new int[mesh.Corners.Length];
+    Array.Fill(subsetOf, -1);
+    for (int si = 0; si < mesh.Subsets.Length; si++)
+    {
+        var sub = mesh.Subsets[si];
+        for (int tri = sub.FirstTriangle; tri < sub.FirstTriangle + sub.TriangleCount && 3 * tri + 2 < mesh.TriangleIndices.Length; tri++)
+            for (int k = 0; k < 3; k++)
+            {
+                int c = mesh.TriangleIndices[3 * tri + k];
+                if (c >= 0 && c < subsetOf.Length) subsetOf[c] = si;
+            }
+    }
+    string Heights(Vector3[] pos)
+    {
+        int above = 0;
+        float lo = float.PositiveInfinity, hi = float.NegativeInfinity;
+        var sLo = new float[mesh.Subsets.Length]; var sHi = new float[mesh.Subsets.Length];
+        Array.Fill(sLo, float.PositiveInfinity); Array.Fill(sHi, float.NegativeInfinity);
+        for (int c = 0; c < pos.Length; c++)
+        {
+            float y = pos[c].Y;
+            if (y > 0.02f) above++;
+            lo = MathF.Min(lo, y); hi = MathF.Max(hi, y);
+            int si = subsetOf[c];
+            if (si >= 0) { sLo[si] = MathF.Min(sLo[si], y); sHi[si] = MathF.Max(sHi[si], y); }
+        }
+        var subs = string.Join(" ", Enumerable.Range(0, mesh.Subsets.Length)
+            .Select(i => $"s{i}[{sLo[i]:F2}..{sHi[i]:F2}]"));
+        return $"y {lo,6:F2}..{hi,5:F2}  above-ground {above * 100 / Math.Max(1, pos.Length),3}%  {subs}";
+    }
+    Console.WriteLine($"  bind pose      {Heights(AnimationRuntime.SkinCorners(mesh, Enumerable.Repeat(Matrix4x4.Identity, mesh.BoneCount).ToArray()))}");
+
+    var chores = store.GetSection(t, "body", "chore_dictionary");
+    if (chores is null) return 0;
+    foreach (var chore in chores.Children)
+    {
+        if (chore.Header is null || TemplateStore.FindChild(chore, "anim_files") is not { } anims) continue;
+        var stances = ParseChoreStances(TemplateStore.FindAttr(chore, "chore_stances"));
+        foreach (var f in anims.Attributes)
+        {
+            byte[]? prs = null;
+            string name = "";
+            foreach (var st in stances)
+                if (resolver.TryLoadChoreAnim(prefix, st, f.Value, out var b)) { prs = b; name = $"{prefix}{st}_{f.Value}"; break; }
+            if (prs is null) { Console.WriteLine($"[{chore.Header}] {f.Name}={f.Value}: clip not found"); continue; }
+            var clip = PrsAnimation.Load(prs);
+            Console.WriteLine($"[{chore.Header}] {f.Name} = {name}  ({clip.AnimLength:F2}s)");
+            foreach (var frac in new[] { 0f, 0.25f, 0.5f, 0.75f, 1f })
+            {
+                float tt = MathF.Min(clip.AnimLength * frac, MathF.Max(0f, clip.AnimLength - 0.001f));
+                var pos = AnimationRuntime.SkinCorners(mesh, AnimationRuntime.ComputeSkinMatrices(mesh, clip, tt));
+                Console.WriteLine($"  {frac,4:P0} t={tt:F2}s  {Heights(pos)}");
+            }
+        }
     }
     return 0;
 }
