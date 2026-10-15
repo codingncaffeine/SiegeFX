@@ -32544,6 +32544,53 @@ void main()
         };
     }
 
+    /// <summary>SC-PICKUP-AUTO-EQUIP — the hero's empty paperdoll slot a
+    /// picked-up item would go into, or null when it has no slot, every
+    /// slot it fits is taken, or the two-handed/shield rule forbids it.
+    /// Bows (is_projectile) take the ranged box; rings take the first free
+    /// ring slot.</summary>
+    private string? EmptyPaperdollSlotFor(string itemRef)
+    {
+        if (_templateStore is null
+            || !_templateStore.TryGet(itemRef, out var tpl) || tpl is null) return null;
+        var es = (_templateStore.GetAttribute(tpl, "gui", "equip_slot") ?? "")
+            .Trim().ToLowerInvariant();
+        bool isProjectile = string.Equals(
+            _templateStore.GetAttribute(tpl, "attack", "is_projectile")?.Trim(),
+            "true", StringComparison.OrdinalIgnoreCase);
+        bool twoHanded = string.Equals(
+            _templateStore.GetAttribute(tpl, "attack", "is_two_handed")?.Trim(),
+            "true", StringComparison.OrdinalIgnoreCase);
+        string[] candidates = isProjectile ? ["ranged"] : es switch
+        {
+            "es_weapon_hand" => ["melee"],
+            "es_shield_hand" => ["shield"],
+            "es_head"        => ["helmet"],
+            "es_chest"       => ["armor"],
+            "es_forearms"    => ["gauntlets"],
+            "es_feet"        => ["boots"],
+            "es_amulet"      => ["amulet"],
+            "es_spellbook"   => ["spellbook"],
+            _ when es.StartsWith("es_ring", StringComparison.Ordinal)
+                             => ["ring1", "ring2", "ring3", "ring4"],
+            _ => [],
+        };
+        bool Worn(string tag) => _playerEquipment.TryGetValue(tag, out var r) && !string.IsNullOrWhiteSpace(r);
+        foreach (var slot in candidates)
+        {
+            if (PaperdollSlotToEsTag(slot) is not { } tag || Worn(tag)) continue;
+            if (ItemSlotMismatchReason(itemRef, slot) is not null) continue;
+            if (slot == "melee" && twoHanded && Worn("es_shield_hand")) return null;
+            if (slot == "shield" && _playerEquipment.TryGetValue("es_weapon_hand", out var wh)
+                && !string.IsNullOrWhiteSpace(wh)
+                && _templateStore.TryGet(wh, out var whT) && whT is not null
+                && string.Equals(_templateStore.GetAttribute(whT, "attack", "is_two_handed")?.Trim(),
+                    "true", StringComparison.OrdinalIgnoreCase)) return null;
+            return slot;
+        }
+        return null;
+    }
+
     private static string? PaperdollSlotToEsTag(string slotName) => slotName switch
     {
         // SC-PAPERDOLL-EQUIP — canonical DS1 tags: base_helm authors
@@ -38116,31 +38163,27 @@ void main()
         if (accepted.Count > 0)
             PlayPutDownSfx(accepted[0].Reference, pile.Position);
 
-        // SC-PAPERDOLL-EQUIP — a picked-up PROJECTILE weapon auto-fills the
-        // EMPTY ranged box (per the user's DS1 recall: first bow goes
-        // straight onto the paperdoll; later bows land in the pack).
-        bool rangedAutoEquipped = false;
-        if (!_playerEquipment.TryGetValue("es_ranged_weapon", out var curRanged)
-            || string.IsNullOrWhiteSpace(curRanged))
+        // SC-PICKUP-AUTO-EQUIP — DS1 puts a picked-up item straight onto the
+        // paperdoll when its slot is empty and the hero can use it (first
+        // bow, first chest armor, first helm...); otherwise it lands in the
+        // pack. Same gates as a paperdoll drop: the slot the item authors,
+        // the stat requirements, and the two-handed/shield rule.
+        var autoEquipped = new List<SiegeFX.Core.Actors.LootEntry>();
+        if (_player is not null)
         {
-            for (int ai = 0; ai < accepted.Count; ai++)
+            foreach (var it in accepted)
             {
-                var it = accepted[ai];
-                if (it.IsEquipped || _templateStore is null) continue;
-                if (!_templateStore.TryGet(it.Reference, out var wtpl) || wtpl is null) continue;
-                if (!string.Equals(_templateStore.GetAttribute(wtpl, "attack", "is_projectile")?.Trim(),
-                        "true", StringComparison.OrdinalIgnoreCase)) continue;
-                if (!MeetsEquipRequirements(it.Reference, _player!.Actor.Stats, out _)) continue;
-                _playerEquipment["es_ranged_weapon"] = it.Reference;
+                var slotName = EmptyPaperdollSlotFor(it.Reference);
+                if (slotName is null || PaperdollSlotToEsTag(slotName) is not { } esTag) continue;
+                if (!MeetsEquipRequirements(it.Reference, _player.Actor.Stats, out _)) continue;
+                _playerEquipment[esTag] = it.Reference;
                 _playerInventory.Remove(it);
                 _inventoryPanel.NotifyItemRemoved(_playerInventory.Count);
-                ApplyEquipmentChange("es_ranged_weapon");
-                rangedAutoEquipped = true;
-                Console.WriteLine($"  pickup: auto-equipped {it.Reference} into the ranged box");
-                break;
+                ApplyEquipmentChange(esTag);
+                autoEquipped.Add(it);
+                Console.WriteLine($"  pickup: auto-equipped {it.Reference} into the empty {slotName} slot");
             }
         }
-        _ = rangedAutoEquipped;
 
         // Phase 14c — auto-equip dropped weapons. If the loot entry came from
         // an equipped slot on the dead actor (Slot=weapon_hand/shield_hand/etc)
@@ -38152,6 +38195,7 @@ void main()
         foreach (var it in accepted)
         {
             if (!it.IsEquipped) continue;
+            if (autoEquipped.Contains(it)) continue;
             if (!IsWeaponUpgrade(it)) continue;
             var resolvedRef = ResolveItemRef(it.Reference);
             // SC-EQUIP-SLOT-CLASS — derive the slot from the ITEM, never
