@@ -21042,7 +21042,14 @@ void main()
             }
             else
             {
-                marked = _navMesh.MarkObstacle(origin.X, origin.Z, radius, propBaseY, propTopY, blameTag);
+                // SC-NAV-OBSTACLE-RECT — the prop's own footprint, not the
+                // disc around it (the disc overshoots a rectangle's sides
+                // and sealed a stair top beside a bed).
+                var axU = Vector3.Normalize(new Vector3(wcB.X - wcA.X, 0f, wcB.Z - wcA.Z));
+                var axV = Vector3.Normalize(new Vector3(wcD.X - wcA.X, 0f, wcD.Z - wcA.Z));
+                marked = sideAB > 0.05f && sideAD > 0.05f
+                    ? _navMesh.MarkObstacleRect(wcA, axU, sideAB, axV, sideAD, propBaseY, propTopY, blameTag)
+                    : _navMesh.MarkObstacle(origin.X, origin.Z, radius, propBaseY, propTopY, blameTag);
                 if (occludesSight)
                     _sightOccluders.Add((new Vector2(origin.X, origin.Z), radius, propTopY));
             }

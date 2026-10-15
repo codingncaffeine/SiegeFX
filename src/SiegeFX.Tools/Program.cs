@@ -3209,7 +3209,11 @@ static int MarkRoamSimObstacles(SiegeFX.Core.Nav.NavMesh mesh, string mapTankPat
                 }
                 else
                 {
-                    marked = mesh.MarkObstacle(origin.X, origin.Z, radius, propBaseY, propTopY, tag);
+                    var axU = Vector3.Normalize(new Vector3(wcB.X - wcA.X, 0f, wcB.Z - wcA.Z));
+                    var axV = Vector3.Normalize(new Vector3(wcD.X - wcA.X, 0f, wcD.Z - wcA.Z));
+                    marked = sideAB > 0.05f && sideAD > 0.05f
+                        ? mesh.MarkObstacleRect(wcA, axU, sideAB, axV, sideAD, propBaseY, propTopY, tag)
+                        : mesh.MarkObstacle(origin.X, origin.Z, radius, propBaseY, propTopY, tag);
                 }
                 if (marked > 0) { props++; discs += marked; }
             }

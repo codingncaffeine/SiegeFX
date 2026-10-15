@@ -288,6 +288,81 @@ public sealed class NavMesh
         return marked;
     }
 
+    /// <summary>SC-NAV-OBSTACLE-RECT — block a prop's own oriented footprint
+    /// rectangle instead of the disc around it. The rectangle starts at
+    /// <paramref name="corner"/> and spans <paramref name="lenU"/> along
+    /// <paramref name="axisU"/> and <paramref name="lenV"/> along
+    /// <paramref name="axisV"/> (unit XZ axes, at right angles), grown by
+    /// <see cref="ObstacleRectMargin"/> on every side. Same rules as the disc
+    /// overload otherwise: the vertical band gate, centroid containment for
+    /// any triangle, an edge crossing only for small ones. A bed's bounding
+    /// disc reached a third of a meter past its foot onto the stair top
+    /// beside it and sealed a farmhouse's upper floor.</summary>
+    public int MarkObstacleRect(Vector3 corner, Vector3 axisU, float lenU, Vector3 axisV, float lenV,
+                                float baseY, float topY, string? tag)
+    {
+        Blocked ??= new bool[TriangleCount];
+        BlockedTag ??= new string?[TriangleCount];
+        if (lenU <= 0f || lenV <= 0f) return 0;
+        float m = ObstacleRectMargin;
+        float u0 = -m, u1 = lenU + m, v0 = -m, v1 = lenV + m;
+        float loY = baseY - ObstacleBelowFloorTol;
+        float hiY = topY + ObstacleAboveTopTol;
+        // Local footprint coordinates of a world point.
+        (float U, float V) Local(Vector3 p)
+        {
+            float dx = p.X - corner.X, dz = p.Z - corner.Z;
+            return (dx * axisU.X + dz * axisU.Z, dx * axisV.X + dz * axisV.Z);
+        }
+        bool Inside((float U, float V) q) => q.U >= u0 && q.U <= u1 && q.V >= v0 && q.V <= v1;
+        // Liang-Barsky: does the segment p->q cross the rectangle?
+        bool SegmentHits((float U, float V) p, (float U, float V) q)
+        {
+            float t0 = 0f, t1 = 1f, du = q.U - p.U, dv = q.V - p.V;
+            bool Clip(float den, float num)
+            {
+                if (MathF.Abs(den) < 1e-9f) return num >= 0f;
+                float r = num / den;
+                if (den < 0f) { if (r > t1) return false; if (r > t0) t0 = r; }
+                else { if (r < t0) return false; if (r < t1) t1 = r; }
+                return true;
+            }
+            return Clip(-du, p.U - u0) && Clip(du, u1 - p.U) && Clip(-dv, p.V - v0) && Clip(dv, v1 - p.V);
+        }
+        string size = $"{lenU:F2}x{lenV:F2}";
+        int marked = 0;
+        for (int t = 0; t < TriangleCount; t++)
+        {
+            if (Blocked[t]) continue;
+            float cy = Centroids[t].Y;
+            if (cy < loY || cy > hiY) continue;
+            if (Inside(Local(Centroids[t])))
+            {
+                Blocked[t] = true;
+                BlockedTag[t] = $"{tag}|rect {size} centroid";
+                marked++;
+                continue;
+            }
+            var a = Vertices[Indices[3 * t + 0]];
+            var b = Vertices[Indices[3 * t + 1]];
+            var c = Vertices[Indices[3 * t + 2]];
+            var la = Local(a); var lb = Local(b); var lc = Local(c);
+            if (!SegmentHits(la, lb) && !SegmentHits(lb, lc) && !SegmentHits(lc, la)) continue;
+            float abx = b.X - a.X, abz = b.Z - a.Z;
+            float acx = c.X - a.X, acz = c.Z - a.Z;
+            float areaXZ = MathF.Abs(abx * acz - abz * acx) * 0.5f;
+            if (areaXZ > EdgeSealMaxAreaXZ) continue;
+            Blocked[t] = true;
+            BlockedTag[t] = $"{tag}|rect {size} edge a={areaXZ:F2}";
+            marked++;
+        }
+        return marked;
+    }
+
+    /// <summary>How far past its own footprint a rectangle obstacle blocks
+    /// (see <see cref="MarkObstacleRect"/>): a little clearance for bodies.</summary>
+    public const float ObstacleRectMargin = 0.1f;
+
     /// <summary>SC-NAV-EDGE-SEAL-AREA — largest XZ triangle area (m²) the
     /// edge-clip test may fully seal. Calibrated from live blame data
     /// (session 2026-07-13): genuine sliver-seals (storm-door stairwell)
