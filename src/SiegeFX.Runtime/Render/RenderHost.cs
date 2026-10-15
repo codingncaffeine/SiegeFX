@@ -24388,9 +24388,16 @@ void main()
                             }
                             if (!near && !hurt) continue;   // stay buried
                             s.StartupAwakened = true;
-                            if (s.Actor.GetClipIndex("awk") >= 0)
-                                s.Actor.PlayChoreOnce("awk", 1.6f);
-                            Console.WriteLine($"[reveal] {s.Actor.Template.Name} rises");
+                            s.Actor.Buried = false;
+                            s.Actor.Awakened = true;
+                            // The rise: the template's chore_misc wake (the
+                            // skrubb's rv), or the generic awk, played whole.
+                            string rise = s.Actor.GetClipIndex("wake") >= 0 ? "wake" : "awk";
+                            int riseIdx = s.Actor.GetClipIndex(rise);
+                            if (riseIdx >= 0)
+                                s.Actor.PlayChoreOnce(rise, s.Actor.Clips[riseIdx].AnimLength > 0f
+                                    ? s.Actor.Clips[riseIdx].AnimLength : 1.6f);
+                            Console.WriteLine($"[reveal] {s.Actor.Template.Name} rises ({(riseIdx >= 0 ? rise : "no rise clip")})");
                         }
                         else s.StartupAwakened = true;
                     }

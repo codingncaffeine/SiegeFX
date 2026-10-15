@@ -254,7 +254,13 @@ public sealed class ActorSpawner
                 {
                     if (string.IsNullOrWhiteSpace(attr.Name) || string.IsNullOrWhiteSpace(attr.Value)) continue;
                     if (clipIndexByName.ContainsKey(attr.Name)) continue;
-                    var miscClip = TryLoadFullNameClip(attr.Value, inst);
+                    // SC-MISC-SUFFIX — most chore_misc entries are full clip
+                    // names; some are stance suffixes like every other chore
+                    // (the skrubb's slep = ds, wake = rv).
+                    var miscClip = TryLoadFullNameClip(attr.Value, inst)
+                        ?? TryLoadAnyStanceClip(chorePrefix!,
+                               ParseChoreStances(TemplateStore.FindAttr(miscSection!, "chore_stances")),
+                               attr.Value, inst, preferredStance);
                     if (miscClip is null) continue;
                     clipIndexByName[attr.Name] = clipList.Count;
                     clipList.Add(miscClip);
@@ -300,6 +306,11 @@ public sealed class ActorSpawner
         if (!string.IsNullOrEmpty(initialChore)
             && clipIndexByName.TryGetValue(initialChore!, out var idleIdx))
             actor.IdleClipIndex = idleIdx;
+        // SC-BURROWER — a startup_reveal monster (the skrubb) lies in its
+        // chore_default pose, below ground, until it wakes.
+        if ((_store.GetAttribute(template, "mind", "jat_startup") ?? "")
+                .Contains("startup_reveal", StringComparison.OrdinalIgnoreCase))
+            actor.Buried = true;
         // Phase 18 — resolve the animation stance from the AUTHORED equipment
         // when the caller didn't supply one (NPCs): an axe-armed krug idles,
         // walks, and swings in fs1/fs3 instead of the unarmed fs0 the plain

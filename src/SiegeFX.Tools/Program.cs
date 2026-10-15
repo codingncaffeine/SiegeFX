@@ -112,7 +112,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx region layout-fuzz <map-tank> <terrain-tank>");
     Console.WriteLine("  siegefx world  layout      <map-tank> <terrain-tank> [root-region]");
     Console.WriteLine("  siegefx templates list     <tank> [--prefix=P] [--tag=T]");
-    Console.WriteLine("  siegefx templates show     <tank> <name>");
+    Console.WriteLine("  siegefx templates show     <tank> <name> [--raw]");
     Console.WriteLine("  siegefx templates clip-heights <Logic.dsres> <name>   (posed model height per chore clip)");
     Console.WriteLine("  siegefx templates stats    <tank> <name | --prefix=P>");
     Console.WriteLine("  siegefx templates combat   <tank> <attacker> <target> [--duels=N] [--seed=K]");
@@ -6063,7 +6063,9 @@ static int CmdTemplatesClipHeights(string[] a)
 
 static int CmdTemplatesShow(string[] a)
 {
-    if (a.Length != 2) { Console.Error.WriteLine("usage: siegefx templates show <tank> <name>"); return 1; }
+    bool raw = a.Contains("--raw");
+    a = a.Where(x => x != "--raw").ToArray();
+    if (a.Length != 2) { Console.Error.WriteLine("usage: siegefx templates show <tank> <name> [--raw]"); return 1; }
     using var tank = TankFile.Open(a[0]);
     var reader = new TankReader(tank);
     var (store, diags) = TemplateStore.LoadFromTank(reader);
@@ -6081,6 +6083,28 @@ static int CmdTemplatesShow(string[] a)
     Console.Write("chain      :");
     for (var cur = t; cur is not null; cur = cur.Specializes) Console.Write($" {cur.Name}");
     Console.WriteLine();
+    if (raw)
+    {
+        // --raw: every template block in the chain as authored, most
+        // specific first, for fields the resolved summary doesn't list.
+        static void Dump(GasNode n, int depth)
+        {
+            var pad = new string(' ', 2 * depth);
+            foreach (var at in n.Attributes) Console.WriteLine($"{pad}{at.Name} = {at.Value}");
+            foreach (var c in n.Children)
+            {
+                Console.WriteLine($"{pad}[{c.Header}]");
+                Dump(c, depth + 1);
+            }
+        }
+        for (var cur = t; cur is not null; cur = cur.Specializes)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"--- {cur.Name} ({cur.SourcePath}) ---");
+            Dump(cur.Node, 1);
+        }
+        return 0;
+    }
 
     // Quick peek at commonly-queried resolved fields so we can tell visually that the
     // chain walker actually found an ancestor-defined attribute.
