@@ -3068,7 +3068,7 @@ static int CmdWorldPath(string[] a)
 /// siblings of the map tank; missing tanks = unmarked mesh + a loud note.
 /// MIRROR of RenderHost.MarkAllObstacles — keep the two in step.</summary>
 static int MarkRoamSimObstacles(SiegeFX.Core.Nav.NavMesh mesh, string mapTankPath,
-    string regionsArg, Dictionary<uint, Matrix4x4> nodeWorld)
+    string regionsArg, Dictionary<uint, Matrix4x4> nodeWorld, ICollection<string>? broken = null)
 {
     string? root = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetFullPath(mapTankPath)));
     string logicPath = root is null ? "" : Path.Combine(root, "Resources", "Logic.dsres");
@@ -3104,6 +3104,11 @@ static int MarkRoamSimObstacles(SiegeFX.Core.Nav.NavMesh mesh, string mapTankPat
             {
                 if (!nodeWorld.TryGetValue(p.Placement.NodeGuid, out var nw)) continue;
                 if (!store.TryGet(p.TemplateName, out var tpl) || tpl is null) continue;
+                // Props the player broke in the session being replayed are
+                // gone in-game, so they block nothing (by scid or template).
+                string tag = $"{p.TemplateName} 0x{p.Scid:X8}";
+                if (broken is not null && (broken.Contains($"0x{p.Scid:X8}") || broken.Contains(p.TemplateName)))
+                    continue;
                 bool isDoor = false;
                 for (var t = tpl; t is not null; t = t.Specializes)
                     if (string.Equals(t.Name, "base_door", StringComparison.OrdinalIgnoreCase))
@@ -3182,7 +3187,7 @@ static int MarkRoamSimObstacles(SiegeFX.Core.Nav.NavMesh mesh, string mapTankPat
                     {
                         float along = -halfLong + longLen * (di / (float)(n - 1));
                         var c = origin + axis * along;
-                        marked += mesh.MarkObstacle(c.X, c.Z, discR, propBaseY, propTopY);
+                        marked += mesh.MarkObstacle(c.X, c.Z, discR, propBaseY, propTopY, tag);
                     }
                 }
                 else if (shortLen > 2.4f)
@@ -3199,12 +3204,12 @@ static int MarkRoamSimObstacles(SiegeFX.Core.Nav.NavMesh mesh, string mapTankPat
                     {
                         var c = wcA + axU * (sideAB * iu / (nu - 1))
                                     + axV * (sideAD * iv / (nv - 1));
-                        marked += mesh.MarkObstacle(c.X, c.Z, gridR, propBaseY, propTopY);
+                        marked += mesh.MarkObstacle(c.X, c.Z, gridR, propBaseY, propTopY, tag);
                     }
                 }
                 else
                 {
-                    marked = mesh.MarkObstacle(origin.X, origin.Z, radius, propBaseY, propTopY);
+                    marked = mesh.MarkObstacle(origin.X, origin.Z, radius, propBaseY, propTopY, tag);
                 }
                 if (marked > 0) { props++; discs += marked; }
             }
@@ -3696,9 +3701,10 @@ static int CmdRegionHeroSim(string[] a)
 {
     if (a.Length < 3)
     {
-        Console.Error.WriteLine("usage: siegefx region hero-sim <map-tank> <terrain-tank> <region1,region2,...> [--clicks=150] [--range=10] [--speed=4.5] [--seed=1] [--near=x,z,r] [--diag] [--from=x,y,z --to=x,y,z]");
+        Console.Error.WriteLine("usage: siegefx region hero-sim <map-tank> <terrain-tank> <region1,region2,...> [--clicks=150] [--range=10] [--speed=4.5] [--seed=1] [--near=x,z,r] [--diag] [--from=x,y,z --to=x,y,z] [--broken=<template|0xscid>,...]");
         Console.Error.WriteLine("       walks the hero to random clicks and up to random targets; reports failures and their start/goal to replay");
         Console.Error.WriteLine("       --from/--to replays one click walk (coordinates as the game log prints them) with the follower's diagnostics on");
+        Console.Error.WriteLine("       --broken leaves out props broken in the session being replayed (they block nothing in-game)");
         return 1;
     }
     int clicks = 150, seed = 1;
@@ -3707,6 +3713,7 @@ static int CmdRegionHeroSim(string[] a)
     Vector3 nearCenter = default;
     float nearRadius = 0f;
     Vector3? replayFrom = null, replayTo = null;
+    var broken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     static bool TryF(string s, out float v) =>
         float.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v);
     for (int i = 3; i < a.Length; i++)
@@ -3714,6 +3721,9 @@ static int CmdRegionHeroSim(string[] a)
         if (a[i] == "--diag") diag = true;
         else if (a[i].StartsWith("--from=") && TryParseVec3(a[i]["--from=".Length..], out var fv)) replayFrom = fv;
         else if (a[i].StartsWith("--to=") && TryParseVec3(a[i]["--to=".Length..], out var tv)) replayTo = tv;
+        else if (a[i].StartsWith("--broken="))
+            foreach (var b in a[i]["--broken=".Length..].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                broken.Add(b.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? "0x" + b[2..].ToUpperInvariant() : b);
         else if (a[i].StartsWith("--clicks=") && int.TryParse(a[i]["--clicks=".Length..], out var cv)) clicks = Math.Clamp(cv, 1, 5000);
         else if (a[i].StartsWith("--range=") && TryF(a[i]["--range=".Length..], out var rv)) range = rv;
         else if (a[i].StartsWith("--speed=") && TryF(a[i]["--speed=".Length..], out var sv)) speed = sv;
@@ -3731,7 +3741,7 @@ static int CmdRegionHeroSim(string[] a)
     var nodeWorld = new Dictionary<uint, Matrix4x4>();
     foreach (var (guid, _, _, w) in LoadWorldNodePlacements(a[0], a[1], a[2]))
         nodeWorld[guid] = w;
-    MarkRoamSimObstacles(mesh, a[0], a[2], nodeWorld);
+    MarkRoamSimObstacles(mesh, a[0], a[2], nodeWorld, broken);
 
     var traversal = NavTraversal.Player;
     var rng = new Random(seed);
