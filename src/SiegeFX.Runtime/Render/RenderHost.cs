@@ -34348,8 +34348,16 @@ void main()
         return dirXZ * velH + new Vector3(0f, velH * tan, 0f);
     }
 
-    private void SpawnRangedShot(RangedShot shot, Vector3 src, Vector3 aimPoint, float speed)
+    private void SpawnRangedShot(RangedShot shot, Vector3 src, Vector3 aimPoint, float speed, string? shooter = null)
     {
+        // SC-ORDER-TRACE — every projectile names who loosed it and at what,
+        // so a stray shot in a recording can be found in the log.
+        string at = shot.TargetActor?.Actor.Template.Name
+                    ?? (shot.TargetProp is not null ? "a prop" : null)
+                    ?? (shot.NpcTargetCombat is not null ? "the party" : "the ground");
+        Console.WriteLine($"[shot] {(shot.FromPlayer ? "hero" : shooter ?? "npc")} -> {at} " +
+                          $"from ({src.X:F1},{src.Y:F1},{src.Z:F1}) to ({aimPoint.X:F1},{aimPoint.Y:F1},{aimPoint.Z:F1})" +
+                          (shot.Spell is not null ? $" spell {shot.Spell.Name}" : ""));
         shot.Pos = src;
         shot.Vel = SolveBallistic(src, aimPoint, MathF.Max(1f, speed), shot.Gravity);
         _rangedShots.Add(shot);
@@ -35105,6 +35113,8 @@ void main()
             ? target.CurrentTransform.Translation.Y - _player!.CurrentTransform.Translation.Y
             : 0f;
         var clip = _player!.Actor.PickNextSwingClip(elev);
+        Console.WriteLine($"[swing] hero {(_weaponIsRanged ? "bow" : "melee")} at " +
+                          $"{target?.Actor.Template.Name ?? (prop is not null ? "a prop" : "nothing")}");
         if (clip is null)
         {
             // No authored attack chore — land the hit immediately (legacy
@@ -36825,7 +36835,7 @@ void main()
                         ImpactSfxScript = ammo.BreakEffect,
                         FlightSfxScript = ResolveAmmoFlightEffect(brain.CastSpell),
                     };
-                    SpawnRangedShot(lshot, castSrc, castTo, brain.CastSpell.LaunchVelocity);
+                    SpawnRangedShot(lshot, castSrc, castTo, brain.CastSpell.LaunchVelocity, s.Actor.Template.Name);
                     // Mesh-less ammo still flies (hit lands); a tinted streak
                     // stands in as the tracer, same rule as NPC thrown rocks.
                     if (lshot.Mesh is null && _particles is not null)
@@ -36915,7 +36925,7 @@ void main()
                     NpcDamage = thrDmg,
                     NpcTargetCombat = thrTarget,
                 };
-                SpawnRangedShot(shot, throwSrc, aim, s.RangedVelocity);
+                SpawnRangedShot(shot, throwSrc, aim, s.RangedVelocity, s.Actor.Template.Name);
                 if (shot.Mesh is null && _particles is not null)
                     _particles.SpawnProjectile(throwSrc, aim,
                         new Vector4(0.55f, 0.48f, 0.40f, 1f), 0.45f, 18f, 0);
