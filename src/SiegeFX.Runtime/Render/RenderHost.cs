@@ -25296,6 +25296,13 @@ void main()
                 _csMenu.ClearHover();
                 break;
             case CharacterSelectMenuPanel.Action.Next:
+                // The original won't leave character creation without a
+                // name; a blank one fell back to the template's "Farm Boy".
+                if (string.IsNullOrWhiteSpace(_creator.HeroName))
+                {
+                    Console.WriteLine("[creator] Next ignored: the hero has no name");
+                    break;
+                }
                 // SC-DIFF Phase A — cd → Difficulty transition. Skips
                 // map_chooser entirely (we have one main world). Saves
                 // the picker; difficulty selection later kicks off the
