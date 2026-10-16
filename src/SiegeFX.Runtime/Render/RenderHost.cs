@@ -16178,16 +16178,38 @@ void main()
             left -= dt;
             if (left > 0f) { _pendingInObjectSpawns[i] = (owner, child, left); continue; }
             _pendingInObjectSpawns.RemoveAt(i);
-            if (!TryGetGearVisual(child, out var vis))
+            // Built like a map prop (see the static-prop loader): the mesh's
+            // root bind pose stands the Z-up model upright, then the
+            // template's scale_multiplier, then the owner's spot and facing.
+            // Placed raw, the burrow stood on end at the wrong size.
+            SiegeFX.Core.Assets.Template? ct = null;
+            if (_templateStore is null || !_templateStore.TryGet(child, out ct) || ct is null) continue;
+            var model = _templateStore.GetAttribute(ct, "aspect", "model")?.Trim().Trim('"');
+            var asp = string.IsNullOrEmpty(model) ? null : GetOrLoadPropAsp(model!);
+            if (asp is null || _gl is null)
             {
                 Console.WriteLine($"[gen-in-object] {owner.Actor.Template.Name}: no model for '{child}'");
                 continue;
             }
+            if (!_propGlMeshCache.TryGetValue(asp, out var glMesh))
+            {
+                try { glMesh = new StaticMesh(_gl, asp); }
+                catch { continue; }
+                _propGlMeshCache[asp] = glMesh;
+            }
+            float scale = 1f;
+            if (float.TryParse(_templateStore.GetAttribute(ct, "aspect", "scale_multiplier"),
+                    System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture,
+                    out var sm) && sm > 0f)
+                scale = sm;
+            var world = ComputeRootBindPose(asp) * owner.CurrentTransform;
+            if (scale != 1f) world = Matrix4x4.CreateScale(scale) * world;
             _staticProps.Add(new StaticPropInstance
             {
-                Mesh = vis.Mesh,
-                Texture = vis.Tex,
-                World = owner.CurrentTransform,
+                Mesh = glMesh,
+                Texture = ResolveAspTexture(asp),
+                World = world,
+                Asp = asp,
                 Template = child,
                 CenterY = owner.CurrentTransform.Translation.Y,
             });
