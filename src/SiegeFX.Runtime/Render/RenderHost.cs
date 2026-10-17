@@ -27085,8 +27085,27 @@ void main()
     private bool _musicDuckedForVoice;
     private const float NarrationDuckFactor = 0.3f;
 
+    // Pausing the original fades its music out over a few seconds rather
+    // than cutting it; resuming brings it back. 1 = full, 0 = faded out.
+    private float _musicPauseFade = 1f;
+    private const float MusicPauseFadeOutSeconds = 2.5f;
+    private const float MusicPauseFadeInSeconds = 0.5f;
+
     private void ApplyMusicVolume() =>
-        _music?.SetVolume(_musicBaseVolume * (_musicDuckedForVoice ? NarrationDuckFactor : 1f));
+        _music?.SetVolume(_musicBaseVolume * (_musicDuckedForVoice ? NarrationDuckFactor : 1f) * _musicPauseFade);
+
+    /// <summary>Step the pause fade toward silent while the game is frozen
+    /// and back to full when it runs, on wall-clock time.</summary>
+    private void TickMusicPauseFade(float dt)
+    {
+        float target = SimFrozen && !_bootMode ? 0f : 1f;   // the front-end menus keep their music
+        if (_musicPauseFade == target) return;
+        float rate = target < _musicPauseFade ? 1f / MusicPauseFadeOutSeconds : 1f / MusicPauseFadeInSeconds;
+        _musicPauseFade = target < _musicPauseFade
+            ? MathF.Max(target, _musicPauseFade - rate * dt)
+            : MathF.Min(target, _musicPauseFade + rate * dt);
+        ApplyMusicVolume();
+    }
 
     private void SetMusicDuckedForVoice(bool ducked)
     {
@@ -38400,6 +38419,12 @@ void main()
             _floatingTexts[i].Remaining -= (float)dt;
             if (_floatingTexts[i].Remaining <= 0f) _floatingTexts.RemoveAt(i);
         }
+        // Phase 22-A SC-HUD-DATABAR pause gate (OnRender side) — music ticks
+        // use real dt (on pause it fades out over a few seconds, as the
+        // original's does). World ticks (frag debris, particles, weather) use
+        // `simDt`, which is zero when paused: pausing the original freezes
+        // the rain, torch flames and spell effects in place.
+        float simDt = SimFrozen ? 0f : (float)(dt * _gameSpeed);
         // Phase 17-SC-E — integrate billboard particles + lightning bolts +
         // (Phase 21-SC-SPELL-VFX) flying projectile heads. The screen-space
         // _spellBolts trail was retired here; primary cast visuals are now
@@ -38419,22 +38444,22 @@ void main()
             foreach (var f in _flameSources)
             {
                 if (Vector3.DistanceSquared(f.Pos, camPos) > 60f * 60f) continue;
-                f.Carry = _particles.MaintainFire(f.Pos, flameCol, 0.22f, (float)dt, 18f, f.Carry);
+                f.Carry = _particles.MaintainFire(f.Pos, flameCol, 0.22f, simDt, 18f, f.Carry);
             }
         }
         // SC-WEATHER-E — pump mood precipitation in a disc over the player.
-        // Uses wall dt (presentation, like music): rain keeps falling through
-        // pause. Rates come pre-drifted from WeatherSystem; wind shears the
+        // Game time, so the rain stops in mid-air when the game is paused, as
+        // the original's does. Rates come pre-drifted from WeatherSystem; wind shears the
         // fall vectors. Floor = the player's ground Y — DS1 rain draws in a
         // cylinder around the camera focus without geometry collision.
         if (_particles is not null && (_weather.RainRate > 0.5f || _weather.SnowRate > 0.5f))
         {
             var wxFocus = _player?.CurrentTransform.Translation ?? _camera.Position;
             float wxFloor = _player is not null ? wxFocus.Y : wxFocus.Y - 8f;
-            _particles.MaintainWeather((float)dt, _weather.RainRate, _weather.SnowRate,
+            _particles.MaintainWeather(simDt, _weather.RainRate, _weather.SnowRate,
                 _weather.WindVector, wxFocus, wxFloor);
         }
-        _particles?.Tick((float)dt);
+        _particles?.Tick(simDt);
         // Phase 22-SC-MUSIC-A/B — refill the music streaming queue every
         // frame. Cheap when nothing's playing (one OpenAL state read);
         // when a track is active it decodes ~0-3 chunks per tick to
@@ -38447,13 +38472,7 @@ void main()
         // idempotency guard still thought it was active.
         if (_music is not null && !_music.Tick() && _currentMusicTrack.Length > 0)
             _currentMusicTrack = "";
-        // Phase 22-A SC-HUD-DATABAR pause gate (OnRender side) — music ticks
-        // use real dt so the soundtrack keeps playing through pause (DS1
-        // convention). World-physics ticks (frag debris, particle
-        // integration etc.) use `simDt` which is zero when paused. Audio
-        // and UI tweens fall on the music side; anything that mutates
-        // world state falls on the sim side.
-        float simDt = SimFrozen ? 0f : (float)(dt * _gameSpeed);
+        TickMusicPauseFade((float)dt);
         // Phase 22-SC-MUSIC-D — flip music to mood.battle_track when any
         // hostile NPC is engaging the player; revert to standard_track
         // after CombatExitDelay seconds without aggro. Cheap loop over
@@ -38462,9 +38481,9 @@ void main()
         TickCombatMusic((float)dt);
         // SC-WEATHER-C — apply pending mood_change requests + advance the
         // weather state machine (fog/rain/snow/wind lerps, drift, lightning
-        // schedule, thunder cues). Uses wall dt like the music ticks — DS1
-        // weather is presentation, not simulation.
-        TickWeather((float)dt);
+        // schedule, thunder cues). Game time: the original's weather stops
+        // while paused (rain, drift and lightning alike).
+        TickWeather(simDt);
         // SC-WEATHER-F — placed sound emitters (loops track Active state,
         // repeat windows count down, one-shots fire on activation edges).
         TickSoundEmitters((float)dt);
