@@ -84,6 +84,10 @@ public sealed record ActorStats(
     /// ActorStats built without a template (synthetic combat targets) is unaffected.</summary>
     public float RenderScale { get; init; } = 1f;
 
+    /// <summary>SC-BODY-SEPARATION — the radius bodies keep apart by: 0.4u at
+    /// full size, scaled with <see cref="RenderScale"/> (0.22u for a phrak).</summary>
+    public float BodyRadius => Math.Clamp(0.40f * RenderScale, 0.20f, 1.50f);
+
     public static ActorStats FromTemplate(TemplateStore store, Template template) =>
         FromTemplate(store, template, instance: null);
 

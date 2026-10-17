@@ -172,6 +172,10 @@ public sealed class ActorBrain
     /// when the template authors one (krug grunt = 1.8u); otherwise a 2u fallback.</summary>
     public float MeleeRange { get; }
 
+    /// <summary>How far past touching distance a melee attacker still
+    /// reaches (see <see cref="_meleeReach"/>).</summary>
+    const float MeleeContactSlack = 0.25f;
+
     /// <summary>Ranged/Magic engagement distance — the brain stops chasing and
     /// starts firing here. Melee brains never read it.</summary>
     public float StandoffRange { get; private set; }
@@ -185,7 +189,16 @@ public sealed class ActorBrain
     /// Height-aware on the host side so low fences stay shootable-over.</summary>
     public Func<Vector3, Vector3, bool>? SightBlocked;
 
-    float EngageRange => Mode == AttackMode.Melee ? MeleeRange : StandoffRange;
+    float EngageRange => Mode == AttackMode.Melee ? _meleeReach : StandoffRange;
+
+    /// <summary>SC-MELEE-CONTACT — the melee range this tick: the authored
+    /// <see cref="MeleeRange"/>, but never less than touching distance (the
+    /// two bodies' separation radii) plus a hand's width. Body separation
+    /// holds bodies that far apart, so a shorter authored range (a phrak's)
+    /// could never be met: the attacker stepped in, separation pushed it past
+    /// its hold range, it fell back to chase and stepped in again, flicking
+    /// between its attack and walk poses.</summary>
+    float _meleeReach;
 
     /// <summary>Seconds between swings while in Attack. 1.5s roughly matches
     /// the DS1 1H melee animation cadence; tuned by ear, not from gas.</summary>
@@ -255,6 +268,7 @@ public sealed class ActorBrain
         _selfActor = selfActor;
         _swingRng = new Random(rngSeed);
         MeleeRange = selfStats.AttackRange > 0.1f ? selfStats.AttackRange : 2f;
+        _meleeReach = MeleeRange;
         SetCastSpell(castSpell);
         // SC-MOB-RANGES — authored perception wins over the tuned defaults.
         // base_krug ships sight_range=14 (the old hardcoded 8u bubble made
@@ -475,6 +489,8 @@ public sealed class ActorBrain
 
         bool targetAlive = targetPos.HasValue && targetCombat is not null && !targetCombat.IsDead;
         float distXZ = targetAlive ? DistXZ(Wander.Position, targetPos!.Value) : float.PositiveInfinity;
+        _meleeReach = MathF.Max(MeleeRange,
+            _selfStats.BodyRadius + (targetStats?.BodyRadius ?? 0.4f) + MeleeContactSlack);
 
         // SC-MOB-CHASE-GIVEUP — tick down the post-give-up re-aggro pause.
         if (_reaggroCooldown > 0f) _reaggroCooldown -= dt;
@@ -709,11 +725,11 @@ public sealed class ActorBrain
                 // Melee when that's the mode, or when a caster/thrower with the
                 // icz failsafe has the target inside its inner comfort zone.
                 bool meleeNow = Mode == AttackMode.Melee ||
-                                (_selfStats.IczSwitchToMelee && distXZ <= MeleeRange);
+                                (_selfStats.IczSwitchToMelee && distXZ <= _meleeReach);
                 // Step out of reach → fall back to chase. The 1.2x band is the
                 // same hysteresis trick as Aggro/Disengage, scaled smaller because
                 // melee distances are tight; standoff modes get a bit more slack.
-                float holdRange = meleeNow ? MeleeRange * 1.2f : StandoffRange * 1.15f;
+                float holdRange = meleeNow ? _meleeReach * 1.2f : StandoffRange * 1.15f;
                 if (distXZ > holdRange) { State = BrainState.Chase; _attackFacing = null; break; }
                 // SC-PATHING — a target that stepped behind blocked ground
                 // mid-fight (fence, cart) breaks the hold: back to Chase so
