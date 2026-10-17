@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The pre-push gate: build with warnings as errors, the data-free unit tests,
-# the engine's self-tests, the parity ledger against its committed baseline
+# no game content among the tracked files, the engine's self-tests, the parity ledger against its committed baseline
 # (goldens/parity-ledger.baseline.txt) and every spell's effect trace against
 # goldens/sfx-timelines. Exit 0 only when every step passes. Needs a Dungeon
 # Siege install for everything after the unit tests.
@@ -53,6 +53,7 @@ step() {
 step build "$dotnet" build "$repo/SiegeFX.sln" -c Release --nologo -warnaserror
 step tests "$dotnet" test "$repo/tests/SiegeFX.Tests" -c Release --no-build --nologo
 step test-menu "$repo/tools/test-menu.sh" --check
+step repo-content "$repo/tools/check-repo-content.sh" "$repo"
 
 game="$repo/src/SiegeFX.Runtime/bin/Release/net10.0/SiegeFX"
 for t in save dialogue net; do

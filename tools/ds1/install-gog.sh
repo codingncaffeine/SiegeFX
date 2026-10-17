@@ -16,7 +16,7 @@ target=$(realpath -m "$2")
 [ -f "$installer" ] || { echo "install-gog: no installer at $installer" >&2; exit 1; }
 [ -e "$target" ] && [ -n "$(ls -A "$target" 2>/dev/null)" ] && { echo "install-gog: $target exists and is not empty" >&2; exit 1; }
 
-export DS1_GAME_DIR="$(dirname "$installer")"   # common.sh wants a folder; the real one is set below
+DS1_GAME_DIR=$(dirname "$installer"); export DS1_GAME_DIR   # common.sh wants a folder; the real one is set below
 . "$here/common.sh"
 command -v umu-run >/dev/null 2>&1 || ds1_die "umu-run not found"
 [ -d "$WINEPREFIX/drive_c" ] || DS1_GAME_DIR="$target" "$here/setup-prefix.sh"

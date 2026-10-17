@@ -1,12 +1,17 @@
 name: CI
 
-# Every push to main and every pull request: build the whole solution on Linux
-# and on Windows with warnings as errors and run the data-free unit tests; and
-# build the release artifacts (publish.sh), launch the Linux tarball as shipped
-# (packaging/smoke-test.sh) and keep the artifacts for a week. The checks that
-# need a Dungeon Siege install (the parity ledger, the effect traces, the menu
-# rendered from the tarball) run locally: tools/receipts.sh and the smoke test
-# with --ds1.
+# Every push to main and every pull request:
+#   lint     no game content among the tracked files, shellcheck over every
+#            script, actionlint over the workflows;
+#   build    the whole solution on Linux and on Windows with warnings as
+#            errors, the data-free unit tests and the game's own self-tests
+#            (save round trip, dialogue tree, host and client over loopback);
+#   package  the release artifacts (publish.sh), the Linux tarball launched as
+#            shipped (packaging/smoke-test.sh), artifacts kept for a week;
+#   windows-zip  the self-tests again, from the Windows zip as shipped.
+# The checks that need a Dungeon Siege install (the parity ledger, the effect
+# traces, the menu rendered from the tarball) run locally: tools/receipts.sh
+# and the smoke test with --ds1.
 on:
   push:
     branches: [main]
@@ -21,6 +26,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: No game content in the repository
+        run: tools/check-repo-content.sh
+
+      - name: shellcheck
+        run: |
+          shellcheck --version | sed -n 2p
+          git ls-files -z '*.sh' | xargs -0 shellcheck -S warning
+
+      # Pinned release, checked against its published checksum.
+      - name: actionlint
+        run: |
+          v=1.7.12
+          f=actionlint_${v}_linux_amd64.tar.gz
+          curl -fsSLO "https://github.com/rhysd/actionlint/releases/download/v$v/$f"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $f" | sha256sum -c -
+          tar -xzf "$f" actionlint
+          ./actionlint -color
+
   build-and-test:
     name: ${{ matrix.os }}
     strategy:
@@ -57,6 +86,27 @@ jobs:
       # minutes with a dump.
       - name: Unit tests
         run: dotnet test tests/SiegeFX.Tests -c Release --no-build --blame-hang --blame-hang-timeout 2m --logger "console;verbosity=normal" --results-directory TestResults
+
+      # The game's self-tests build their own data, so they need no install.
+      # Windows runs the build its release ships (the Windows TFM).
+      - name: Game self-tests
+        shell: bash
+        timeout-minutes: 10
+        env:
+          ALSOFT_DRIVERS: "null"
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            game=src/SiegeFX.Runtime/bin/Release/net10.0-windows10.0.22621.0/SiegeFX.exe
+          else
+            game=src/SiegeFX.Runtime/bin/Release/net10.0/SiegeFX
+          fi
+          failed=0
+          for t in save dialogue net; do
+            echo "::group::selftest-$t"
+            timeout 180 "$game" "--selftest-$t" || { echo "::error::selftest-$t failed"; failed=1; }
+            echo "::endgroup::"
+          done
+          exit $failed
 
       - name: Keep the hang dumps
         if: failure()
@@ -102,3 +152,31 @@ jobs:
             publish/*.zip
           retention-days: 7
           if-no-files-found: ignore
+
+  # The Windows zip as players get it: one self-contained, self-extracting
+  # SiegeFX.exe. A packaging break (a native left out of the bundle, a module
+  # that will not load from a single file) shows here, not on a player's PC.
+  windows-zip:
+    needs: package
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: siegefx-${{ github.sha }}
+          path: publish
+
+      - name: Self-tests from the shipped exe
+        shell: bash
+        env:
+          ALSOFT_DRIVERS: "null"
+        run: |
+          unzip -q publish/SiegeFX-dev-win-x64.zip -d app
+          ls -1 app
+          failed=0
+          for t in save dialogue net; do
+            echo "::group::selftest-$t"
+            timeout 180 app/SiegeFX.exe "--selftest-$t" || { echo "::error::selftest-$t failed"; failed=1; }
+            echo "::endgroup::"
+          done
+          exit $failed
