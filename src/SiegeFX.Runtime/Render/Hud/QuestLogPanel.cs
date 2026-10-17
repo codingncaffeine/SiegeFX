@@ -338,9 +338,12 @@ public sealed class QuestLogPanel
             var lines = new List<string>();
             string desc = sel.Definition?.ObjectiveText is { Length: > 0 } ot ? ot : Pretty(sel.Key);
             foreach (var l in Wrap(desc, text, dw, _fontScale)) lines.Add(l);
-            if (ProgressLine(sel) is { } progress) lines.Add(progress);
             int maxLines = System.Math.Max(1, dh / lineH);
-            if (lines.Count > maxLines) lines.RemoveRange(maxLines, lines.Count - maxLines);
+            // The counter keeps its line; the description gives way to it.
+            var progress = ProgressLine(sel);
+            int descLines = progress is null ? maxLines : System.Math.Max(0, maxLines - 1);
+            if (lines.Count > descLines) lines.RemoveRange(descLines, lines.Count - descLines);
+            if (progress is not null) lines.Add(progress);
             int blockY = dyr + (dh - lines.Count * lineH) / 2;
             for (int i = 0; i < lines.Count; i++)
             {

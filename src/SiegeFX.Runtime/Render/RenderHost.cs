@@ -13610,8 +13610,9 @@ void main()
         }
         catch (Exception ex) { Console.WriteLine($"  map template load failed: {ex.Message}"); }
         // SS-CUSTOM (GAME-4) — map-local quests: world/maps/<map>/quests/quests.gas
-        // (the retail per-map quest file). Custom maps carry their own journal
-        // entries this way; missing file = shipped catalog only.
+        // (the retail map ships one; custom maps carry their own journal
+        // entries this way). The data gives the text; catalog rows keep their
+        // goals. Missing file = shipped catalog only.
         try
         {
             var norm = regionPath.Replace('\\', '/');
@@ -13622,7 +13623,7 @@ void main()
                 var qBytes = mapReader.ExtractToMemory(questsPath);
                 var qDoc = SiegeFX.Core.Assets.GasDocument.Load(qBytes);
                 int merged = SiegeFX.Core.Actors.QuestCatalog.MergeFromGas(qDoc);
-                if (merged > 0) Console.WriteLine($"  map quests: {merged} custom quest definition(s)");
+                if (merged > 0) Console.WriteLine($"  map quests: {merged} quest(s) from {questsPath}");
             }
         }
         catch { /* no map-local quests — the shipped catalog stands */ }
@@ -16354,15 +16355,17 @@ void main()
         string line2 = "";
         if (d is not null)
         {
-            line2 = d.ObjectiveText;
-            if (d.KillCountGoal > 0)
-                line2 = $"{d.ObjectiveText} ({pick.KillProgress}/{d.KillCountGoal})";
-            else if (d.TalkCountGoal > 1)
-                line2 = $"{d.ObjectiveText} ({pick.TalkProgress}/{d.TalkCountGoal})";
-            else if (d.PickupCountGoal > 1)
-                line2 = $"{d.ObjectiveText} ({pick.PickupProgress}/{d.PickupCountGoal})";
+            string counter =
+                d.KillCountGoal > 0   ? $" ({pick.KillProgress}/{d.KillCountGoal})" :
+                d.TalkCountGoal > 1   ? $" ({pick.TalkProgress}/{d.TalkCountGoal})" :
+                d.PickupCountGoal > 1 ? $" ({pick.PickupProgress}/{d.PickupCountGoal})" : "";
+            // Shorten the objective, not the counter: a long objective used
+            // to push the counter off the end of the line.
+            string objective = d.ObjectiveText;
+            int room = 72 - counter.Length;
+            if (objective.Length > room) objective = objective[..(room - 3)] + "...";
+            line2 = objective + counter;
         }
-        if (line2.Length > 72) line2 = line2[..69] + "...";
 
         int x = 12;
         int y = (int)(viewportH * 0.30f);

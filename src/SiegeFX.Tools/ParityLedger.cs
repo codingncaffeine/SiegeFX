@@ -156,14 +156,29 @@ static class ParityLedger
     static Section Quests(TankReader world)
     {
         var s = new Section("quests", "Quests the dialogue grants (activate_quest)",
-            "the engine's quest catalog defines the quest (journal text and objective)");
-        foreach (var rp in RegionPaths(world))
+            "the engine's quest catalog, or the map's quests.gas the engine merges at region load, defines the quest stage");
+        var regionPaths = RegionPaths(world).ToList();
+        // The stage keys each map's quests.gas defines (key for order 0, key,N after).
+        var dataKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var questsPath in regionPaths
+                     .Select(rp => rp[..rp.IndexOf("/regions/", StringComparison.OrdinalIgnoreCase)] + "/quests/quests.gas")
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            GasDocument doc;
+            try { doc = GasDocument.Load(world.ExtractToMemory(questsPath)); }
+            catch { continue; }
+            foreach (var q in QuestFile.Read(doc))
+                foreach (var stage in q.Stages)
+                    dataKeys.Add(q.StageKey(stage.Order));
+        }
+        foreach (var rp in regionPaths)
         {
             var (convs, _) = ConversationStore.Load(world, rp);
             foreach (var (convKey, conv) in convs)
                 foreach (var node in conv.Nodes)
                     foreach (var key in DialogueNode.SplitQuestKeys(node.ActivateQuest))
-                        s.Add(key, SiegeFX.Core.Actors.QuestCatalog.All.ContainsKey(key), $"{RegionName(rp)} {convKey}");
+                        s.Add(key, SiegeFX.Core.Actors.QuestCatalog.All.ContainsKey(key) || dataKeys.Contains(key),
+                              $"{RegionName(rp)} {convKey}");
         }
         return s;
     }

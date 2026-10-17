@@ -412,44 +412,65 @@ public static class QuestCatalog
     //    -> ...) is NOT wired here — that ordering ships as activate_quest
     //    on each subsequent NPC's dialogue tree, so DS1 dialogue authors
     //    drive the chain naturally without us hard-coding chapter order.
-    /// <summary>SS-CUSTOM (GAME-4) — merge quest definitions from a map-local
-    /// <c>quests/quests.gas</c> (the retail per-map quest file shape: a
+    /// <summary>SS-CUSTOM (GAME-4) — merge quest text from a map's
+    /// <c>quests/quests.gas</c> (the retail map ships one too: a
     /// <c>[quests]</c> root whose children are quest blocks with
-    /// <c>screen_name</c> and ordered <c>[*]</c> description states). Custom
-    /// maps authored in SiegeSmith carry their own quests this way; merged
-    /// entries overwrite same-key catalog rows so a total conversion can even
-    /// re-text a shipped key. Returns the number of quests merged.</summary>
+    /// <c>screen_name</c> and ordered <c>[*]</c> stages). Returns the number
+    /// of quests merged. See <see cref="Merge"/>.</summary>
     public static int MergeFromGas(SiegeFX.Core.Assets.GasDocument doc)
     {
-        static string Unquote(string s) => s.Trim().Trim('"');
-        int merged = 0;
-        foreach (var root in doc.Roots)
+        var quests = SiegeFX.Core.Assets.QuestFile.Read(doc);
+        Merge(_defs, _dataOnlyKeys, quests);
+        return quests.Count;
+    }
+
+    /// <summary>Merges each quest stage into <paramref name="defs"/> under the
+    /// key a dialogue node activates it by (<c>key</c> for order 0,
+    /// <c>key,N</c> after). The data supplies the text: screen name and the
+    /// stage's description. A row already in the catalog keeps its gameplay
+    /// fields (kill, talk and pickup goals, the next stage), which the data
+    /// does not carry; a stage with no row gets a text-only one, and its key
+    /// goes in <paramref name="dataOnly"/>.</summary>
+    public static void Merge(IDictionary<string, QuestDefinition> defs, ISet<string> dataOnly,
+                             IEnumerable<SiegeFX.Core.Assets.QuestFileEntry> quests)
+    {
+        foreach (var q in quests)
         {
-            if (!root.Header.Equals("quests", StringComparison.OrdinalIgnoreCase)) continue;
-            foreach (var q in root.Children)
+            IReadOnlyList<SiegeFX.Core.Assets.QuestStage> stages =
+                q.Stages.Count > 0 ? q.Stages : [new SiegeFX.Core.Assets.QuestStage(0, "", "", "", "")];
+            foreach (var stage in stages)
             {
-                if (string.IsNullOrWhiteSpace(q.Header)) continue;
-                string screen = "", objective = "";
-                foreach (var a in q.Attributes)
-                    if (a.Name.Equals("screen_name", StringComparison.OrdinalIgnoreCase)) screen = Unquote(a.Value);
-                foreach (var state in q.Children)
+                var key = q.StageKey(stage.Order);
+                var screen = q.ScreenName.Length > 0 ? q.ScreenName : q.Key;
+                if (defs.TryGetValue(key, out var old) && !dataOnly.Contains(key))
                 {
-                    foreach (var a in state.Attributes)
-                        if (a.Name.Equals("description", StringComparison.OrdinalIgnoreCase) && objective.Length == 0)
-                            objective = Unquote(a.Value);
-                    if (objective.Length > 0) break;
+                    defs[key] = new QuestDefinition
+                    {
+                        Key                  = old.Key,
+                        ScreenName           = screen,
+                        ObjectiveText        = stage.Description.Length > 0 ? stage.Description : old.ObjectiveText,
+                        KillTargetTemplate   = old.KillTargetTemplate,
+                        KillCountGoal        = old.KillCountGoal,
+                        KillTargetExact      = old.KillTargetExact,
+                        TalkTargetTemplate   = old.TalkTargetTemplate,
+                        TalkCountGoal        = old.TalkCountGoal,
+                        PickupTargetTemplate = old.PickupTargetTemplate,
+                        PickupCountGoal      = old.PickupCountGoal,
+                        DeliverItemTemplate  = old.DeliverItemTemplate,
+                        NextQuestKey         = old.NextQuestKey,
+                    };
                 }
-                _defs[q.Header] = new QuestDefinition
+                else
                 {
-                    Key = q.Header,
-                    ScreenName = screen.Length > 0 ? screen : q.Header,
-                    ObjectiveText = objective,
-                };
-                merged++;
+                    defs[key] = new QuestDefinition { Key = key, ScreenName = screen, ObjectiveText = stage.Description };
+                    dataOnly.Add(key);
+                }
             }
         }
-        return merged;
     }
+
+    /// <summary>Catalog keys that only quest data defines (see <see cref="Merge"/>).</summary>
+    static readonly HashSet<string> _dataOnlyKeys = new(StringComparer.OrdinalIgnoreCase);
 
     static readonly Dictionary<string, QuestDefinition> _defs =
         new(StringComparer.OrdinalIgnoreCase)
@@ -872,12 +893,18 @@ public static class QuestCatalog
     /// catalog keys. DS1 authors the no-comma base form
     /// ("quest_destroy_gom2") while staged catalog entries carry ",N"
     /// suffixes; a verbatim apply cold-created a parallel journal entry
-    /// and left the real staged entry active forever.</summary>
-    public static IReadOnlyList<string> ResolveKeyAliases(string key)
+    /// and left the real staged entry active forever. A row only quest data
+    /// defines (the merged <c>quest_destroy_gom2</c>) does not take the key
+    /// from the staged rows the catalog defines.</summary>
+    public static IReadOnlyList<string> ResolveKeyAliases(string key) =>
+        ResolveKeyAliases(_defs, _dataOnlyKeys, key);
+
+    public static IReadOnlyList<string> ResolveKeyAliases(IReadOnlyDictionary<string, QuestDefinition> defs,
+                                                          IReadOnlySet<string> dataOnly, string key)
     {
-        if (_defs.ContainsKey(key)) return new[] { key };
-        var staged = _defs.Keys
-            .Where(k => k.StartsWith(key + ",", StringComparison.OrdinalIgnoreCase))
+        if (defs.ContainsKey(key) && !dataOnly.Contains(key)) return new[] { key };
+        var staged = defs.Keys
+            .Where(k => k.StartsWith(key + ",", StringComparison.OrdinalIgnoreCase) && !dataOnly.Contains(k))
             .ToList();
         return staged.Count > 0 ? staged : new[] { key };
     }
