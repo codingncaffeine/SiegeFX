@@ -20782,7 +20782,11 @@ void main()
         ActorRenderState? atk = null;
         foreach (var a in _actors)
             if (ReferenceEquals(a.Brain, brain)) { atk = a; break; }
-        if (atk is not null) PerformPropBreak(best, atk.Actor.Stats);
+        // The krug's own blow lands on the barrel. This used to call
+        // PerformPropBreak, the HERO's break swing: every barrel a krug
+        // smashed anywhere in the loaded world made the hero swing at it, or
+        // loose an arrow at it from across the map (the stray shots).
+        if (atk is not null) ResolveSwingHitOnProp(best, atk.Actor.Stats, atk.Actor.Template.Name);
     }
 
     // ── SC-MOB-PARTIES (blindspot Phase B) ────────────────────────────────
@@ -30590,7 +30594,8 @@ void main()
     }
 
     /// <summary>Phase 18c — the FIRE-note strike against a breakable.</summary>
-    private void ResolveSwingHitOnProp(StaticPropInstance prop, SiegeFX.Core.Actors.ActorStats attacker)
+    private void ResolveSwingHitOnProp(StaticPropInstance prop, SiegeFX.Core.Actors.ActorStats attacker,
+                                       string? by = null)
     {
         if (_player is null || prop.IsDestroyed) return;
         // Single-hit shatter is the DS1 default for life=1 props; we still
@@ -30605,10 +30610,10 @@ void main()
                     DamageMin: 0, DamageMax: 0, Defense: 0,
                     AttackRange: 0, WalkSpeed: 0, ExperienceValue: 0,
                     Strength: 0, Dexterity: 0, Intelligence: 0),
-                rng, attackerIsPlayer: true));
+                rng, attackerIsPlayer: by is null));
         prop.Life = MathF.Max(0f, prop.Life - raw);
         Console.WriteLine(
-            $"click-break: hit {prop.Template} for {raw:F0} " +
+            $"{(by is null ? "click-break" : $"[smash] {by}")}: hit {prop.Template} for {raw:F0} " +
             $"({prop.Life:F0}/{prop.MaxLife:F0})" +
             (prop.Life <= 0f ? "  *** SHATTERED ***" : ""));
         if (prop.Life <= 0f)
@@ -34231,7 +34236,10 @@ void main()
                 var center = prop.World.Translation + new Vector3(0f, 0.5f, 0f);
                 if (Vector3.DistanceSquared(shot.Pos, center) <= 1.2f * 1.2f)
                 {
-                    if (shot.Attacker is { } atk) PerformPropBreak(prop, atk);
+                    // The arrow's hit lands on the prop. PerformPropBreak (the
+                    // hero's break swing) here started another swing and
+                    // another arrow instead of damaging it.
+                    if (shot.Attacker is { } atk) ResolveSwingHitOnProp(prop, atk);
                     RemoveRangedShotAt(i);
                     continue;
                 }
