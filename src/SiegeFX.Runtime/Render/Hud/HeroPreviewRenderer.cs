@@ -253,9 +253,14 @@ internal sealed class HeroPreviewRenderer : IDisposable
         float aspect = (float)rw / rh;
         float fov = 35f * (MathF.PI / 180f);
         // Distance derived from height + fov so a tall pos_aN still fits.
-        // Slack 1.1×: the original's hero fills the listener rect nearly
-        // top to bottom; 1.4× drew him at about three-quarters of it.
-        float dist = (height * 0.5f) / MathF.Tan(fov * 0.5f) * 1.1f;
+        // Slack 1.02×: the original's hero fills the listener rect nearly
+        // top to bottom (1.4× drew him at about three-quarters of it).
+        float dist = (height * 0.5f) / MathF.Tan(fov * 0.5f) * 1.02f;
+        // The bind-pose box centre sits high on the posed body, so centring
+        // on it left the hero about a tenth of the rect too low, feet
+        // hanging past the floor. Aim the camera a tenth of his height
+        // lower to centre him as the original does.
+        center.Y -= 0.104f * height;
 
         var camPos = new Vector3(center.X, center.Y, center.Z + dist);
         var view = Matrix4x4.CreateLookAt(camPos, center, Vector3.UnitY);

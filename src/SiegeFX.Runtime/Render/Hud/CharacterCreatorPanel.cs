@@ -77,9 +77,9 @@ internal sealed class CharacterCreatorPanel
     // 100px so L and R meet at gas X ~277 — same row Y as gas, native
     // 20px height. Name plate bumped up 5px from gas (518 → 513).
     // The original draws each bar about 215×32 (800×600 reference; measured
-    // from a capture). At the gas rects' 20px height the heromenu art was
-    // squashed flat with wide gaps between rows, so each row keeps its
-    // centre line and is 32 tall.
+    // from a capture), spanning X 169-385. At the gas rects' 20px height the
+    // heromenu art was squashed flat with wide gaps between rows, so each
+    // row keeps its centre line, is 32 tall, and each half is 110 wide.
     static readonly (Action Act, int X, int Y, int W, int H)[] Buttons =
     {
         // Per-row spinner widths span HALF the bar so L and R touch
@@ -96,18 +96,18 @@ internal sealed class CharacterCreatorPanel
         // 2px overlap at the L/R meeting edge so bilinear filtering at
         // the quad boundary doesn't produce a visible seam. L extends
         // to gas X 278; R starts at gas X 275; both 102 wide.
-        (Action.GenderLeft,  176, 198, 102, 32),
-        (Action.GenderRight, 275, 198, 102, 32),
-        (Action.HeadLeft,    176, 249, 102, 32),
-        (Action.HeadRight,   275, 249, 102, 32),
-        (Action.FaceLeft,    176, 300, 102, 32),
-        (Action.FaceRight,   275, 300, 102, 32),
-        (Action.HairLeft,    176, 349, 102, 32),
-        (Action.HairRight,   275, 349, 102, 32),
-        (Action.ShirtLeft,   176, 397, 102, 32),
-        (Action.ShirtRight,  275, 397, 102, 32),
-        (Action.PantsLeft,   176, 447, 102, 32),
-        (Action.PantsRight,  275, 447, 102, 32),
+        (Action.GenderLeft,  169, 198, 110, 32),
+        (Action.GenderRight, 275, 198, 110, 32),
+        (Action.HeadLeft,    169, 249, 110, 32),
+        (Action.HeadRight,   275, 249, 110, 32),
+        (Action.FaceLeft,    169, 300, 110, 32),
+        (Action.FaceRight,   275, 300, 110, 32),
+        (Action.HairLeft,    169, 349, 110, 32),
+        (Action.HairRight,   275, 349, 110, 32),
+        (Action.ShirtLeft,   169, 397, 110, 32),
+        (Action.ShirtRight,  275, 397, 110, 32),
+        (Action.PantsLeft,   169, 447, 110, 32),
+        (Action.PantsRight,  275, 447, 110, 32),
     };
     // Listener (3D preview) — character_select.gas[t:listener,n:listener] rect 408,73,649,494.
     const int ListenerGasX = 408, ListenerGasY = 73, ListenerGasW = 649 - 408, ListenerGasH = 494 - 73;
