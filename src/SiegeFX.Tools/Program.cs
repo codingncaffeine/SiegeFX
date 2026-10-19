@@ -3068,7 +3068,8 @@ static int CmdWorldPath(string[] a)
 /// siblings of the map tank; missing tanks = unmarked mesh + a loud note.
 /// MIRROR of RenderHost.MarkAllObstacles — keep the two in step.</summary>
 static int MarkRoamSimObstacles(SiegeFX.Core.Nav.NavMesh mesh, string mapTankPath,
-    string regionsArg, Dictionary<uint, Matrix4x4> nodeWorld, ICollection<string>? broken = null)
+    string regionsArg, Dictionary<uint, Matrix4x4> nodeWorld, ICollection<string>? broken = null,
+    List<(string Tag, Vector2[] Quad, float BaseY, float TopY)>? footprints = null)
 {
     string? root = Path.GetDirectoryName(Path.GetDirectoryName(Path.GetFullPath(mapTankPath)));
     string logicPath = root is null ? "" : Path.Combine(root, "Resources", "Logic.dsres");
@@ -3174,6 +3175,13 @@ static int MarkRoamSimObstacles(SiegeFX.Core.Nav.NavMesh mesh, string mapTankPat
                 float sideAD = new Vector2(wcD.X - wcA.X, wcD.Z - wcA.Z).Length();
                 float longLen = MathF.Max(sideAB, sideAD);
                 float shortLen = MathF.Max(0.4f, MathF.Min(sideAB, sideAD));
+                if (footprints is not null)
+                {
+                    var wcC = Vector3.Transform(corners[2], world);
+                    footprints.Add((tag, new[] { new Vector2(wcA.X, wcA.Z), new Vector2(wcB.X, wcB.Z),
+                                                 new Vector2(wcC.X, wcC.Z), new Vector2(wcD.X, wcD.Z) },
+                                    propBaseY, propTopY));
+                }
                 int marked = 0;
                 if (longLen > shortLen * 2.2f && longLen > 2f)
                 {
@@ -3684,6 +3692,46 @@ static int CmdRegionChaseSim(string[] a)
     return failures.Count == 0 ? 0 : 3;
 }
 
+/// <summary>`hero-sim --dump` — the nav mesh around a point as text: each
+/// blocking prop's footprint and Y band, then each triangle (source snode,
+/// vertices, neighbours across each edge, extra links, and the blame tag of
+/// whatever blocks it). Enough to redraw the area and check a sealed stair
+/// or doorway against its walls without the game data.</summary>
+static int DumpNavArea(SiegeFX.Core.Nav.NavMesh mesh,
+    List<(string Tag, Vector2[] Quad, float BaseY, float TopY)> footprints,
+    Vector3 center, float radius, string path)
+{
+    var ci = System.Globalization.CultureInfo.InvariantCulture;
+    string F(float v) => v.ToString("F3", ci);
+    var c2 = new Vector2(center.X, center.Z);
+    using var w = new StreamWriter(path);
+    w.WriteLine($"# nav area around ({F(center.X)},{F(center.Z)}) r={F(radius)}");
+    w.WriteLine("# prop <template scid> base=<y> top=<y> quad=<x,z> x4");
+    w.WriteLine("# tri <id> snode=<guid> kind=<floor kind> v=<x,y,z> x3 n=<neighbour across the edge opposite v0,v1,v2; -1 none> extra=<links> blocked=<tag|->");
+    int props = 0, tris = 0;
+    foreach (var (tag, quad, baseY, topY) in footprints)
+    {
+        if (!quad.Any(q => Vector2.Distance(q, c2) <= radius + 3f)) continue;
+        w.WriteLine($"prop {tag.Replace(' ', '#')} base={F(baseY)} top={F(topY)} quad=" +
+                    string.Join(' ', quad.Select(q => $"{F(q.X)},{F(q.Y)}")));
+        props++;
+    }
+    for (int t = 0; t < mesh.TriangleCount; t++)
+    {
+        var cc = mesh.Centroids[t];
+        if (Vector2.Distance(new Vector2(cc.X, cc.Z), c2) > radius) continue;
+        var v = new[] { mesh.Vertices[mesh.Indices[3 * t]], mesh.Vertices[mesh.Indices[3 * t + 1]], mesh.Vertices[mesh.Indices[3 * t + 2]] };
+        string extra = mesh.ExtraLinks is not null && mesh.ExtraLinks.TryGetValue(t, out var ex) ? string.Join(',', ex) : "-";
+        string blocked = mesh.Blocked is not null && mesh.Blocked[t] ? (mesh.BlockedTag?[t] ?? "?").Replace(' ', '_') : "-";
+        w.WriteLine($"tri {t} snode=0x{mesh.SourceSnodeGuid[t]:X8} kind={mesh.Kinds[t]} v=" +
+                    string.Join(' ', v.Select(p => $"{F(p.X)},{F(p.Y)},{F(p.Z)}")) +
+                    $" n={mesh.Neighbors[3 * t]},{mesh.Neighbors[3 * t + 1]},{mesh.Neighbors[3 * t + 2]} extra={extra} blocked={blocked}");
+        tris++;
+    }
+    Console.WriteLine($"Dump       : {tris} triangle(s), {props} blocking prop(s) -> {path}");
+    return 0;
+}
+
 /// <summary>`region hero-sim` — headless audit of the HERO's movement, the
 /// half chase-sim and roam-sim don't cover. Two passes from random standing
 /// points, with the hero's own follower settings (Player traversal, partial-
@@ -3705,10 +3753,11 @@ static int CmdRegionHeroSim(string[] a)
 {
     if (a.Length < 3)
     {
-        Console.Error.WriteLine("usage: siegefx region hero-sim <map-tank> <terrain-tank> <region1,region2,...> [--clicks=150] [--range=10] [--speed=4.5] [--seed=1] [--near=x,z,r] [--diag] [--from=x,y,z --to=x,y,z] [--broken=<template|0xscid>,...]");
+        Console.Error.WriteLine("usage: siegefx region hero-sim <map-tank> <terrain-tank> <region1,region2,...> [--clicks=150] [--range=10] [--speed=4.5] [--seed=1] [--near=x,z,r] [--diag] [--from=x,y,z --to=x,y,z] [--broken=<template|0xscid>,...] [--dump=<file>]");
         Console.Error.WriteLine("       walks the hero to random clicks and up to random targets; reports failures and their start/goal to replay");
         Console.Error.WriteLine("       --from/--to replays one click walk (coordinates as the game log prints them) with the follower's diagnostics on");
         Console.Error.WriteLine("       --broken leaves out props broken in the session being replayed (they block nothing in-game)");
+        Console.Error.WriteLine("       --dump writes every nav triangle and blocking prop footprint within --near to a text file, then exits");
         return 1;
     }
     int clicks = 150, seed = 1;
@@ -3717,6 +3766,7 @@ static int CmdRegionHeroSim(string[] a)
     Vector3 nearCenter = default;
     float nearRadius = 0f;
     Vector3? replayFrom = null, replayTo = null;
+    string? dumpPath = null;
     var broken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     static bool TryF(string s, out float v) =>
         float.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v);
@@ -3728,6 +3778,7 @@ static int CmdRegionHeroSim(string[] a)
         else if (a[i].StartsWith("--broken="))
             foreach (var b in a[i]["--broken=".Length..].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
                 broken.Add(b.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? "0x" + b[2..].ToUpperInvariant() : b);
+        else if (a[i].StartsWith("--dump=")) dumpPath = a[i]["--dump=".Length..];
         else if (a[i].StartsWith("--clicks=") && int.TryParse(a[i]["--clicks=".Length..], out var cv)) clicks = Math.Clamp(cv, 1, 5000);
         else if (a[i].StartsWith("--range=") && TryF(a[i]["--range=".Length..], out var rv)) range = rv;
         else if (a[i].StartsWith("--speed=") && TryF(a[i]["--speed=".Length..], out var sv)) speed = sv;
@@ -3745,7 +3796,13 @@ static int CmdRegionHeroSim(string[] a)
     var nodeWorld = new Dictionary<uint, Matrix4x4>();
     foreach (var (guid, _, _, w) in LoadWorldNodePlacements(a[0], a[1], a[2]))
         nodeWorld[guid] = w;
-    MarkRoamSimObstacles(mesh, a[0], a[2], nodeWorld, broken);
+    var footprints = dumpPath is null ? null : new List<(string Tag, Vector2[] Quad, float BaseY, float TopY)>();
+    MarkRoamSimObstacles(mesh, a[0], a[2], nodeWorld, broken, footprints);
+    if (dumpPath is not null)
+    {
+        if (nearRadius <= 0f) { Console.Error.WriteLine("--dump needs --near=x,z,r"); return 1; }
+        return DumpNavArea(mesh, footprints!, nearCenter, nearRadius, dumpPath);
+    }
 
     var traversal = NavTraversal.Player;
     var rng = new Random(seed);
