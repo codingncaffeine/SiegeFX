@@ -1983,8 +1983,15 @@ public sealed class RenderHost : IDisposable
         public bool AlignSwitchOnDamaged;
         public float AlignSwitchLife;
         // SC-SELECTABLE — authored [common] is_selectable=false (the intro
-        // narrator): NO interaction at all, not even a cursor change.
-        public bool IsSelectable = true;
+        // narrator): NO interaction at all, not even a cursor change. A
+        // startup_reveal monster still in the ground (the skrubb under its
+        // mound) can't be targeted either until it rises.
+        public bool AuthoredSelectable = true;
+        public bool IsSelectable
+        {
+            get => AuthoredSelectable && !Actor.Buried;
+            set => AuthoredSelectable = value;
+        }
 
         // SC-RANGED-PROJECTILE — launch profile when either hand holds an
         // is_projectile weapon (bows and thrown rocks author es_shield_hand):
@@ -26272,7 +26279,7 @@ void main()
         }
         foreach (var s in _actors)
         {
-            if (s.Hidden) continue;
+            if (s.Hidden || !s.IsSelectable) continue;
             if (!filter(s)) continue;
             if (!PickableFromPlayerFloor(s)) continue;
             var feet = s.CurrentTransform.Translation;
@@ -26330,7 +26337,7 @@ void main()
         {
             foreach (var s in _actors)
             {
-                if (s.Hidden || s.IsPlayer) continue;
+                if (s.Hidden || s.IsPlayer || !s.IsSelectable) continue;
                 // SC-PICK-FADED + SC-PICK-YBAND — invisible (faded-layer)
                 // actors and actors a FLOOR above/below never own the cursor.
                 if (!PickableFromPlayerFloor(s)) continue;
