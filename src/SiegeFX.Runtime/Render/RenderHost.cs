@@ -27198,6 +27198,7 @@ void main()
         try
         {
             _frontendScene = new FrontendScene(_gl, _playResolver);
+            _frontendScene.DrawInBox = (w, h) => _heroPreview?.Draw(w, h);
             _frontendScene.SetState(FrontendScene.ScreenState.CharacterSelect);
         }
         catch (Exception ex)
@@ -27501,9 +27502,10 @@ void main()
                     }
                     if (_heroPreview is not null)
                     {
+                        // Drawn inside the chrome (FrontendScene.DrawInBox),
+                        // between the stone wall and the frame.
                         _heroPreview.EnsurePreview(_creator.Picker);
                         _heroPreview.Tick(dt);
-                        _heroPreview.Draw(viewportW, viewportH);
                     }
                     // Per-button asp render + hover overlays + name overlay.
                     DrawCharacterCreatorOverlays(viewportW, viewportH);
@@ -40719,9 +40721,10 @@ void main()
                     }
                     if (_heroPreview is not null)
                     {
+                        // Drawn inside the chrome (FrontendScene.DrawInBox),
+                        // between the stone wall and the frame.
                         _heroPreview.EnsurePreview(_creator.Picker);
                         _heroPreview.Tick((float)dt);
-                        _heroPreview.Draw(size.X, size.Y);
                     }
 
                     // Phase 29-CD-CREATOR — per-button asp render for the

@@ -1093,6 +1093,14 @@ public sealed class FrontendScene : IDisposable
     /// picks the forward (sng2cd / lm2cd / b2pn) vs. reverse (cd2sng /
     /// cd2lm / pn2b) clip set; <paramref name="hold"/> is the 0..1
     /// time-fraction along those clips.</summary>
+    /// <summary>Draws the creator's hero into the stone box: called by the
+    /// character-select chrome after the backdrop (the stone wall) and its
+    /// shadow strips, before the pillars, door frame, menus and plates, so
+    /// the hero stands in front of the wall and behind every piece of the
+    /// frame, as the original draws him (its door slides over him as it
+    /// opens).</summary>
+    public Action<int, int>? DrawInBox { get; set; }
+
     private void DrawCdChrome(int vw, int vh, float hold, bool fromSp)
     {
         // Phase 29-CD-CREATOR-FIX5 — split leftside into a shadows-first
@@ -1124,6 +1132,7 @@ public sealed class FrontendScene : IDisposable
             ? "rightside_open" : "rightside_close";
         float rightsideHold = NativeHold(LenLong);
         DrawMesh("rightside-shadow","rightside", clip: rightsideClip, hold: rightsideHold, vw, vh, leftsideShadowMask);
+        DrawInBox?.Invoke(vw, vh);
         DrawMesh("leftside",        "leftside",  clip: "leftside_default",  hold: 0f,           vw, vh, leftsidePillarMask);
         DrawMesh("rightside",       "rightside", clip: rightsideClip, hold: rightsideHold, vw, vh, leftsidePillarMask);
 
