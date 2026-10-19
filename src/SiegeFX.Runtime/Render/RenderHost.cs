@@ -16197,11 +16197,17 @@ void main()
                 catch { continue; }
                 _propGlMeshCache[asp] = glMesh;
             }
+            // Size as an actor sizes itself: scale_base × scale_multiplier
+            // (the map-prop path reads only the multiplier, and the burrow
+            // drew about twice the original's size).
             float scale = 1f;
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            if (float.TryParse(_templateStore.GetAttribute(ct, "aspect", "scale_base"),
+                    System.Globalization.NumberStyles.Float, ci, out var sb) && sb > 0f)
+                scale *= sb;
             if (float.TryParse(_templateStore.GetAttribute(ct, "aspect", "scale_multiplier"),
-                    System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture,
-                    out var sm) && sm > 0f)
-                scale = sm;
+                    System.Globalization.NumberStyles.Float, ci, out var sm) && sm > 0f)
+                scale *= sm;
             var world = ComputeRootBindPose(asp) * owner.CurrentTransform;
             if (scale != 1f) world = Matrix4x4.CreateScale(scale) * world;
             _staticProps.Add(new StaticPropInstance
@@ -16214,7 +16220,7 @@ void main()
                 CenterY = owner.CurrentTransform.Translation.Y,
             });
             var p = owner.CurrentTransform.Translation;
-            Console.WriteLine($"[gen-in-object] {owner.Actor.Template.Name} placed {child} at ({p.X:F1},{p.Y:F1},{p.Z:F1})");
+            Console.WriteLine($"[gen-in-object] {owner.Actor.Template.Name} placed {child} at ({p.X:F1},{p.Y:F1},{p.Z:F1}) scale {scale:F2}");
         }
     }
 
