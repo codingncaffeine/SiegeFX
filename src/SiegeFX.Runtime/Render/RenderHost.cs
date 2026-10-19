@@ -40134,7 +40134,9 @@ void main()
             var shadowEye = _camera.Position;
             foreach (var a in _actors)
             {
-                if (a.Hidden || a.IsDead) continue;
+                // A monster still in the ground (the skrubb under its mound)
+                // casts nothing: the shadow gave away where it would rise.
+                if (a.Hidden || a.IsDead || a.Actor.Buried) continue;
                 if (partyOnly && !(a.IsPlayer || a.IsPartyMember)) continue;
                 var feet = a.CurrentTransform.Translation;
                 if (Vector3.DistanceSquared(feet, shadowEye) > 90f * 90f) continue;
