@@ -1132,6 +1132,50 @@ public sealed class RenderHost : IDisposable
         };
     }
 
+    /// <summary>Where to aim at an actor: the middle of the part of its
+    /// current pose that is above its feet (bones below the ground don't
+    /// count), from its live skeleton. Arrows, spells and hit sparks used to
+    /// aim a fixed 1u above the feet whatever the body looked like, which
+    /// for a skrubb sunk in its mound is open air above it (and for a big
+    /// monster, its knees). Cached once per update.</summary>
+    private Vector3 AimPoint(ActorRenderState s)
+    {
+        var feet = s.CurrentTransform.Translation;
+        if (s.AimHeightFrame != _updateFrame)
+        {
+            s.AimHeightFrame = _updateFrame;
+            s.AimHeight = 1.0f;
+            var mesh = s.Actor.Mesh;
+            if (mesh is not null && mesh.BoneCount > 0)
+            {
+                var clips = s.Actor.Clips;
+                SiegeFX.Core.Assets.PrsAnimation? clip = null;
+                float t = 0f;
+                if (clips.Length > 0)
+                {
+                    clip = clips[Math.Min(s.Actor.CurrentClipIndex, clips.Length - 1)];
+                    t = clip.AnimLength > 0f ? (float)(s.AnimTime % clip.AnimLength) : 0f;
+                }
+                if (_aimBoneWorlds.Length < mesh.BoneCount) _aimBoneWorlds = new Matrix4x4[mesh.BoneCount];
+                AnimationRuntime.ComputeAnimatedBoneWorlds(mesh, clip, t, _aimBoneWorlds);
+                float lo = float.PositiveInfinity, hi = float.NegativeInfinity;
+                for (int bi = 0; bi < mesh.BoneCount; bi++)
+                {
+                    float y = (_aimBoneWorlds[bi] * s.CurrentTransform).Translation.Y - feet.Y;
+                    lo = MathF.Min(lo, y);
+                    hi = MathF.Max(hi, y);
+                }
+                // Only the part above ground shows; a pose with nothing up
+                // keeps a token height so the aim isn't in the dirt.
+                if (hi > 0.1f && float.IsFinite(lo))
+                    s.AimHeight = Math.Clamp((MathF.Max(lo, 0f) + hi) * 0.5f, 0.2f, 4f);
+            }
+        }
+        return feet + new Vector3(0f, s.AimHeight, 0f);
+    }
+    private Matrix4x4[] _aimBoneWorlds = new Matrix4x4[64];
+    private long _updateFrame;
+
     private Vector3? ResolvePlayerBone(string logicalName)
     {
         if (_player is null) return null;
@@ -1987,6 +2031,10 @@ public sealed class RenderHost : IDisposable
         // startup_reveal monster still in the ground (the skrubb under its
         // mound) can't be targeted either until it rises.
         public bool AuthoredSelectable = true;
+        // Height above the feet of the middle of the visible body this
+        // frame (see RenderHost.AimPoint), cached per update.
+        public float AimHeight = 1.0f;
+        public long AimHeightFrame = -1;
         public bool IsSelectable
         {
             get => AuthoredSelectable && !Actor.Buried;
@@ -6933,7 +6981,7 @@ public sealed class RenderHost : IDisposable
                         && _sfxStore.TryGet(r.Spell.ReactiveArmorScript, out _))
                         _sfxRuntime.Spawn(r.Spell.ReactiveArmorScript, new SiegeFX.Core.Sfx.SfxContext(
                             SourcePos:     p + new Vector3(0f, 1.2f, 0f),
-                            TargetPos:     fp2 + new Vector3(0f, 1.0f, 0f),
+                            TargetPos:     AimPoint(foe),
                             WeaponBonePos: p + new Vector3(0f, 1.2f, 0f)));
                     var (rmin, rmax) = ResolveSpellAttackDamage(r.Spell);
                     float rdmg = rmin + (float)_turretRng.NextDouble() * (rmax - rmin);
@@ -7156,7 +7204,7 @@ public sealed class RenderHost : IDisposable
             var quarry = tu.Caster.IsEvilAligned ? NearestLivePartyMember(srcPos) : null;
             if (quarry is null) continue;
             var src = srcPos + new Vector3(0f, 1.6f, 0f);
-            var dst = quarry.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+            var dst = AimPoint(quarry);
             var dq = dst - src;
             if (dq.X * dq.X + dq.Z * dq.Z > 30f * 30f) continue;   // battery reach
             float dmg = tu.DmgMin + (float)_turretRng.NextDouble() * (tu.DmgMax - tu.DmgMin);
@@ -7968,7 +8016,7 @@ public sealed class RenderHost : IDisposable
         foreach (var a in _actors)
             if (!a.IsPlayer && !a.IsRemotePlayer && a.Actor.Instance.Scid == scid) { best = a; break; }
         if (best is null || best.IsDead || best.Actor.Combat.IsDead) return;
-        var hitPos = best.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+        var hitPos = AimPoint(best);
         float dealt = best.Actor.Combat.ApplyDamage(damage);
         if (dealt > 0f) { PlayMeleeHit(hitPos, best); SpawnBloodHit(best); }
         if (best.Actor.Combat.ConsumeJustDied())
@@ -23866,6 +23914,7 @@ void main()
         }
 
         if (_input is null) return;
+        _updateFrame++;
         // DS1's per-character elapsed play clock (shown in the Load window and
         // used as the Save window's default name). Accrues real wall time only
         // while a live world runs and no pause/modal holds it — measured before
@@ -34312,7 +34361,7 @@ void main()
             // are normal outcomes).
             if (shot.TargetActor is { IsDead: false } ta)
             {
-                var chest = ta.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+                var chest = AimPoint(ta);
                 if (Vector3.DistanceSquared(shot.Pos, chest) <= RangedImpactRadius * RangedImpactRadius)
                 {
                     if (shot.Spell is not null)
@@ -34361,7 +34410,7 @@ void main()
                 foreach (var m in _party)
                 {
                     if (!ReferenceEquals(m.Actor.Combat, victim)) continue;
-                    var chest = m.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+                    var chest = AimPoint(m);
                     if (Vector3.DistanceSquared(shot.Pos, chest) <= RangedImpactRadius * RangedImpactRadius)
                     {
                         victim.ApplyDamage(shot.NpcDamage);
@@ -34628,7 +34677,7 @@ void main()
         var rng = new Random();
         float raw = SiegeFX.Core.Actors.CombatResolver.RollDamage(
             attacker, best.Actor.Stats, rng, attackerIsPlayer: true, ranged: true);
-        var hitPos = best.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+        var hitPos = AimPoint(best);
         // MP co-op: a client's arrow on a host-owned enemy resolves on the host.
         if (MpIsClientHitOnNetworkActor(best))
         {
@@ -34975,7 +35024,7 @@ void main()
                 if (ps.Target is { IsDead: false } rt)
                 {
                     SnapPlayerFacingTo(rt.CurrentTransform.Translation);
-                    aim = rt.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+                    aim = AimPoint(rt);
                 }
                 else if (ps.Prop is { IsDestroyed: false } rp)
                 {
@@ -35075,7 +35124,7 @@ void main()
         // unkillable.
         float reach = PlayerMeleeReach(attacker) + 1.0f;
         float dx = tp.X - pp.X, dz = tp.Z - pp.Z;
-        var hitPos = tp + new Vector3(0f, 1.0f, 0f);
+        var hitPos = AimPoint(best);
         if (dx * dx + dz * dz > reach * reach)
         {
             Console.WriteLine(
@@ -37283,7 +37332,7 @@ void main()
                     // so approximate: shoulder-height + a half-step forward
                     // along facing. Reads as "from the hand" to a casual eye.
                     var src = playerPos + _playerFacing * 0.45f + new Vector3(0f, 1.25f, 0f);
-                    var dst = tp        + new Vector3(0f, 1.0f, 0f);
+                    var dst = AimPoint(best!);
                     var elemColor = SpellElementColor(spell.Element);
                     // Phase 17-SC-H — invoke the spell's sfx_script through the
                     // VM (still partial: lightning/fire emitter verbs only).
