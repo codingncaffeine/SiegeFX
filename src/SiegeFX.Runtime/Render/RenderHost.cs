@@ -17745,6 +17745,7 @@ void main()
     /// throttled to one save per 30s so a mis-authored chain can't spam
     /// disk writes.</summary>
     private double _lastAutoSaveAt = -999;
+    private bool _autoSaveRequested;
     private void TryAutoSave()
     {
         if (_player is null) return;
@@ -17883,7 +17884,12 @@ void main()
             // SC-CMD-EASY — verbs whose correct behavior is small or a
             // deliberate acknowledgment.
             case "cmd_auto_save":
-                TryAutoSave();
+                // Saved on the next update, not here: this runs inside the
+                // trigger's action, before the trigger latches the row as
+                // fired, and an autosave taken now loads with the checkpoint
+                // un-fired and the hero standing in it, so it fires (and
+                // saves) again. The original retires the spent trigger.
+                _autoSaveRequested = true;
                 if (cmd.Next != 0 && _commands.TryGetValue(cmd.Next, out var afterSave))
                     ActivateAiCommand(cmd.Next, afterSave, catalyst);
                 break;
@@ -23771,6 +23777,13 @@ void main()
         // the SimFrozen gate zeroes dt below.
         if (_player is not null && !_bootMode && !SimFrozen)
             _playSeconds += dt;
+        // A checkpoint's cmd_auto_save from last update's triggers, now that
+        // they have latched (see ActivateAiCommand).
+        if (_autoSaveRequested)
+        {
+            _autoSaveRequested = false;
+            TryAutoSave();
+        }
         _frameDtSeconds = dt; // SC-MP-EOS P8 — for the session driver tick
         // SC-MAINMENU-LOADGAME — a relaunch requested via SIEGEFX_LOAD_SAVE lands
         // us in the save's region (--play-region). Apply the save once the
