@@ -206,6 +206,21 @@ public sealed class NavMesh
     /// prop's world top so a floor tri right at the top edge still counts.</summary>
     private const float ObstacleAboveTopTol = 0.5f;
 
+    /// <summary>How far above its base a prop blocks: the ground it stands on,
+    /// with room for slope under the footprint. Up to its top (+0.5) the old
+    /// band let a 1.4u cart beside a farmhouse block the house floor and
+    /// stair raised a meter above it on the far side of the wall.</summary>
+    private const float ObstacleAboveBaseTol = 0.9f;
+
+    /// <summary>Top of the vertical band a rectangle obstacle blocks: 0.9u
+    /// above its base, and never above its own top (+0.5). Disc obstacles
+    /// (long fences, big wagons) keep the top-based band: their single
+    /// center base would leave a hillside fence's uphill end unblocked.</summary>
+    private static float ObstacleBandTop(float baseY, float topY) =>
+        float.IsFinite(baseY)
+            ? MathF.Min(topY + ObstacleAboveTopTol, baseY + ObstacleAboveBaseTol)
+            : topY + ObstacleAboveTopTol;
+
     /// <summary>SC-NAV-OBSTACLE-YGATE — Y-aware obstacle marking. Same XZ
     /// footprint test as the 3-arg overload, but a triangle is only blocked
     /// when its centroid Y falls within
@@ -310,7 +325,7 @@ public sealed class NavMesh
         float m = ObstacleRectMargin;
         float u0 = -m, u1 = lenU + m, v0 = -m, v1 = lenV + m;
         float loY = baseY - ObstacleBelowFloorTol;
-        float hiY = topY + ObstacleAboveTopTol;
+        float hiY = ObstacleBandTop(baseY, topY);
         // Local footprint coordinates of a world point.
         (float U, float V) Local(Vector3 p)
         {
@@ -361,6 +376,13 @@ public sealed class NavMesh
             var la = Local(a); var lb = Local(b); var lc = Local(c);
             float depth = MathF.Max(InsideLength(la, lb), MathF.Max(InsideLength(lb, lc), InsideLength(lc, la)));
             if (depth < ObstacleRectEdgeDepth) continue;
+            // ...and only a triangle that lies mostly in it: its center within
+            // ObstacleRectEdgeReach of the footprint. A sliver merely clipping
+            // a corner (the farmhouse stair foot) stays walkable.
+            var cc = Local(Centroids[t]);
+            float ou = MathF.Max(0f, MathF.Max(-cc.U, cc.U - lenU));
+            float ov = MathF.Max(0f, MathF.Max(-cc.V, cc.V - lenV));
+            if (ou * ou + ov * ov > ObstacleRectEdgeReach * ObstacleRectEdgeReach) continue;
             float abx = b.X - a.X, abz = b.Z - a.Z;
             float acx = c.X - a.X, acz = c.Z - a.Z;
             float areaXZ = MathF.Abs(abx * acz - abz * acx) * 0.5f;
@@ -379,6 +401,10 @@ public sealed class NavMesh
     /// <summary>How much of a small triangle's edge must lie inside a
     /// rectangle obstacle's footprint for the edge test to seal it.</summary>
     public const float ObstacleRectEdgeDepth = 0.4f;
+
+    /// <summary>How far outside a rectangle obstacle's footprint a small
+    /// triangle's center may lie and still be sealed by an edge crossing.</summary>
+    public const float ObstacleRectEdgeReach = 0.3f;
 
     /// <summary>SC-NAV-EDGE-SEAL-AREA — largest XZ triangle area (m²) the
     /// edge-clip test may fully seal. Calibrated from live blame data
