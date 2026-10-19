@@ -33,19 +33,17 @@ namespace SiegeFX.Runtime.Render.Hud;
 /// 360°; the rotation matrix wraps naturally.</para></summary>
 internal sealed class HeroPreviewRenderer : IDisposable
 {
-    // 800×600 reference rect — same source as CharacterCreatorPanel.RectListener.
-    // Kept in sync manually; if the panel's listener rect ever moves, update both.
-    // Gas-authored character_select.gas listener rect is 408,73,649,494.
-    // Shifted left 30 and down 15 to center the character in the panel
-    // area revealed by the right-pillar door slide; the gas-authored
-    // position assumed a 4:3 framebuffer where the pillars cropped out
-    // of view, but with our scissor letterbox both pillars are visible
-    // and the listener rect needs to move inward toward the visible
-    // panel center.
-    private const int RefRectX = 378;
-    private const int RefRectY = 100;
+    // 800×600 reference rect — same source as CharacterCreatorPanel's
+    // listener rect: character_select.gas listener 408,73,649,494, placed
+    // with the same uniform letterbox as the chrome. The original centres
+    // its hero on this rect and fills it top to bottom, the head reaching a
+    // few pixels above it, so the drawing area extends RefRectPadY above
+    // and below the rect.
+    private const int RefRectX = 408;
+    private const int RefRectY = 73;
     private const int RefRectW = 649 - 408;
     private const int RefRectH = 494 - 73;
+    private const int RefRectPadY = 12;
 
     private readonly GL _gl;
     private readonly Shader _skinShader;
@@ -253,14 +251,13 @@ internal sealed class HeroPreviewRenderer : IDisposable
         float aspect = (float)rw / rh;
         float fov = 35f * (MathF.PI / 180f);
         // Distance derived from height + fov so a tall pos_aN still fits.
-        // Slack 1.02×: the original's hero fills the listener rect nearly
-        // top to bottom (1.4× drew him at about three-quarters of it).
-        float dist = (height * 0.5f) / MathF.Tan(fov * 0.5f) * 1.02f;
-        // The bind-pose box centre sits high on the posed body, so centring
-        // on it left the hero about a tenth of the rect too low, feet
-        // hanging past the floor. Aim the camera a tenth of his height
-        // lower to centre him as the original does.
-        center.Y -= 0.104f * height;
+        // Slack 1.06× of the padded area: the hero is as tall as the
+        // listener rect, as in the original.
+        float dist = (height * 0.5f) / MathF.Tan(fov * 0.5f) * 1.06f;
+        // The bind-pose box centre sits high on the posed body (centring on
+        // it draws the hero about 6% of his height low). The original's hero
+        // stands a little above the rect's centre, so aim 7.4% lower.
+        center.Y -= 0.074f * height;
 
         var camPos = new Vector3(center.X, center.Y, center.Z + dist);
         var view = Matrix4x4.CreateLookAt(camPos, center, Vector3.UnitY);
@@ -411,12 +408,15 @@ internal sealed class HeroPreviewRenderer : IDisposable
 
     private static (int X, int Y, int W, int H) ScaleRect(int vw, int vh)
     {
-        float sx = vw / 800f, sy = vh / 600f;
+        // Uniform letterbox, as CharacterCreatorPanel.Layout and the chrome.
+        float scale = MathF.Min(vh / 600f, vw / 800f);
+        int dx = (vw - (int)MathF.Round(800 * scale)) / 2;
+        int dy = (vh - (int)MathF.Round(600 * scale)) / 2;
         return (
-            (int)MathF.Round(RefRectX * sx),
-            (int)MathF.Round(RefRectY * sy),
-            (int)MathF.Round(RefRectW * sx),
-            (int)MathF.Round(RefRectH * sy));
+            dx + (int)MathF.Round(RefRectX * scale),
+            dy + (int)MathF.Round((RefRectY - RefRectPadY) * scale),
+            (int)MathF.Round(RefRectW * scale),
+            (int)MathF.Round((RefRectH + 2 * RefRectPadY) * scale));
     }
 
     private static long HashPicker(HeroVariantPicker p)
