@@ -36561,6 +36561,10 @@ void main()
             // an injected weapon, so let them through for swing/cast/ranged
             // visuals + the combat-music gate.
             if (!s.Actor.Stats.IsCombatant && !s.IsPartyMember) continue;
+            // A monster still in the ground (the skrubb) hasn't joined the
+            // fight: its enemy_spotted roar, the combat music and its call
+            // to packmates wait for the frame it rises, as in the original.
+            if (s.Actor.Buried) continue;
             var brain = s.Brain;
             if (brain is null) continue;
             if (brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
