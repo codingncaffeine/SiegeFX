@@ -28420,9 +28420,15 @@ void main()
         // state are durable on disk from minute zero. Every later save (and
         // a crash before the player's first manual save) attaches to this
         // record instead of depending on in-memory state surviving.
-        TryAutoSave();
-        if (!string.IsNullOrEmpty(_heroName))
-            Console.WriteLine($"  player: hero '{_heroName}' recorded in the autosave slot");
+        // Not when this spawn is a relaunch that loads a save: the save is
+        // applied after the spawn, and loading the autosave slot itself read
+        // back the fresh character this wrote over it (the game started over).
+        if (_bootLoadSavePath is null)
+        {
+            TryAutoSave();
+            if (!string.IsNullOrEmpty(_heroName))
+                Console.WriteLine($"  player: hero '{_heroName}' recorded in the autosave slot");
+        }
         _portraitDirty = true; _portraitChainLeft = 1;   // SC-HERO-PORTRAIT — first live head-shot
         if (_playerEquipment.Count > 0)
         {
