@@ -27813,17 +27813,19 @@ void main()
             // SKIN/HAIR, GENDER/HEAD, NAME/HERO, PREVIOUS/NEXT — each
             // row ~16.7% of atlas height. Left column U[0, 0.5], right
             // column U[0.5, 1.0].
-            // Every crop is 0.12 of the atlas tall, centred on its label, so
-            // all six draw their letters at one size: the SKIN..PANTS crops
-            // were 0.16 tall and squeezed their words to 3/4 of GENDER's.
+            // Every crop is 0.12 of the atlas tall so all six draw their
+            // letters at one size (the SKIN..PANTS crops were 0.16 tall and
+            // squeezed their words to 3/4 of GENDER's), placed so each word
+            // sits centred on its plate (measured on screen: SHIRT and PANTS
+            // sat 5.5px low at 0.18-0.30).
             (string label, float u0, float v0, float u1, float v1)[] labelUVs =
             {
-                ("GENDER", 0.00f, 0.46f, 0.50f, 0.58f),
-                ("HEAD",   0.50f, 0.46f, 1.00f, 0.58f),
-                ("SKIN",   0.00f, 0.34f, 0.50f, 0.46f),
-                ("HAIR",   0.50f, 0.34f, 1.00f, 0.46f),
-                ("SHIRT",  0.00f, 0.18f, 0.50f, 0.30f),
-                ("PANTS",  0.50f, 0.18f, 1.00f, 0.30f),
+                ("GENDER", 0.00f, 0.460f, 0.50f, 0.580f),
+                ("HEAD",   0.50f, 0.460f, 1.00f, 0.580f),
+                ("SKIN",   0.00f, 0.340f, 0.50f, 0.460f),
+                ("HAIR",   0.50f, 0.337f, 1.00f, 0.457f),
+                ("SHIRT",  0.00f, 0.198f, 0.50f, 0.318f),
+                ("PANTS",  0.50f, 0.198f, 1.00f, 0.318f),
             };
             int[] rowGasY = { 206, 256, 306, 355, 399, 450 };
             float scale = MathF.Min(viewportH / 600f, viewportW / 800f);
