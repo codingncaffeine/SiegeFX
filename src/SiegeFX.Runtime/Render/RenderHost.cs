@@ -4753,6 +4753,24 @@ public sealed class RenderHost : IDisposable
     private LootPile? _hoverPile;
     private bool _hoverPileIsGoldOrSpell;
     private LootPile? _pendingPickupPile;
+
+    /// <summary>A pile the hero can loot from where he stands: within
+    /// PickupReach in plan view and on his floor. Plan view alone let the
+    /// hero loot a potion off a table on the farmhouse's ground floor from
+    /// the floor above it (2.4u up), and pick it up walking over it.</summary>
+    private static bool InPickupReach(Vector3 player, Vector3 pile)
+    {
+        float dx = pile.X - player.X, dz = pile.Z - player.Z;
+        return dx * dx + dz * dz <= PickupReach * PickupReach && PickupHeightInReach(player, pile);
+    }
+
+    /// <summary>On the hero's floor: from a little below his feet (the
+    /// ground dipping) to a table top above them.</summary>
+    private static bool PickupHeightInReach(Vector3 player, Vector3 pile)
+    {
+        float dy = pile.Y - player.Y;
+        return dy >= -1.0f && dy <= 1.8f;
+    }
     private const float PickupReach = 2.4f;
     // SC-GOLD-PILES — sparse glint spawner for gold piles (gold.bmp look).
     private readonly Random _pileSparkleRng = new(7);
@@ -26538,7 +26556,7 @@ void main()
                 var p = _playerFollower.Position;
                 float dx = pk.Position.X - p.X, dz = pk.Position.Z - p.Z;
                 float d2 = dx * dx + dz * dz;
-                if (d2 <= PickupReach * PickupReach)
+                if (InPickupReach(p, pk.Position))
                 {
                     _pendingPickupPile = null;
                     LootPileNow(pk, idx);
@@ -38649,7 +38667,7 @@ void main()
         {
             float pdx = pick.Position.X - playerPos.X, pdz = pick.Position.Z - playerPos.Z;
             float pdist = MathF.Sqrt(pdx * pdx + pdz * pdz);
-            if (pdist > PickupReach)
+            if (!InPickupReach(playerPos, pick.Position))
             {
                 _pendingPickupPile = pick;
                 _pendingAttackTarget = null;
@@ -38674,7 +38692,8 @@ void main()
                 // Still unreachable but already close-ish (the barrels only
                 // block the last meter): loot with a generous arm's reach
                 // rather than looping a dead click.
-                if (_playerFollower.PathBlocked && pdist <= PickupReach * 1.6f)
+                if (_playerFollower.PathBlocked && pdist <= PickupReach * 1.6f
+                    && PickupHeightInReach(playerPos, pick.Position))
                     return LootPileNow(pick, bestIdx);
                 _moveMarkerPos = pick.Position;
                 _moveMarkerAge = 0f;
