@@ -145,7 +145,7 @@ internal sealed class OptionsMenuPanel
         // All vendor-neutral GL features. MSAA needs a window rebuild so it
         // applies at next launch; everything else applies on OK.
         public bool VSync = true;
-        public string FpsCap = "Unlimited";  // Unlimited/30/60/120/144/240
+        public string FpsCap = "60";         // Unlimited/30/60/120/144/240; 60 until the player picks
         public string Anisotropy = "8x";     // 2x/4x/8x/16x (pairs with texture filtering = anisotropic)
         public string Msaa = "Off";          // Off/2x/4x/8x — next launch
         public int PointLightBudget = 16;    // 4..32 per-frame point-light cap
