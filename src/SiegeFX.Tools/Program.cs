@@ -132,6 +132,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx region path-fuzz   <map-tank> <terrain-tank>");
     Console.WriteLine("  siegefx region nav-components <map-tank> <terrain-tank> <region-path|all> [--top=N]");
     Console.WriteLine("  siegefx region follow      <map-tank> <terrain-tank> <region-path> <x1,y1,z1> <x2,y2,z2> [speed] [ticks]");
+    Console.WriteLine("  siegefx region replay-dump <dump.txt> --from=x,y,z --to=x,y,z   (replay a click walk on a hero-sim --dump area)");
     Console.WriteLine("  siegefx region hero-sim    <map-tank> <terrain-tank> <regions> [--clicks=150] [--range=10] [--seed=1] [--near=x,z,r] [--diag]");
     Console.WriteLine("  siegefx formulas dump      <Logic.dsres>");
     Console.WriteLine("  siegefx spells dump        <Logic.dsres>");
@@ -828,6 +829,7 @@ static int DispatchRegion(string[] a)
         "roam-sim"    => CmdRegionRoamSim(a[1..]),
         "chase-sim"   => CmdRegionChaseSim(a[1..]),
         "hero-sim"    => CmdRegionHeroSim(a[1..]),
+        "replay-dump" => CmdRegionReplayDump(a[1..]),
         _             => UnknownCommand("region " + a[0]),
     };
 }
@@ -3624,6 +3626,112 @@ static int CmdRegionChaseSim(string[] a)
     return failures.Count == 0 ? 0 : 3;
 }
 
+/// <summary>One click walk with the follower's diagnostics on: the path,
+/// its waypoints, each triangle change, and how it ended (OK / PARTIAL /
+/// STUCK / BLOCKED / PINNED). Shared by hero-sim --from/--to and
+/// region replay-dump.</summary>
+static int ReplayWalk(SiegeFX.Core.Nav.NavMesh mesh, Vector3 from, Vector3 to, float speed,
+                      SiegeFX.Core.Nav.NavTraversal traversal, float dt)
+{
+    static float DistXZ(Vector3 p, Vector3 q) => MathF.Sqrt((p.X - q.X) * (p.X - q.X) + (p.Z - q.Z) * (p.Z - q.Z));
+    var hero = new NavFollower(mesh, from, speed)
+        { Traversal = traversal, PartialPathFallback = true, DiagnosticLogging = true };
+    hero.SetTarget(to);
+    Console.WriteLine($"Replay     : {FormatVec(hero.Position)} tri={hero.CurrentTriangle} -> {FormatVec(to)}" +
+                      $"  path={hero.RemainingPath.Count}tri waypoints={hero.Waypoints.Count} blocked={hero.PathBlocked}");
+    for (int w = 0; w < hero.Waypoints.Count; w++)
+        Console.WriteLine($"  wp[{w,2}] {FormatVec(hero.Waypoints[w])}");
+    string outcome = hero.PathBlocked ? "BLOCKED" : "PINNED";
+    float budget = DistXZ(from, to) / MathF.Max(1f, speed) * 4f + 10f, walked = 0f;
+    int offMesh = 0;
+    int lastTri = hero.CurrentTriangle;
+    for (float t = 0f; t < budget && !hero.PathBlocked; t += dt)
+    {
+        var before = hero.Position;
+        hero.Tick(dt);
+        walked += DistXZ(before, hero.Position);
+        // A walker off every triangle can't replan from where it stands.
+        if (!mesh.TryFindTriangle(hero.Position, out _, includeFadeHidden: true))
+        {
+            if (offMesh++ == 0) Console.WriteLine($"  t={t,5:F2}  {FormatVec(hero.Position)} OFF THE MESH");
+        }
+        if (hero.CurrentTriangle != lastTri)
+        {
+            Console.WriteLine($"  t={t,5:F2}  {FormatVec(hero.Position)} tri={hero.CurrentTriangle}");
+            lastTri = hero.CurrentTriangle;
+        }
+        if (hero.ReachedGoal) { outcome = DistXZ(hero.Position, to) <= 1.5f ? "OK" : "PARTIAL"; break; }
+        if (hero.PathBlocked) outcome = "STUCK";
+    }
+    Console.WriteLine($"Outcome    : {outcome} at {FormatVec(hero.Position)} tri={hero.CurrentTriangle}, walked {walked:F1}u" +
+                      (offMesh > 0 ? $", OFF THE MESH for {offMesh} tick(s)" : ""));
+    return outcome == "OK" && offMesh == 0 ? 0 : 3;
+}
+
+/// <summary>`region replay-dump` — replays one click walk on an area written
+/// by hero-sim --dump, without the game data: the dumped triangles (with
+/// their neighbours, extra links and blocked set) become the nav mesh, and
+/// the hero's follower walks it with diagnostics on. Triangles outside the
+/// dump don't exist, so pick both ends inside it.</summary>
+static int CmdRegionReplayDump(string[] a)
+{
+    Vector3? from = null, to = null;
+    float speed = 4.5f;
+    foreach (var arg in a.Skip(1))
+    {
+        if (arg.StartsWith("--from=") && TryParseVec3(arg["--from=".Length..], out var fv)) from = fv;
+        else if (arg.StartsWith("--to=") && TryParseVec3(arg["--to=".Length..], out var tv)) to = tv;
+    }
+    if (a.Length < 1 || from is null || to is null)
+    {
+        Console.Error.WriteLine("usage: siegefx region replay-dump <dump.txt> --from=x,y,z --to=x,y,z");
+        return 1;
+    }
+    var ci = System.Globalization.CultureInfo.InvariantCulture;
+    var ids = new List<int>();
+    var verts = new List<Vector3>();
+    var nbrs = new List<int[]>();
+    var extras = new List<int[]>();
+    var blocked = new List<string?>();
+    foreach (var raw in File.ReadLines(a[0]))
+    {
+        var line = raw.Trim();
+        if (!line.StartsWith("tri ", StringComparison.Ordinal)) continue;
+        var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        ids.Add(int.Parse(parts[1], ci));
+        int vi = Array.FindIndex(parts, p => p.StartsWith("v=", StringComparison.Ordinal));
+        for (int k = 0; k < 3; k++)
+        {
+            var c = (k == 0 ? parts[vi][2..] : parts[vi + k]).Split(',');
+            verts.Add(new Vector3(float.Parse(c[0], ci), float.Parse(c[1], ci), float.Parse(c[2], ci)));
+        }
+        string Field(string key) => parts.First(p => p.StartsWith(key, StringComparison.Ordinal))[key.Length..];
+        nbrs.Add(Field("n=").Split(',').Select(x => int.Parse(x, ci)).ToArray());
+        var ex = Field("extra=");
+        extras.Add(ex == "-" ? Array.Empty<int>() : ex.Split(',').Select(x => int.Parse(x, ci)).ToArray());
+        var b = Field("blocked=");
+        blocked.Add(b == "-" ? null : b);
+    }
+    // Dump ids are the game mesh's; renumber densely, dropping links that
+    // leave the dumped area.
+    var local = new Dictionary<int, int>();
+    for (int i = 0; i < ids.Count; i++) local[ids[i]] = i;
+    int Local(int id) => id >= 0 && local.TryGetValue(id, out var l) ? l : -1;
+    var indices = Enumerable.Range(0, ids.Count * 3).ToArray();
+    var neighbors = nbrs.SelectMany(n => n.Select(Local)).ToArray();
+    var links = new Dictionary<int, int[]>();
+    for (int i = 0; i < ids.Count; i++)
+    {
+        var l = extras[i].Select(Local).Where(x => x >= 0).ToArray();
+        if (l.Length > 0) links[i] = l;
+    }
+    var mesh = SiegeFX.Core.Nav.NavMesh.FromTriangles(verts.ToArray(), indices, neighbors, links);
+    for (int i = 0; i < ids.Count; i++)
+        if (blocked[i] is { } tag) mesh.BlockTriangle(i, tag);
+    Console.WriteLine($"Dump       : {ids.Count} triangle(s), {blocked.Count(b => b is not null)} blocked (ids below are renumbered 0..{ids.Count - 1})");
+    return ReplayWalk(mesh, from.Value, to.Value, speed, SiegeFX.Core.Nav.NavTraversal.Player, 1f / 20f);
+}
+
 /// <summary>`hero-sim --dump` — the nav mesh around a point as text: each
 /// blocking prop's footprint and Y band, then each triangle (source snode,
 /// vertices, neighbours across each edge, extra links, and the blame tag of
@@ -3793,33 +3901,7 @@ static int CmdRegionHeroSim(string[] a)
 
     // ── Replay: one click walk from the game log ──────────────────────
     if (replayFrom is { } from && replayTo is { } to)
-    {
-        var hero = new NavFollower(mesh, from, speed)
-            { Traversal = traversal, PartialPathFallback = true, DiagnosticLogging = true };
-        hero.SetTarget(to);
-        Console.WriteLine($"Replay     : {FormatVec(hero.Position)} tri={hero.CurrentTriangle} -> {FormatVec(to)}" +
-                          $"  path={hero.RemainingPath.Count}tri waypoints={hero.Waypoints.Count} blocked={hero.PathBlocked}");
-        for (int w = 0; w < hero.Waypoints.Count; w++)
-            Console.WriteLine($"  wp[{w,2}] {FormatVec(hero.Waypoints[w])}");
-        string outcome = hero.PathBlocked ? "BLOCKED" : "PINNED";
-        float budget = DistXZ(from, to) / MathF.Max(1f, speed) * 4f + 10f, walked = 0f;
-        int lastTri = hero.CurrentTriangle;
-        for (float t = 0f; t < budget && !hero.PathBlocked; t += dt)
-        {
-            var before = hero.Position;
-            hero.Tick(dt);
-            walked += DistXZ(before, hero.Position);
-            if (hero.CurrentTriangle != lastTri)
-            {
-                Console.WriteLine($"  t={t,5:F2}  {FormatVec(hero.Position)} tri={hero.CurrentTriangle}");
-                lastTri = hero.CurrentTriangle;
-            }
-            if (hero.ReachedGoal) { outcome = DistXZ(hero.Position, to) <= 1.5f ? "OK" : "PARTIAL"; break; }
-            if (hero.PathBlocked) outcome = "STUCK";
-        }
-        Console.WriteLine($"Outcome    : {outcome} at {FormatVec(hero.Position)} tri={hero.CurrentTriangle}, walked {walked:F1}u");
-        return outcome == "OK" ? 0 : 3;
-    }
+        return ReplayWalk(mesh, from, to, speed, traversal, dt);
 
     // ── Pass 1: clicks ────────────────────────────────────────────────
     var clickOutcomes = new Dictionary<string, int>();
