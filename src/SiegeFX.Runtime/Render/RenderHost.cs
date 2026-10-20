@@ -1132,12 +1132,13 @@ public sealed class RenderHost : IDisposable
         };
     }
 
-    /// <summary>Where to aim at an actor: the middle of the part of its
-    /// current pose that is above its feet (bones below the ground don't
-    /// count), from its live skeleton. Arrows, spells and hit sparks used to
-    /// aim a fixed 1u above the feet whatever the body looked like, which
-    /// for a skrubb sunk in its mound is open air above it (and for a big
-    /// monster, its knees). Cached once per update.</summary>
+    /// <summary>Where to aim at an actor: the middle of the part of its body
+    /// that is above its feet, from its mesh skinned into the pose it is
+    /// drawn in (same clip, time, skin matrices and render scale as the
+    /// draw). Arrows, spells and hit sparks used to aim a fixed 1u above the
+    /// feet, which for a skrubb sunk in its mound is open air above it; its
+    /// skeleton is no better a gauge (helper bones sit well above the body).
+    /// Cached once per update.</summary>
     private Vector3 AimPoint(ActorRenderState s)
     {
         var feet = s.CurrentTransform.Translation;
@@ -1146,22 +1147,31 @@ public sealed class RenderHost : IDisposable
             s.AimHeightFrame = _updateFrame;
             s.AimHeight = 1.0f;
             var mesh = s.Actor.Mesh;
-            if (mesh is not null && mesh.BoneCount > 0)
+            var clips = s.Actor.Clips;
+            if (mesh is not null && mesh.HasSkin && mesh.BoneCount > 0 && clips.Length > 0)
             {
-                var clips = s.Actor.Clips;
-                SiegeFX.Core.Assets.PrsAnimation? clip = null;
-                float t = 0f;
-                if (clips.Length > 0)
-                {
-                    clip = clips[Math.Min(s.Actor.CurrentClipIndex, clips.Length - 1)];
-                    t = clip.AnimLength > 0f ? (float)(s.AnimTime % clip.AnimLength) : 0f;
-                }
-                if (_aimBoneWorlds.Length < mesh.BoneCount) _aimBoneWorlds = new Matrix4x4[mesh.BoneCount];
-                AnimationRuntime.ComputeAnimatedBoneWorlds(mesh, clip, t, _aimBoneWorlds);
+                // The draw loop's clip and time (walk swap, death clamp).
+                int idx = !s.IsDead && s.IsMoving && !s.Actor.Host.IsOverrideActive
+                          && s.Actor.WalkClipIndex >= 0 && s.Actor.WalkClipIndex < clips.Length
+                    ? s.Actor.WalkClipIndex
+                    : Math.Min(s.Actor.CurrentClipIndex, clips.Length - 1);
+                var clip = clips[idx];
+                float t = clip.AnimLength <= 0f ? 0f
+                        : s.IsDead ? MathF.Min((float)s.AnimTime, clip.AnimLength - 0.01f)
+                        : (float)(s.AnimTime % clip.AnimLength);
+                if (_aimSkin.Length < mesh.BoneCount) _aimSkin = new Matrix4x4[mesh.BoneCount];
+                AnimationRuntime.ComputeSkinMatrices(mesh, clip, t, _aimSkin.AsSpan(0, mesh.BoneCount));
+                float scale = s.Actor.Stats.RenderScale;
+                var model = scale == 1f ? s.CurrentTransform : Matrix4x4.CreateScale(scale) * s.CurrentTransform;
                 float lo = float.PositiveInfinity, hi = float.NegativeInfinity;
-                for (int bi = 0; bi < mesh.BoneCount; bi++)
+                for (int c = 0; c < mesh.Corners.Length; c++)
                 {
-                    float y = (_aimBoneWorlds[bi] * s.CurrentTransform).Translation.Y - feet.Y;
+                    var w = mesh.SkinWeights[c];
+                    uint bones = mesh.SkinBones[c];
+                    int Bone(int shift) => Math.Min((int)((bones >> shift) & 0xFF), mesh.BoneCount - 1);
+                    var skin = _aimSkin[Bone(0)] * w.X + _aimSkin[Bone(8)] * w.Y
+                             + _aimSkin[Bone(16)] * w.Z + _aimSkin[Bone(24)] * w.W;
+                    float y = Vector3.Transform(Vector3.Transform(mesh.Positions[mesh.Corners[c].VertexIndex], skin), model).Y - feet.Y;
                     lo = MathF.Min(lo, y);
                     hi = MathF.Max(hi, y);
                 }
@@ -1173,7 +1183,7 @@ public sealed class RenderHost : IDisposable
         }
         return feet + new Vector3(0f, s.AimHeight, 0f);
     }
-    private Matrix4x4[] _aimBoneWorlds = new Matrix4x4[64];
+    private Matrix4x4[] _aimSkin = new Matrix4x4[64];
     private long _updateFrame;
 
     private Vector3? ResolvePlayerBone(string logicalName)
