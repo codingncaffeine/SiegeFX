@@ -3696,8 +3696,9 @@ static int CmdRegionHeroSim(string[] a)
 {
     if (a.Length < 3)
     {
-        Console.Error.WriteLine("usage: siegefx region hero-sim <map-tank> <terrain-tank> <region1,region2,...> [--clicks=150] [--range=10] [--speed=4.5] [--seed=1] [--near=x,z,r] [--diag]");
+        Console.Error.WriteLine("usage: siegefx region hero-sim <map-tank> <terrain-tank> <region1,region2,...> [--clicks=150] [--range=10] [--speed=4.5] [--seed=1] [--near=x,z,r] [--diag] [--from=x,y,z --to=x,y,z]");
         Console.Error.WriteLine("       walks the hero to random clicks and up to random targets; reports failures and their start/goal to replay");
+        Console.Error.WriteLine("       --from/--to replays one click walk (coordinates as the game log prints them) with the follower's diagnostics on");
         return 1;
     }
     int clicks = 150, seed = 1;
@@ -3705,11 +3706,14 @@ static int CmdRegionHeroSim(string[] a)
     bool diag = false;
     Vector3 nearCenter = default;
     float nearRadius = 0f;
+    Vector3? replayFrom = null, replayTo = null;
     static bool TryF(string s, out float v) =>
         float.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v);
     for (int i = 3; i < a.Length; i++)
     {
         if (a[i] == "--diag") diag = true;
+        else if (a[i].StartsWith("--from=") && TryParseVec3(a[i]["--from=".Length..], out var fv)) replayFrom = fv;
+        else if (a[i].StartsWith("--to=") && TryParseVec3(a[i]["--to=".Length..], out var tv)) replayTo = tv;
         else if (a[i].StartsWith("--clicks=") && int.TryParse(a[i]["--clicks=".Length..], out var cv)) clicks = Math.Clamp(cv, 1, 5000);
         else if (a[i].StartsWith("--range=") && TryF(a[i]["--range=".Length..], out var rv)) range = rv;
         else if (a[i].StartsWith("--speed=") && TryF(a[i]["--speed=".Length..], out var sv)) speed = sv;
@@ -3779,6 +3783,36 @@ static int CmdRegionHeroSim(string[] a)
         new(mesh, pos, speed) { Traversal = traversal, PartialPathFallback = true, DiagnosticLogging = diag };
 
     static float DistXZ(Vector3 p, Vector3 q) => MathF.Sqrt((p.X - q.X) * (p.X - q.X) + (p.Z - q.Z) * (p.Z - q.Z));
+
+    // ── Replay: one click walk from the game log ──────────────────────
+    if (replayFrom is { } from && replayTo is { } to)
+    {
+        var hero = new NavFollower(mesh, from, speed)
+            { Traversal = traversal, PartialPathFallback = true, DiagnosticLogging = true };
+        hero.SetTarget(to);
+        Console.WriteLine($"Replay     : {FormatVec(hero.Position)} tri={hero.CurrentTriangle} -> {FormatVec(to)}" +
+                          $"  path={hero.RemainingPath.Count}tri waypoints={hero.Waypoints.Count} blocked={hero.PathBlocked}");
+        for (int w = 0; w < hero.Waypoints.Count; w++)
+            Console.WriteLine($"  wp[{w,2}] {FormatVec(hero.Waypoints[w])}");
+        string outcome = hero.PathBlocked ? "BLOCKED" : "PINNED";
+        float budget = DistXZ(from, to) / MathF.Max(1f, speed) * 4f + 10f, walked = 0f;
+        int lastTri = hero.CurrentTriangle;
+        for (float t = 0f; t < budget && !hero.PathBlocked; t += dt)
+        {
+            var before = hero.Position;
+            hero.Tick(dt);
+            walked += DistXZ(before, hero.Position);
+            if (hero.CurrentTriangle != lastTri)
+            {
+                Console.WriteLine($"  t={t,5:F2}  {FormatVec(hero.Position)} tri={hero.CurrentTriangle}");
+                lastTri = hero.CurrentTriangle;
+            }
+            if (hero.ReachedGoal) { outcome = DistXZ(hero.Position, to) <= 1.5f ? "OK" : "PARTIAL"; break; }
+            if (hero.PathBlocked) outcome = "STUCK";
+        }
+        Console.WriteLine($"Outcome    : {outcome} at {FormatVec(hero.Position)} tri={hero.CurrentTriangle}, walked {walked:F1}u");
+        return outcome == "OK" ? 0 : 3;
+    }
 
     // ── Pass 1: clicks ────────────────────────────────────────────────
     var clickOutcomes = new Dictionary<string, int>();
