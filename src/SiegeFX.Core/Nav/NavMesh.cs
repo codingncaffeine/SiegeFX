@@ -96,6 +96,38 @@ public sealed class NavMesh
 
     public bool IsBlocked(int tri) => Blocked is not null && tri >= 0 && tri < Blocked.Length && Blocked[tri];
 
+    /// <summary>Every triangle whose XZ bounds may overlap the box, each once,
+    /// from the lookup grid: the obstacle stamps used to test all ~50k
+    /// triangles for each of ~100 props, re-run on every break (a krug
+    /// smashing a barrel), a ~200ms hitch each time.</summary>
+    private List<int> TrianglesNear(float minX, float minZ, float maxX, float maxZ)
+    {
+        _nearBuf.Clear();
+        if (TriangleCount == 0) return _nearBuf;
+        if (_nearStamp.Length != TriangleCount) { _nearStamp = new int[TriangleCount]; _nearEpoch = 0; }
+        if (++_nearEpoch == int.MaxValue) { Array.Clear(_nearStamp); _nearEpoch = 1; }
+        int cx0 = Math.Clamp((int)MathF.Floor((minX - _gridMinX) / GridCellSize), 0, _gridCellsX - 1);
+        int cx1 = Math.Clamp((int)MathF.Floor((maxX - _gridMinX) / GridCellSize), 0, _gridCellsX - 1);
+        int cz0 = Math.Clamp((int)MathF.Floor((minZ - _gridMinZ) / GridCellSize), 0, _gridCellsZ - 1);
+        int cz1 = Math.Clamp((int)MathF.Floor((maxZ - _gridMinZ) / GridCellSize), 0, _gridCellsZ - 1);
+        for (int cz = cz0; cz <= cz1; cz++)
+        for (int cx = cx0; cx <= cx1; cx++)
+        {
+            var bucket = _grid[cz * _gridCellsX + cx];
+            if (bucket is null) continue;
+            foreach (int t in bucket)
+            {
+                if (_nearStamp[t] == _nearEpoch) continue;
+                _nearStamp[t] = _nearEpoch;
+                _nearBuf.Add(t);
+            }
+        }
+        return _nearBuf;
+    }
+    private readonly List<int> _nearBuf = new();
+    private int[] _nearStamp = Array.Empty<int>();
+    private int _nearEpoch;
+
     /// <summary>SC-DOORS-BLOCK — reset every obstacle mark so the map can be
     /// re-stamped from live state (door opened, prop destroyed). Cheap:
     /// one Array.Clear; the caller re-marks everything that still blocks.</summary>
@@ -249,7 +281,7 @@ public sealed class NavMesh
         float loY = baseY - ObstacleBelowFloorTol;
         float hiY = topY + ObstacleAboveTopTol;
         int marked = 0;
-        for (int t = 0; t < TriangleCount; t++)
+        foreach (int t in TrianglesNear(worldX - radius, worldZ - radius, worldX + radius, worldZ + radius))
         {
             if (Blocked[t]) continue;
             // Y-gate first — cheapest reject, and the whole point of this
@@ -358,7 +390,14 @@ public sealed class NavMesh
         }
         string size = $"{lenU:F2}x{lenV:F2}";
         int marked = 0;
-        for (int t = 0; t < TriangleCount; t++)
+        // The footprint's XZ box (with its margin) bounds every triangle the
+        // centroid or edge tests below can hit.
+        var cU = axisU * lenU; var cV = axisV * lenV;
+        float bx0 = corner.X + MathF.Min(0f, cU.X) + MathF.Min(0f, cV.X) - m;
+        float bx1 = corner.X + MathF.Max(0f, cU.X) + MathF.Max(0f, cV.X) + m;
+        float bz0 = corner.Z + MathF.Min(0f, cU.Z) + MathF.Min(0f, cV.Z) - m;
+        float bz1 = corner.Z + MathF.Max(0f, cU.Z) + MathF.Max(0f, cV.Z) + m;
+        foreach (int t in TrianglesNear(bx0, bz0, bx1, bz1))
         {
             if (Blocked[t]) continue;
             float cy = Centroids[t].Y;
