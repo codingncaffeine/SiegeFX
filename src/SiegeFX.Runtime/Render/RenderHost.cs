@@ -1854,6 +1854,7 @@ public sealed class RenderHost : IDisposable
     private const int FrameRingSize = 240;     // 4 sec at 60 Hz
     // ALPHA-PERF-CULL — last frame's drawn/total counts per pass (diag line).
     private (int Drawn, int Total) _cullTerrain, _cullProps, _cullActors;
+    private int _cullSceneSize = -1, _cullWarmupFrames;
     private string _diagCullLine = "";
     private readonly Dictionary<AspMesh, (Vector3 Center, float Radius)> _actorMeshBounds = new();
 
@@ -38945,6 +38946,22 @@ void main()
         // wherever they were. Render-only: game logic never reads these loops.
         var frustum = new SiegeFX.Core.Geometry.Frustum(vp);
         _cullTerrain = _cullProps = _cullActors = default;
+        // Warm-up: for a few frames after the scene's terrain or props change
+        // (a region load or stream-in), draw everything, so the driver's
+        // first-use work (texture uploads, state setup) lands behind the load
+        // instead of hitching a camera pan the first time each piece turns
+        // into view.
+        int sceneSize = _regionInstances.Count + _staticProps.Count;
+        if (sceneSize != _cullSceneSize) { _cullSceneSize = sceneSize; _cullWarmupFrames = 3; }
+        if (_cullWarmupFrames > 0)
+        {
+            _cullWarmupFrames--;
+            frustum = SiegeFX.Core.Geometry.Frustum.Everything;
+        }
+        // A frame over 100ms is a hitch someone sees; the log lines around it
+        // (stamped to the millisecond) say what was loading.
+        if (dt > 0.1 && _player is not null)
+            Console.WriteLine($"[perf] slow frame {dt * 1000.0:F0}ms");
 
         // SC-TERRAIN-WHITE-GRID (audit fold — finding #3) — dev
         // fly-cam reference grid. Previously gated on

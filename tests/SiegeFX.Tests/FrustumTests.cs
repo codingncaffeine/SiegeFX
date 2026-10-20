@@ -38,4 +38,11 @@ public class FrustumTests
         Assert.True(F.IntersectsAabb(new Vector3(-100f, -1f, -11f), new Vector3(100f, 1f, -9f)));
         Assert.False(F.IntersectsAabb(new Vector3(-1f, -1f, 5f), new Vector3(1f, 1f, 9f)));
     }
+
+    [Fact]
+    public void EverythingKeepsEverything()
+    {
+        Assert.True(Frustum.Everything.IntersectsSphere(new Vector3(0f, 0f, 1e6f), 0f));
+        Assert.True(Frustum.Everything.IntersectsAabb(new Vector3(1e5f), new Vector3(2e5f)));
+    }
 }

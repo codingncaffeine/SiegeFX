@@ -11,6 +11,16 @@ public readonly struct Frustum
 {
     readonly Vector4 _left, _right, _bottom, _top, _near, _far;
 
+    /// <summary>A frustum every shape intersects (all planes pass
+    /// everything): culling turned off.</summary>
+    public static Frustum Everything { get; } = new(float.PositiveInfinity);
+
+    Frustum(float always)
+    {
+        var p = new Vector4(0f, 0f, 0f, always);
+        _left = _right = _bottom = _top = _near = _far = p;
+    }
+
     public Frustum(Matrix4x4 m)
     {
         // Column j of M produces clip component j.
