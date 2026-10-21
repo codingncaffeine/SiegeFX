@@ -403,7 +403,7 @@ public sealed class RenderHost : IDisposable
     // torches actually burn. Carry is the per-source fractional spawn budget.
     // Cleared alongside _staticProps on region teardown.
     private readonly List<FlameSource> _flameSources = new();
-    private sealed class FlameSource { public Vector3 Pos; public float Carry; }
+    private sealed class FlameSource { public Vector3 Pos; public float Carry; public uint Snode; }
 
     // SC-ELEVATOR — levers ([on_off_lever] component) + elevator gizmos from
     // objects/elevator.gas. Levers are static props promoted to clickable:
@@ -16024,7 +16024,7 @@ void main()
                                 continue;
                             var socket = ComposeSocketWorld(asp, bi, p.Placement);
                             if (scale != 1f) socket = Matrix4x4.CreateScale(scale) * socket;
-                            _flameSources.Add(new FlameSource { Pos = socket.Translation });
+                            _flameSources.Add(new FlameSource { Pos = socket.Translation, Snode = p.Placement.NodeGuid });
                         }
                     }
                     spawned++;
@@ -38705,6 +38705,10 @@ void main()
             foreach (var f in _flameSources)
             {
                 if (Vector3.DistanceSquared(f.Pos, camPos) > 60f * 60f) continue;
+                // A torch in a faded-out room goes dark with it (its sconce
+                // is hidden): flames used to hang in the black over a
+                // faded floor (the elevator in Edgaar's basement).
+                if (_fadedSnodeCounts.ContainsKey(f.Snode)) continue;
                 f.Carry = _particles.MaintainFire(f.Pos, flameCol, 0.22f, simDt, 18f, f.Carry);
             }
         }
