@@ -30413,6 +30413,17 @@ void main()
         _playerCast = null;
         _player?.Actor.Host.OverrideAnimIndex(-1, 0f);
     }
+
+    /// <summary>An attack or cast replaces the hero's walk: the hero stops
+    /// where it stands to swing or cast, as the original's attack order
+    /// replaces its move order. Without this, attacking an enemy already in
+    /// reach (a click, a right-click cast) left the earlier move order
+    /// running, and the hero slid across the ground mid-swing.</summary>
+    private void HaltPlayerWalk()
+    {
+        if (_playerFollower is not { ReachedGoal: false } f) return;
+        f.SetTarget(f.Position);
+    }
     // SC-CAST-APPROACH — pending walk-up-and-cast latch: clicking an enemy
     // (or breakable) beyond the active spell's CastRange runs the hero into
     // range and re-initiates the cast, mirroring the melee/bow walk-up
@@ -34997,6 +35008,7 @@ void main()
             ? _playerSpellbook.PrimaryCooldownRemaining
             : _playerSpellbook.SecondaryCooldownRemaining;
         if (cd > 0f) return;
+        HaltPlayerWalk();
         if (best is not null) SnapPlayerFacingTo(best.CurrentTransform.Translation);
         else if (prop is not null) SnapPlayerFacingTo(prop.World.Translation);
         // No target for an offensive spell → immediate release so the
@@ -35130,6 +35142,7 @@ void main()
         float elev = target is not null
             ? target.CurrentTransform.Translation.Y - _player!.CurrentTransform.Translation.Y
             : 0f;
+        HaltPlayerWalk();
         var clip = _player!.Actor.PickNextSwingClip(elev);
         Console.WriteLine($"[swing] hero {(_weaponIsRanged ? "bow" : "melee")} at " +
                           $"{target?.Actor.Template.Name ?? (prop is not null ? "a prop" : "nothing")}");
