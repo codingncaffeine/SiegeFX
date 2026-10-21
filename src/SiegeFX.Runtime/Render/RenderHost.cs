@@ -20655,6 +20655,26 @@ void main()
             if (RiderFollower(r) is { } f) f.Carried = true;
     }
 
+    /// <summary>SC-ELEVATOR-RIDE — move a rider with its car by
+    /// <paramref name="delta"/>. The ride starts from the rider's walk
+    /// position, not its drawn one: the drawn height eases behind the walk
+    /// (the stair glide), and adding the car's motion to it every frame lost
+    /// that lag each time, so the hero rode only 3.7u of the car's 11.9u.
+    /// The interpolation buffers re-seed so the draw doesn't rubber-band
+    /// against the fixed-tick lerp.</summary>
+    private void CarryRider(ActorRenderState r, Vector3 delta)
+    {
+        if (r.IsDead) return;
+        var f = RiderFollower(r);
+        var to = (f?.Position ?? r.CurrentTransform.Translation) + delta;
+        f?.Teleport(to);
+        var t = r.CurrentTransform;
+        t.Translation = to;
+        r.CurrentTransform = t;
+        if (ReferenceEquals(r, _player)) _playerRenderInit = false;
+        else r.PartyRenderInit = false;
+    }
+
     /// <summary>SC-ELEVATOR-RIDE — the car has arrived: riders walk again.
     /// Returns the move order the player gave during the ride, to replay on
     /// the rebuilt mesh.</summary>
@@ -21668,25 +21688,7 @@ void main()
             el.PrevCarPos = pose.Translation;
             if (delta != Vector3.Zero)
             {
-                foreach (var r in el.Riders)
-                {
-                    if (r.IsDead) continue;
-                    var t = r.CurrentTransform;
-                    t.Translation += delta;
-                    r.CurrentTransform = t;
-                    if (ReferenceEquals(r, _player))
-                    {
-                        // Follower rides along; interp buffers re-seed so the
-                        // draw doesn't rubber-band against the fixed-tick lerp.
-                        _playerFollower?.Teleport(t.Translation);
-                        _playerRenderInit = false;
-                    }
-                    else
-                    {
-                        r.Brain?.Wander?.Follower.Teleport(t.Translation);
-                        r.PartyRenderInit = false;
-                    }
-                }
+                foreach (var r in el.Riders) CarryRider(r, delta);
             }
 
             if (el.T >= 1f)
@@ -21758,17 +21760,7 @@ void main()
                 seg.PrevPos = pose.Translation;
                 if (delta != Vector3.Zero)
                 {
-                    foreach (var r in seg.Riders)
-                    {
-                        if (r.IsDead) continue;
-                        var t = r.CurrentTransform;
-                        t.Translation += delta;
-                        r.CurrentTransform = t;
-                        if (ReferenceEquals(r, _player))
-                        { _playerFollower?.Teleport(t.Translation); _playerRenderInit = false; }
-                        else
-                        { r.Brain?.Wander?.Follower.Teleport(t.Translation); r.PartyRenderInit = false; }
-                    }
+                    foreach (var r in seg.Riders) CarryRider(r, delta);
                 }
             }
             if (sw.T >= 1f)
