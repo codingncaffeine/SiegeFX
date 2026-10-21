@@ -1772,6 +1772,12 @@ public sealed class RenderHost : IDisposable
         /// corresponding placement. Pairs with IsWorldInventory — Set only at
         /// world-inventory spawn time; never reused once recorded.</summary>
         public uint SourceScid;
+        /// <summary>World-placed items (inventory.gas) rest as the map placed
+        /// them: the item's model composed like a prop's, through its
+        /// placement and scale_multiplier. Null for every other pile, and
+        /// for placed items whose model couldn't be loaded; those draw in
+        /// the generic ground pose.</summary>
+        public Matrix4x4? PlacedWorld;
         public LootPile(Vector3 position, List<SiegeFX.Core.Actors.LootEntry> items)
         { Position = position; Items = items; }
     }
@@ -16127,10 +16133,17 @@ void main()
                 // mesh carries a root offset get nudged onto the prop-consistent spot.
                 // Falls back to the shortcut if the item mesh can't be loaded.
                 Vector3 world;
+                Matrix4x4? placedWorld = null;
                 var itemAsp = TryGetItemAsp(p.TemplateName);
                 if (itemAsp is not null)
                 {
                     world = ComposePlacementWorld(itemAsp, p.Placement).Translation;
+                    // The authored pose and size, as props are placed: the
+                    // intro's fallen legionnaire has his sword raised in his
+                    // hand and his shield on edge, both at 1.35x.
+                    float sm = _templateStore.TryGet(p.TemplateName, out var pt)
+                        ? ResolveScaleMultiplier(pt!, p.Node) : 1f;
+                    placedWorld = Matrix4x4.CreateScale(sm) * ComposePlacementWorld(itemAsp, p.Placement);
                 }
                 else
                 {
@@ -16178,6 +16191,7 @@ void main()
                     IsWorldInventory = true,
                     SourceScid       = p.Scid,
                     DisplayOverride  = entry.IsGold ? p.TemplateName : "",
+                    PlacedWorld      = entry.IsGold ? null : placedWorld,
                 };
                 AddLootPile(pile);
                 spawned++;
@@ -39907,13 +39921,20 @@ void main()
             float worldInvR2 = WorldInventoryVisRadius * WorldInventoryVisRadius;
             Vector3 playerPos = _player?.CurrentTransform.Translation ?? Vector3.Zero;
             bool havePlayer = _player is not null;
+            var invCamPos = _camera.Position;
             foreach (var pile in _lootPiles)
             {
                 if (pile.IsWorldInventory && havePlayer)
                 {
+                    // Near the hero, or near the camera: a cutscene shot far
+                    // from the hero (the intro's fallen legionnaire) shows
+                    // the items lying in it.
                     float pdx = pile.Position.X - playerPos.X;
                     float pdz = pile.Position.Z - playerPos.Z;
-                    if (pdx * pdx + pdz * pdz > worldInvR2) continue;
+                    float cdx = pile.Position.X - invCamPos.X;
+                    float cdz = pile.Position.Z - invCamPos.Z;
+                    if (pdx * pdx + pdz * pdz > worldInvR2
+                        && cdx * cdx + cdz * cdz > worldInvR2) continue;
                 }
                 // SC-FADE-GROUPS — piles sitting in a faded-out layer hide
                 // with their terrain (a glittering surface pile would
@@ -40015,7 +40036,9 @@ void main()
                     // VERTICAL. Lay it flat on the world XZ floor (mesh Z, the
                     // thin axis, becomes world up), then random-spin + ground it
                     // at full scale (no half-size lift — the fan is ~2cm thick).
-                    var model = goldDisplay
+                    var model = pile.PlacedWorld is { } placed && pile.Throw is null
+                        ? placed
+                        : goldDisplay
                         ? Matrix4x4.CreateRotationX(-MathF.PI / 2f)
                           * Matrix4x4.CreateRotationY(pile.RotationY)
                           * Matrix4x4.CreateTranslation(pos.X, pos.Y + 0.02f, pos.Z)
