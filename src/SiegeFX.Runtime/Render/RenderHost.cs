@@ -20563,6 +20563,7 @@ void main()
             if (m.PartyIndex == 0) continue;
             Place(m, m.Brain?.Wander?.Follower);
         }
+        foreach (var seg in sw.Segments) CarryRiders(seg.Riders);
     }
 
     /// <summary>Write a stair segment's pose into its render instance (guid
@@ -20639,6 +20640,34 @@ void main()
             if (OnCar(m.Brain?.Wander?.Follower, m.CurrentTransform.Translation))
                 el.Riders.Add(m);
         }
+        CarryRiders(el.Riders);
+    }
+
+    private SiegeFX.Core.Nav.NavFollower? RiderFollower(ActorRenderState r) =>
+        ReferenceEquals(r, _player) ? _playerFollower : r.Brain?.Wander?.Follower;
+
+    /// <summary>SC-ELEVATOR-RIDE — riders stop walking for the ride: the mesh
+    /// holds the car at the stop it left until the car arrives (see
+    /// <see cref="SiegeFX.Core.Nav.NavFollower.Carried"/>).</summary>
+    private void CarryRiders(IEnumerable<ActorRenderState> riders)
+    {
+        foreach (var r in riders)
+            if (RiderFollower(r) is { } f) f.Carried = true;
+    }
+
+    /// <summary>SC-ELEVATOR-RIDE — the car has arrived: riders walk again.
+    /// Returns the move order the player gave during the ride, to replay on
+    /// the rebuilt mesh.</summary>
+    private Vector3? ReleaseRiders(IEnumerable<ActorRenderState> riders)
+    {
+        Vector3? playerHeld = null;
+        foreach (var r in riders)
+        {
+            if (RiderFollower(r) is not { } f) continue;
+            if (ReferenceEquals(r, _player)) playerHeld = f.HeldTarget;
+            f.Carried = false;
+        }
+        return playerHeld;
     }
 
     /// <summary>we_req_activate at an elevator gizmo scid — start the ride
@@ -21667,6 +21696,7 @@ void main()
                 var final = el.AtStop == 1 ? el.Stop1 : el.Stop2;
                 UpdateElevatorCarInstance(el, final);
                 _elevatorNodeOverrides[el.Def.CarNodeGuid] = final;
+                var heldOrder = ReleaseRiders(el.Riders);
                 // Re-bake nav so the car floor welds into the arrival stop and
                 // riders can walk off. Same swap pattern as region streaming.
                 var nav = RebuildNavMesh();
@@ -21705,6 +21735,7 @@ void main()
                     RescueOffMeshAfterRebuild(nav);
                 }
                 el.Riders.Clear();
+                if (heldOrder is { } ho) _playerFollower?.SetTarget(ho);
                 Console.WriteLine($"[elevator] 0x{el.Def.Scid:X8} arrived at stop{el.AtStop}");
             }
         }
@@ -21752,6 +21783,8 @@ void main()
                     // any node-anchored placements see the new configuration.
                     _elevatorNodeOverrides[seg.NodeGuid] = final;
                 }
+                Vector3? swHeld = null;
+                foreach (var seg in sw.Segments) swHeld = ReleaseRiders(seg.Riders) ?? swHeld;
                 var nav = RebuildNavMesh();
                 if (nav is not null)
                 {
@@ -21779,6 +21812,7 @@ void main()
                     RescueOffMeshAfterRebuild(nav);
                 }
                 foreach (var seg in sw.Segments) seg.Riders.Clear();
+                if (swHeld is { } sh) _playerFollower?.SetTarget(sh);
                 Console.WriteLine($"[stairwell] 0x{sw.Def.Scid:X8} parked {(sw.AtDown ? "DOWN" : "UP")} — nav rebaked");
             }
         }
