@@ -8634,6 +8634,23 @@ public sealed class RenderHost : IDisposable
     private float _camTiltReturnTime   = 2.0f;     // camera_tilt_return_time — clear this long → untilt
     private float _camAzimuthRate      = 40f * MathF.PI / 180f; // azimuth_degrees_per_second
     private float _camReturnRate       = 20f * MathF.PI / 180f; // return_degrees_per_second
+    private float _camOffsetMax        = 6f;       // camera_offset_maximum (m)
+
+    // SC-CAMERA-FOLLOW — the original's camera trails the hero instead of
+    // locking to him: running, the hero pulls ahead of the screen-track
+    // point and the camera eases after him (a recording of the original:
+    // up to ~100px off center at 1280x720, settling back as he slows).
+    // The focus point the camera aims at eases toward the hero's tracking
+    // point with this time constant, fitted to that recording (an
+    // exponential follow at 0.45s halves the error of a locked camera;
+    // camera.gas names its history/affector knobs but not how they
+    // combine). A lag past camera_offset_maximum snaps: a teleport, a load.
+    private const float CameraFollowSeconds = 0.45f;
+    private Vector3 _camFocus;
+    private bool _camFocusInit;
+    // Dev console: lock the camera to the hero again (the pre-follow
+    // behavior, useful for spotting hitches in the hero's own motion).
+    private bool _camFollowLocked;
 
     // SC-CAMERA-BOUNDS — dynamic constraint state: how long the view ray has
     // been blocked / clear, the extra tilt currently applied on top of the
@@ -8680,6 +8697,7 @@ public sealed class RenderHost : IDisposable
         _camTiltReturnTime = ReadAttr(cs, "camera_tilt_return_time", _camTiltReturnTime);
         _camAzimuthRate    = ReadAttr(cs, "azimuth_degrees_per_second", _camAzimuthRate * 180f / MathF.PI) * MathF.PI / 180f;
         _camReturnRate     = ReadAttr(cs, "return_degrees_per_second", _camReturnRate * 180f / MathF.PI) * MathF.PI / 180f;
+        _camOffsetMax      = ReadAttr(cs, "camera_offset_maximum", _camOffsetMax);
         _camAzimuthDefault = ReadAttr(cc, "azimuth", _camAzimuthDefault);
         _camDistanceDefault = ReadAttr(cc, "distance", _camDistanceDefault);
         Console.WriteLine($"  camera: azimuth {_camAzimuthDefault * 180f / MathF.PI:F1}°, " +
@@ -8696,6 +8714,24 @@ public sealed class RenderHost : IDisposable
         _chaseDistance = _camDistanceDefault;
         _camTiltExtra = 0f;
         _camBlockedTimer = _camClearTimer = 0f;
+        _camFocusInit = false;
+    }
+
+    /// <summary>SC-CAMERA-FOLLOW — ease the camera's focus toward the hero's
+    /// tracking point (see <see cref="CameraFollowSeconds"/>). Snaps on the
+    /// first frame, when locked from the dev console, and when the hero is
+    /// past camera_offset_maximum from it.</summary>
+    private Vector3 FollowCameraFocus(Vector3 heroTrack, float dt)
+    {
+        if (_camFollowLocked || !_camFocusInit
+            || Vector3.Distance(heroTrack, _camFocus) > _camOffsetMax)
+        {
+            _camFocus = heroTrack;
+            _camFocusInit = true;
+            return _camFocus;
+        }
+        _camFocus += (heroTrack - _camFocus) * (1f - MathF.Exp(-MathF.Max(0f, dt) / CameraFollowSeconds));
+        return _camFocus;
     }
 
     /// <summary>SC-CAMERA-BOUNDS / SC-CAM-OCCLUDES — nearest hit distance of
@@ -24306,6 +24342,7 @@ void main()
             // Route the live pose through it while the map is up.
             if (_megaMapActive && !_devFreeCamera)
             {
+                _camFocusInit = false;
                 ComputeChasePose(out var mmPos, out var mmYaw, out var mmPitch);
                 _camera.Position = mmPos;
                 _camera.Yaw = mmYaw;
@@ -24321,6 +24358,7 @@ void main()
                 // as a testing option: legacy slope framing by default, RMB
                 // pitch drag when the user tilts, no bounds constraints.
                 target = _player.CurrentTransform.Translation + new Vector3(0, ChaseLookTargetY, 0);
+                _camFocusInit = false;
                 if (_devCamUnclampedPitch)
                 {
                     horiz = _chaseDistance * MathF.Cos(_chasePitch);
@@ -24337,7 +24375,8 @@ void main()
                 // SC-CAMERA-GAS — authored framing: azimuth 14.2° at 8.38m,
                 // tracking the torso at +1.51m, with the bounds_camera
                 // avoid/tilt dynamics steering through interiors.
-                target = _player.CurrentTransform.Translation + new Vector3(0, _camTrackHeight, 0);
+                target = FollowCameraFocus(
+                    _player.CurrentTransform.Translation + new Vector3(0, _camTrackHeight, 0), (float)dt);
                 camDist = TickCameraBounds(target, _chasePitch, (float)dt, out float pitch);
                 horiz = camDist * MathF.Cos(pitch);
                 height = camDist * MathF.Sin(pitch);
@@ -24349,6 +24388,10 @@ void main()
             _camera.Pitch = MathF.Asin(Math.Clamp(dir.Y, -0.999f, 0.999f));
             }
         }
+        // A cutscene (or any frame the chase camera isn't driving) snaps the
+        // follow back onto the hero when it resumes. Holding (T) keeps it,
+        // so letting go eases the camera back after the party.
+        else if (_camTracking) _camFocusInit = false;
 
         if (_anim is not null && _anim.AnimLength > 0f)
             _animTime += dt;
@@ -26700,6 +26743,10 @@ void main()
                     }
                     Console.WriteLine($"[dev] free camera {(_devFreeCamera ? "ON" : "off — authentic DS1 camera")}");
                     break;
+                case "camfollow":
+                    _camFollowLocked = !_camFollowLocked;
+                    Console.WriteLine($"[dev] camera {(_camFollowLocked ? "locked to the hero" : "follows the hero (original)")}");
+                    break;
                 case "spawn":
                     DevSpawnItem(_devItemText);
                     break;
@@ -26846,7 +26893,8 @@ void main()
         Button("level", "LEVEL UP", x + pad, 130);
         Button("kill",  "KILL NEARBY", x + pad + 138, 126);
         cy += rowH;
-        Button("devcam", _devFreeCamera ? "DEV CAMERA: ON" : "DEV CAMERA: off", x + pad, 264, _devFreeCamera);
+        Button("devcam", _devFreeCamera ? "DEV CAMERA: ON" : "DEV CAMERA: off", x + pad, 130, _devFreeCamera);
+        Button("camfollow", _camFollowLocked ? "CAM: LOCKED" : "CAM: FOLLOW", x + pad + 138, 126, _camFollowLocked);
         cy += rowH;
 
         // Item spawn: text field + button.
