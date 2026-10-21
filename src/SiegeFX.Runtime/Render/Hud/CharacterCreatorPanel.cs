@@ -68,42 +68,29 @@ internal sealed class CharacterCreatorPanel
 
     public string HeroName { get; private set; } = "";
 
-    // 800×600 reference rects. character_select.gas authors arrows as
-    // 37×20 spinners 164px apart (X 176-213 / 340-377), but those rects
-    // only cover the OUTER ARROW TIPS — the heromenu.asp L/R subsets
-    // sample UVs that span "arrow tip + adjacent half of plate," so a
-    // 37px-wide overlay leaves the plate UV pixels un-overlaid and the
-    // bar reads as floating arrows with a gap. Widened each rect to
-    // 100px so L and R meet at gas X ~277 — same row Y as gas, native
-    // 20px height. Name plate bumped up 5px from gas (518 → 513).
+    // 800×600 reference rects. character_select.gas authors the arrows as
+    // 37×20 spinners (X 176-213 / 340-377), but those cover only the outer
+    // arrow tips: the heromenu.asp L/R subsets sample the tip AND the
+    // adjacent half of the plate, so each overlay spans half the bar and L
+    // meets R in the middle (2px overlap so filtering leaves no seam). The
+    // original draws each bar about 215×32 (measured from a capture),
+    // spanning X 169-385; at the gas rects' 20px height the art was
+    // squashed flat with wide gaps between rows. Each row keeps the gas
+    // centre line, is 32 tall, and each half is 110 wide.
     static readonly (Action Act, int X, int Y, int W, int H)[] Buttons =
     {
-        // Per-row spinner widths span HALF the bar so L and R touch
-        // in the middle, matching the chrome's authored layout. The
-        // heromenu.asp L/R subsets sample UVs that include the arrow
-        // tip AND the adjacent half of the plate, so each per-widget
-        // overlay needs to be ~half the bar wide (~100px in 800x600
-        // reference) to land its texture on the same area the chrome
-        // bakes. trace-pose heromenu_begin@1.0 confirmed L mesh-X
-        // [-0.971, -0.505] meets R mesh-X [-0.505, -0.036] at -0.505.
-        // Gas hit rects (37px) only covered the outer tips and left
-        // a visible gap where the plate-half pixels weren't being
-        // overlaid, hence the "arrows separated" look.
-        // 2px overlap at the L/R meeting edge so bilinear filtering at
-        // the quad boundary doesn't produce a visible seam. L extends
-        // to gas X 278; R starts at gas X 275; both 102 wide.
-        (Action.GenderLeft,  176, 204, 102, 20),
-        (Action.GenderRight, 275, 204, 102, 20),
-        (Action.HeadLeft,    176, 255, 102, 20),
-        (Action.HeadRight,   275, 255, 102, 20),
-        (Action.FaceLeft,    176, 306, 102, 20),
-        (Action.FaceRight,   275, 306, 102, 20),
-        (Action.HairLeft,    176, 355, 102, 20),
-        (Action.HairRight,   275, 355, 102, 20),
-        (Action.ShirtLeft,   176, 403, 102, 20),
-        (Action.ShirtRight,  275, 403, 102, 20),
-        (Action.PantsLeft,   176, 453, 102, 20),
-        (Action.PantsRight,  275, 453, 102, 20),
+        (Action.GenderLeft,  169, 198, 110, 32),
+        (Action.GenderRight, 275, 198, 110, 32),
+        (Action.HeadLeft,    169, 249, 110, 32),
+        (Action.HeadRight,   275, 249, 110, 32),
+        (Action.FaceLeft,    169, 300, 110, 32),
+        (Action.FaceRight,   275, 300, 110, 32),
+        (Action.HairLeft,    169, 349, 110, 32),
+        (Action.HairRight,   275, 349, 110, 32),
+        (Action.ShirtLeft,   169, 397, 110, 32),
+        (Action.ShirtRight,  275, 397, 110, 32),
+        (Action.PantsLeft,   169, 447, 110, 32),
+        (Action.PantsRight,  275, 447, 110, 32),
     };
     // Listener (3D preview) — character_select.gas[t:listener,n:listener] rect 408,73,649,494.
     const int ListenerGasX = 408, ListenerGasY = 73, ListenerGasW = 649 - 408, ListenerGasH = 494 - 73;

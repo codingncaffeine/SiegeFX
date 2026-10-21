@@ -21,31 +21,40 @@ namespace SiegeFX.Runtime.Render.Hud;
 /// live on the spawner, so cycling through pos_a1..a7 only pays the .asp
 /// load cost once per body type.</para>
 ///
-/// <para>Drawing scopes <c>glViewport</c> + <c>glScissor</c> to the
-/// listener rect (gas 408,73,649,494 in 800×600 reference space, scaled
-/// to the current viewport). Depth is cleared inside the scissored region
-/// so the chrome's already-drawn pixels (drawn earlier in the cd-state
-/// pass) supply the stage backdrop while our 3D pass renders the hero on
-/// top with a fresh depth buffer.</para>
+/// <para>The chrome calls <see cref="Draw"/> between its stone wall and its
+/// frame (<see cref="FrontendScene.DrawInBox"/>), so the hero needs no clip
+/// of his own: the frame pieces drawn after him cover whatever reaches past
+/// the stone box. He draws across the whole 4:3 area, framed in 800×600
+/// reference space; depth is cleared there before and after.</para>
 ///
 /// <para>Click-drag on the listener rect spins the model around its
 /// vertical axis. Yaw is unbounded so the user can rotate freely past
 /// 360°; the rotation matrix wraps naturally.</para></summary>
 internal sealed class HeroPreviewRenderer : IDisposable
 {
-    // 800×600 reference rect — same source as CharacterCreatorPanel.RectListener.
-    // Kept in sync manually; if the panel's listener rect ever moves, update both.
-    // Gas-authored character_select.gas listener rect is 408,73,649,494.
-    // Shifted left 30 and down 15 to center the character in the panel
-    // area revealed by the right-pillar door slide; the gas-authored
-    // position assumed a 4:3 framebuffer where the pillars cropped out
-    // of view, but with our scissor letterbox both pillars are visible
-    // and the listener rect needs to move inward toward the visible
-    // panel center.
-    private const int RefRectX = 378;
-    private const int RefRectY = 100;
+    // 800×600 reference rect — same source as CharacterCreatorPanel's
+    // listener rect: character_select.gas listener 408,73,649,494, placed
+    // with the same uniform letterbox as the chrome. Click-drag spins the
+    // hero inside it.
+    private const int RefRectX = 408;
+    private const int RefRectY = 73;
     private const int RefRectW = 649 - 408;
     private const int RefRectH = 494 - 73;
+
+    // Where the hero stands, in 800×600 reference space: centred on the
+    // listener rect as the original centres him, feet on the stone floor
+    // at Y 489, about 400 tall so his head clears the top of the box.
+    private const float HeroRefCenterX = 528.5f;
+    private const float HeroRefFeetY = 489f;
+    private const float HeroRefHeight = 400f;
+    // The posed body against the bind-pose box (measured on screen): the
+    // feet reach 6.4% of the box height below its bottom and the head stops
+    // 3.9% below its top, so the body spans 1.025 box heights.
+    private const float FeetBelowBox = 0.064f;
+    private const float BodyPerBox = 1.025f;
+    // Camera distance per unit of hero height: the perspective of the
+    // earlier framing (35° over a hero-sized area).
+    private const float CameraDistPerHeight = 1.68f;
 
     private readonly GL _gl;
     private readonly Shader _skinShader;
@@ -202,19 +211,15 @@ internal sealed class HeroPreviewRenderer : IDisposable
     {
         if (_actor is null || _glMesh is null) return;
 
-        var (rx, ry, rw, rh) = ScaleRect(viewportW, viewportH);
+        var (rx, ry, rw, rh) = BoxRect(viewportW, viewportH);
         if (rw <= 0 || rh <= 0) return;
         // gas/HUD is +Y down; GL viewport is +Y up. Flip the Y origin.
         int glY = viewportH - (ry + rh);
 
         // Save state — we restore everything we touch so the caller's pass
         // continues unaffected. SC-CD-SCISSOR-FIX (2026-05-04): also save
-        // the scissor BOX coordinates, not just the enable bit. Earlier
-        // code only saved/restored EnableCap.ScissorTest, so when called
-        // with a caller-active scissor (e.g. boot path's chromeAspect
-        // letterbox), the scissor was left pinned to the listener rect
-        // after our draw — clipping subsequent overlay rendering
-        // (spinners, name input, row labels) to the 3D char rect only.
+        // the scissor BOX coordinates, not just the enable bit; the chrome
+        // draws under a letterbox scissor and goes on drawing after us.
         bool wasScissor = _gl.IsEnabled(EnableCap.ScissorTest);
         bool wasDepth = _gl.IsEnabled(EnableCap.DepthTest);
         bool wasCull = _gl.IsEnabled(EnableCap.CullFace);
@@ -231,9 +236,8 @@ internal sealed class HeroPreviewRenderer : IDisposable
         _gl.Scissor(rx, glY, (uint)rw, (uint)rh);
         _gl.Viewport(rx, glY, (uint)rw, (uint)rh);
 
-        // Clear depth only — the chrome's stone backdrop in this rect is what
-        // we want behind the hero. Color stays untouched so the chrome shows
-        // through wherever the actor doesn't cover.
+        // Clear depth only — the chrome's stone wall already drawn here is
+        // what we want behind the hero.
         _gl.Clear((uint)ClearBufferMask.DepthBufferBit);
 
         _gl.Enable(EnableCap.DepthTest);
@@ -243,23 +247,24 @@ internal sealed class HeroPreviewRenderer : IDisposable
         _gl.Disable(EnableCap.Blend);
 
         // Camera framing. Mesh.Min/Max are bind-pose extents in mesh space;
-        // good enough to centre the actor and pick a distance that fits its
-        // height. Bump the distance multiplier if the head clips the top of
-        // the rect on certain pos_aN body types.
+        // the camera looks level at the box centre from a distance set by
+        // the hero's height, the field of view sizes him to HeroRefHeight,
+        // and an off-centre shift puts the look point where his feet land
+        // on HeroRefFeetY at HeroRefCenterX.
         Vector3 min = _glMesh.Min, max = _glMesh.Max;
         Vector3 center = (min + max) * 0.5f;
         float height = MathF.Max(0.5f, max.Y - min.Y);
 
         float aspect = (float)rw / rh;
-        float fov = 35f * (MathF.PI / 180f);
-        // Distance derived from height + fov so a tall pos_aN still fits.
-        // Slight slack (1.4×) keeps head + feet inside the rect with room
-        // to spare for the idle's vertical breathing.
-        float dist = (height * 0.5f) / MathF.Tan(fov * 0.5f) * 1.4f;
+        float refPerUnit = HeroRefHeight / (BodyPerBox * height);
+        float dist = CameraDistPerHeight * height;
+        float fov = 2f * MathF.Atan(600f / (2f * refPerUnit * dist));
+        float lookRefY = HeroRefFeetY - (0.5f + FeetBelowBox) * height * refPerUnit;
+        var shift = Matrix4x4.CreateTranslation(HeroRefCenterX / 800f * 2f - 1f, 1f - lookRefY / 600f * 2f, 0f);
 
         var camPos = new Vector3(center.X, center.Y, center.Z + dist);
         var view = Matrix4x4.CreateLookAt(camPos, center, Vector3.UnitY);
-        var proj = Matrix4x4.CreatePerspectiveFieldOfView(fov, aspect, 0.5f, dist * 4f);
+        var proj = Matrix4x4.CreatePerspectiveFieldOfView(fov, aspect, 0.5f, dist * 4f) * shift;
         var viewProj = view * proj;
 
         // Model matrix carries the user's drag yaw (rotation around Y axis
@@ -369,6 +374,9 @@ internal sealed class HeroPreviewRenderer : IDisposable
             }
         }
 
+        // Leave no hero depth behind for the frame pieces drawn after us.
+        _gl.Clear((uint)ClearBufferMask.DepthBufferBit);
+
         // Restore viewport, scissor box + enable, GL state.
         _gl.Viewport(prevViewport[0], prevViewport[1], (uint)prevViewport[2], (uint)prevViewport[3]);
         _gl.Scissor(prevScissor[0], prevScissor[1], (uint)prevScissor[2], (uint)prevScissor[3]);
@@ -406,12 +414,28 @@ internal sealed class HeroPreviewRenderer : IDisposable
 
     private static (int X, int Y, int W, int H) ScaleRect(int vw, int vh)
     {
-        float sx = vw / 800f, sy = vh / 600f;
+        var (dx, dy, scale) = Letterbox(vw, vh);
         return (
-            (int)MathF.Round(RefRectX * sx),
-            (int)MathF.Round(RefRectY * sy),
-            (int)MathF.Round(RefRectW * sx),
-            (int)MathF.Round(RefRectH * sy));
+            dx + (int)MathF.Round(RefRectX * scale),
+            dy + (int)MathF.Round(RefRectY * scale),
+            (int)MathF.Round(RefRectW * scale),
+            (int)MathF.Round(RefRectH * scale));
+    }
+
+    /// <summary>The whole 800×600 reference area in viewport pixels.</summary>
+    private static (int X, int Y, int W, int H) BoxRect(int vw, int vh)
+    {
+        var (dx, dy, scale) = Letterbox(vw, vh);
+        return (dx, dy, (int)MathF.Round(800 * scale), (int)MathF.Round(600 * scale));
+    }
+
+    // Uniform letterbox, as CharacterCreatorPanel.Layout and the chrome.
+    private static (int Dx, int Dy, float Scale) Letterbox(int vw, int vh)
+    {
+        float scale = MathF.Min(vh / 600f, vw / 800f);
+        return ((vw - (int)MathF.Round(800 * scale)) / 2,
+                (vh - (int)MathF.Round(600 * scale)) / 2,
+                scale);
     }
 
     private static long HashPicker(HeroVariantPicker p)

@@ -27392,6 +27392,7 @@ void main()
         try
         {
             _frontendScene = new FrontendScene(_gl, _playResolver);
+            _frontendScene.DrawInBox = (w, h) => _heroPreview?.Draw(w, h);
             _frontendScene.SetState(FrontendScene.ScreenState.CharacterSelect);
         }
         catch (Exception ex)
@@ -27695,9 +27696,10 @@ void main()
                     }
                     if (_heroPreview is not null)
                     {
+                        // Drawn inside the chrome (FrontendScene.DrawInBox),
+                        // between the stone wall and the frame.
                         _heroPreview.EnsurePreview(_creator.Picker);
                         _heroPreview.Tick(dt);
-                        _heroPreview.Draw(viewportW, viewportH);
                     }
                     // Per-button asp render + hover overlays + name overlay.
                     DrawCharacterCreatorOverlays(viewportW, viewportH);
@@ -28005,14 +28007,19 @@ void main()
             // SKIN/HAIR, GENDER/HEAD, NAME/HERO, PREVIOUS/NEXT — each
             // row ~16.7% of atlas height. Left column U[0, 0.5], right
             // column U[0.5, 1.0].
+            // Every crop is 0.12 of the atlas tall so all six draw their
+            // letters at one size (the SKIN..PANTS crops were 0.16 tall and
+            // squeezed their words to 3/4 of GENDER's), placed so each word
+            // sits centred on its plate (measured on screen: SHIRT and PANTS
+            // sat 5.5px low at 0.18-0.30).
             (string label, float u0, float v0, float u1, float v1)[] labelUVs =
             {
-                ("GENDER", 0.00f, 0.46f, 0.50f, 0.58f),
-                ("HEAD",   0.50f, 0.46f, 1.00f, 0.58f),
-                ("SKIN",   0.00f, 0.32f, 0.50f, 0.48f),
-                ("HAIR",   0.50f, 0.32f, 1.00f, 0.48f),
-                ("SHIRT",  0.00f, 0.16f, 0.50f, 0.32f),
-                ("PANTS",  0.50f, 0.16f, 1.00f, 0.32f),
+                ("GENDER", 0.00f, 0.460f, 0.50f, 0.580f),
+                ("HEAD",   0.50f, 0.460f, 1.00f, 0.580f),
+                ("SKIN",   0.00f, 0.340f, 0.50f, 0.460f),
+                ("HAIR",   0.50f, 0.337f, 1.00f, 0.457f),
+                ("SHIRT",  0.00f, 0.198f, 0.50f, 0.318f),
+                ("PANTS",  0.50f, 0.198f, 1.00f, 0.318f),
             };
             int[] rowGasY = { 206, 256, 306, 355, 399, 450 };
             float scale = MathF.Min(viewportH / 600f, viewportW / 800f);
@@ -28020,8 +28027,10 @@ void main()
             int authoredH = (int)MathF.Round(600 * scale);
             int dx = (viewportW - authoredW) / 2;
             int dy = (viewportH - authoredH) / 2;
-            const int labelGasW = 70;
-            const int labelGasH = 18;
+            // Sized with the 32-tall bars (×1.6 over the old 70×18): the
+            // original's row labels read about that much larger.
+            const int labelGasW = 112;
+            const int labelGasH = 29;
             const int barCenterGasX = 277;
             const int rowHeightGas = 20;
             var tint = new Vector4(1f, 1f, 1f, 1f);
@@ -28037,45 +28046,9 @@ void main()
             }
         }
 
-        // SC-CD-CHOOSEHERO — title plaque renders via mainmenu.asp's
-        // cd-state pose draw inside DrawCdChrome (subset 0 = plaque).
-        // The label subsets 1+2 (text-01L "CHOOSE" / text-01R "HERO")
-        // park off-screen above at sng2cd@1.0 per trace-pose, so we
-        // overlay them via direct UV crops of text-01L.raw / text-01R.raw
-        // — same trick the row labels use.
-        if (_iconRenderer is not null)
-        {
-            var texL = _frontendScene.GetChromeTexture("text-01L");
-            var texR = _frontendScene.GetChromeTexture("text-01R");
-            if (texL is not null && texR is not null)
-            {
-                float scale = MathF.Min(viewportH / 600f, viewportW / 800f);
-                int authoredH = (int)MathF.Round(600 * scale);
-                int dy = (viewportH - authoredH) / 2;
-                const int titleGasY  = 60;
-                const int titleGasH  = 36;
-                const int chooseGasW = 180; // text-01L slice ~5:1
-                const int heroGasW   = 144; // text-01R slice ~4:1
-                int chooseW = (int)MathF.Round(chooseGasW * scale);
-                int chooseH = (int)MathF.Round(titleGasH  * scale);
-                int heroW   = (int)MathF.Round(heroGasW   * scale);
-                int heroH   = chooseH;
-                int totalW  = chooseW + heroW;
-                int chooseX = (viewportW - totalW) / 2;
-                int chooseY = dy + (int)MathF.Round(titleGasY * scale);
-                int heroX   = chooseX + chooseW;
-                int heroY   = chooseY;
-                var tint = new Vector4(1f, 1f, 1f, 1f);
-                // CHOOSE row = middle of text-01L atlas (5 stacked labels).
-                _iconRenderer.DrawIcon(viewportW, viewportH, texL,
-                    chooseX, chooseY, chooseW, chooseH, tint,
-                    0.00f, 0.40f, 1.00f, 0.60f);
-                // HERO row = middle of text-01R atlas (5 stacked labels).
-                _iconRenderer.DrawIcon(viewportW, viewportH, texR,
-                    heroX, heroY, heroW, heroH, tint,
-                    0.00f, 0.40f, 1.00f, 0.60f);
-            }
-        }
+        // SC-CD-CHOOSEHERO — the title plaque's own CHOOSE HERO renders
+        // with the 3D chrome; a text-01L/R overlay here drew it a second
+        // time just below the plaque.
 
         // Typed-name overlay at the gas-authored name_edit_box rect.
         // Phase 29-CD-CREATOR-FIX — bump font scale by 1 (12px → ~24px
@@ -40964,9 +40937,10 @@ void main()
                     }
                     if (_heroPreview is not null)
                     {
+                        // Drawn inside the chrome (FrontendScene.DrawInBox),
+                        // between the stone wall and the frame.
                         _heroPreview.EnsurePreview(_creator.Picker);
                         _heroPreview.Tick((float)dt);
-                        _heroPreview.Draw(size.X, size.Y);
                     }
 
                     // Phase 29-CD-CREATOR — per-button asp render for the
