@@ -2107,12 +2107,32 @@ public sealed class FrontendScene : IDisposable
         const int buttonGasH = 49;
         const int buttonCenterGasX = (283 + 519) / 2;
         var tint = new Vector4(1f, 1f, 1f, 1f);
+        // The labels ride their planks (menubars subsets 3/4/5) while the
+        // bars roll in or out: the same clip and hold DrawDifficultyChrome
+        // poses them with, measured against the settled lm2cd@1 pose. They
+        // used to sit at their settled spots for the whole roll.
+        bool fromCd = State != ScreenState.DifficultyToCharacterSelect;
+        string barsClip = fromCd ? "menubars_lm2cd" : "menubars_cd2lm";
+        float barsHold = NativeHold(LenShortMorph);
+        int row = 0;
         foreach (var (rowTex, gasY, vMin, vMax) in rows)
         {
             int w = (int)MathF.Round(labelGasW * scale);
             int h = (int)MathF.Round(labelGasH * scale);
             int cx = dx + (int)MathF.Round(buttonCenterGasX * scale);
             int cy = dy + (int)MathF.Round((gasY + buttonGasH * 0.5f) * scale);
+            int plank = 3 + row++;
+            if (State != ScreenState.Difficulty
+                && SubsetScreenBounds("menubars", barsClip, barsHold, plank, viewportW, viewportH) is { } now
+                && SubsetScreenBounds("menubars", "menubars_lm2cd", 1f, plank, viewportW, viewportH) is { } settled)
+            {
+                cx += (int)MathF.Round(now.Center.X - settled.Center.X);
+                cy += (int)MathF.Round(now.Center.Y - settled.Center.Y);
+                // A plank rolling edge-on squashes its label with it.
+                if (settled.Size.Y > 1e-3f)
+                    h = (int)MathF.Round(h * Math.Clamp(now.Size.Y / settled.Size.Y, 0f, 1f));
+                if (h <= 0) continue;
+            }
             iconRenderer.DrawIcon(viewportW, viewportH, rowTex,
                 cx - w / 2, cy - h / 2, w, h, tint,
                 0.00f, vMin, 1.00f, vMax);
@@ -2237,6 +2257,41 @@ public sealed class FrontendScene : IDisposable
         var model = BuildSubsetRectModel(x, y, w, h, subMin, subMax);
         renderer.DrawWithModel(viewportW, viewportH, model, arr,
             anim: null, timeSec: 0f, tint: null, subsetMask: mask);
+    }
+
+    /// <summary>Where one subset of a chrome mesh is on screen, posed by
+    /// <paramref name="clip"/> at <paramref name="hold"/> (0..1 of the clip)
+    /// through the shared scene projection: the screen-pixel box of its
+    /// skinned corners, as <see cref="DrawMesh"/> would draw them. Lets an
+    /// overlay (a UV-cropped label) follow a moving plank.</summary>
+    private (Vector2 Center, Vector2 Size)? SubsetScreenBounds(string meshSuffix, string clip, float hold,
+        int subset, int vw, int vh)
+    {
+        var renderer = GetOrLoadMesh(meshSuffix);
+        var anim = GetOrLoadClip(clip);
+        if (renderer is null || anim is null) return null;
+        var asp = renderer.Asp;
+        if (!asp.HasSkin || subset < 0 || subset >= asp.Subsets.Length || asp.BoneCount == 0) return null;
+        var bones = new Matrix4x4[asp.BoneCount];
+        AnimationRuntime.ComputeSkinMatrices(asp, anim, anim.AnimLength * Math.Clamp(hold, 0f, 1f), bones);
+        var model = BuildSharedSceneModel(vw, vh);
+        var min = new Vector2(float.PositiveInfinity);
+        var max = new Vector2(float.NegativeInfinity);
+        var sub = asp.Subsets[subset];
+        for (int t = sub.FirstTriangle; t < sub.FirstTriangle + sub.TriangleCount; t++)
+        for (int k = 0; k < 3; k++)
+        {
+            int c = asp.TriangleIndices[t * 3 + k];
+            var wts = asp.SkinWeights[c];
+            uint b = asp.SkinBones[c];
+            Matrix4x4 Bone(int shift) => bones[Math.Min((int)((b >> shift) & 0xFF), bones.Length - 1)];
+            var skin = Bone(0) * wts.X + Bone(8) * wts.Y + Bone(16) * wts.Z + Bone(24) * wts.W;
+            var p = Vector3.Transform(Vector3.Transform(asp.Positions[asp.Corners[c].VertexIndex], skin), model);
+            min = Vector2.Min(min, new Vector2(p.X, p.Y));
+            max = Vector2.Max(max, new Vector2(p.X, p.Y));
+        }
+        if (float.IsInfinity(min.X)) return null;
+        return ((min + max) * 0.5f, max - min);
     }
 
     /// <summary>Phase 26-ARTMAP — walk the active subsets' triangles to find
