@@ -53,8 +53,8 @@ public sealed class ActorInstance
 public static class RegionObjects
 {
     /// <summary>Filenames (under <c>objects/</c>) that carry visible static
-    /// props alongside the actor list. <c>command.gas</c> and
-    /// <c>special.gas</c> are pure logic and are intentionally excluded.</summary>
+    /// props alongside the actor list. <c>command.gas</c> is pure logic and
+    /// is intentionally excluded.</summary>
     public static readonly IReadOnlyList<string> StaticPropFiles = new[]
     {
         "non_interactive.gas",
@@ -75,6 +75,14 @@ public static class RegionObjects
         // (RenderHost.LoadGenerators); this entry only makes them visible.
         // Gizmo-only generators have no aspect model and skip silently.
         "generator.gas",
+        // special.gas is mostly logic (triggers, use points, tutorial tips:
+        // templates with no aspect model, skipped by the prop loader like
+        // the gizmos in the other files), but not only: the intro's fallen
+        // legionnaire in fh_r1a is a dozen frag_glb_bone_dirty pieces placed
+        // here, and without them only his arm bones, swords and shield (in
+        // non_interactive.gas) showed. Editor-only models are still hidden
+        // by their aspect's is_visible / force_no_render.
+        "special.gas",
     };
 
     /// <summary>SC-WORLD-INVENTORY-PLACED — region's world-placed pickable
