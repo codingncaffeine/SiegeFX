@@ -1132,6 +1132,60 @@ public sealed class RenderHost : IDisposable
         };
     }
 
+    /// <summary>Where to aim at an actor: the middle of the part of its body
+    /// that is above its feet, from its mesh skinned into the pose it is
+    /// drawn in (same clip, time, skin matrices and render scale as the
+    /// draw). Arrows, spells and hit sparks used to aim a fixed 1u above the
+    /// feet, which for a skrubb sunk in its mound is open air above it; its
+    /// skeleton is no better a gauge (helper bones sit well above the body).
+    /// Cached once per update.</summary>
+    private Vector3 AimPoint(ActorRenderState s)
+    {
+        var feet = s.CurrentTransform.Translation;
+        if (s.AimHeightFrame != _updateFrame)
+        {
+            s.AimHeightFrame = _updateFrame;
+            s.AimHeight = 1.0f;
+            var mesh = s.Actor.Mesh;
+            var clips = s.Actor.Clips;
+            if (mesh is not null && mesh.HasSkin && mesh.BoneCount > 0 && clips.Length > 0)
+            {
+                // The draw loop's clip and time (walk swap, death clamp).
+                int idx = !s.IsDead && s.IsMoving && !s.Actor.Host.IsOverrideActive
+                          && s.Actor.WalkClipIndex >= 0 && s.Actor.WalkClipIndex < clips.Length
+                    ? s.Actor.WalkClipIndex
+                    : Math.Min(s.Actor.CurrentClipIndex, clips.Length - 1);
+                var clip = clips[idx];
+                float t = clip.AnimLength <= 0f ? 0f
+                        : s.IsDead ? MathF.Min((float)s.AnimTime, clip.AnimLength - 0.01f)
+                        : (float)(s.AnimTime % clip.AnimLength);
+                if (_aimSkin.Length < mesh.BoneCount) _aimSkin = new Matrix4x4[mesh.BoneCount];
+                AnimationRuntime.ComputeSkinMatrices(mesh, clip, t, _aimSkin.AsSpan(0, mesh.BoneCount));
+                float scale = s.Actor.Stats.RenderScale;
+                var model = scale == 1f ? s.CurrentTransform : Matrix4x4.CreateScale(scale) * s.CurrentTransform;
+                float lo = float.PositiveInfinity, hi = float.NegativeInfinity;
+                for (int c = 0; c < mesh.Corners.Length; c++)
+                {
+                    var w = mesh.SkinWeights[c];
+                    uint bones = mesh.SkinBones[c];
+                    int Bone(int shift) => Math.Min((int)((bones >> shift) & 0xFF), mesh.BoneCount - 1);
+                    var skin = _aimSkin[Bone(0)] * w.X + _aimSkin[Bone(8)] * w.Y
+                             + _aimSkin[Bone(16)] * w.Z + _aimSkin[Bone(24)] * w.W;
+                    float y = Vector3.Transform(Vector3.Transform(mesh.Positions[mesh.Corners[c].VertexIndex], skin), model).Y - feet.Y;
+                    lo = MathF.Min(lo, y);
+                    hi = MathF.Max(hi, y);
+                }
+                // Only the part above ground shows; a pose with nothing up
+                // keeps a token height so the aim isn't in the dirt.
+                if (hi > 0.1f && float.IsFinite(lo))
+                    s.AimHeight = Math.Clamp((MathF.Max(lo, 0f) + hi) * 0.5f, 0.2f, 4f);
+            }
+        }
+        return feet + new Vector3(0f, s.AimHeight, 0f);
+    }
+    private Matrix4x4[] _aimSkin = new Matrix4x4[64];
+    private long _updateFrame;
+
     private Vector3? ResolvePlayerBone(string logicalName)
     {
         if (_player is null) return null;
@@ -1864,6 +1918,8 @@ public sealed class RenderHost : IDisposable
         // SC-MONSTER-SPECIALS — startup_reveal dormancy: true once this
         // actor has woken (non-dormant templates wake on first check).
         public bool StartupAwakened;
+        // SC-GEN-IN-OBJECT — the template's on-spotted spawn has been rolled.
+        public bool InObjectSpawnRolled;
 
         // SC-DOWNED — play-clock stamp of the collapse; the authored
         // min_unconscious_duration gate measures from here.
@@ -1981,8 +2037,19 @@ public sealed class RenderHost : IDisposable
         public bool AlignSwitchOnDamaged;
         public float AlignSwitchLife;
         // SC-SELECTABLE — authored [common] is_selectable=false (the intro
-        // narrator): NO interaction at all, not even a cursor change.
-        public bool IsSelectable = true;
+        // narrator): NO interaction at all, not even a cursor change. A
+        // startup_reveal monster still in the ground (the skrubb under its
+        // mound) can't be targeted either until it rises.
+        public bool AuthoredSelectable = true;
+        // Height above the feet of the middle of the visible body this
+        // frame (see RenderHost.AimPoint), cached per update.
+        public float AimHeight = 1.0f;
+        public long AimHeightFrame = -1;
+        public bool IsSelectable
+        {
+            get => AuthoredSelectable && !Actor.Buried;
+            set => AuthoredSelectable = value;
+        }
 
         // SC-RANGED-PROJECTILE — launch profile when either hand holds an
         // is_projectile weapon (bows and thrown rocks author es_shield_hand):
@@ -6924,7 +6991,7 @@ public sealed class RenderHost : IDisposable
                         && _sfxStore.TryGet(r.Spell.ReactiveArmorScript, out _))
                         _sfxRuntime.Spawn(r.Spell.ReactiveArmorScript, new SiegeFX.Core.Sfx.SfxContext(
                             SourcePos:     p + new Vector3(0f, 1.2f, 0f),
-                            TargetPos:     fp2 + new Vector3(0f, 1.0f, 0f),
+                            TargetPos:     AimPoint(foe),
                             WeaponBonePos: p + new Vector3(0f, 1.2f, 0f)));
                     var (rmin, rmax) = ResolveSpellAttackDamage(r.Spell);
                     float rdmg = rmin + (float)_turretRng.NextDouble() * (rmax - rmin);
@@ -7147,7 +7214,7 @@ public sealed class RenderHost : IDisposable
             var quarry = tu.Caster.IsEvilAligned ? NearestLivePartyMember(srcPos) : null;
             if (quarry is null) continue;
             var src = srcPos + new Vector3(0f, 1.6f, 0f);
-            var dst = quarry.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+            var dst = AimPoint(quarry);
             var dq = dst - src;
             if (dq.X * dq.X + dq.Z * dq.Z > 30f * 30f) continue;   // battery reach
             float dmg = tu.DmgMin + (float)_turretRng.NextDouble() * (tu.DmgMax - tu.DmgMin);
@@ -7959,7 +8026,7 @@ public sealed class RenderHost : IDisposable
         foreach (var a in _actors)
             if (!a.IsPlayer && !a.IsRemotePlayer && a.Actor.Instance.Scid == scid) { best = a; break; }
         if (best is null || best.IsDead || best.Actor.Combat.IsDead) return;
-        var hitPos = best.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+        var hitPos = AimPoint(best);
         float dealt = best.Actor.Combat.ApplyDamage(damage);
         if (dealt > 0f) { PlayMeleeHit(hitPos, best); SpawnBloodHit(best); }
         if (best.Actor.Combat.ConsumeJustDied())
@@ -16130,6 +16197,98 @@ void main()
     /// krug_scout patrol pair by the farmhouse), advanced ones hold until a
     /// party member enters trigger_range (bush ambushes), then spawn
     /// num_children_incubating children spawn_period apart.</summary>
+    /// <summary>SC-GEN-IN-OBJECT — a template's [generator_in_object] block:
+    /// a child spawned at the object on a world event, after a delay.</summary>
+    private readonly record struct InObjectGenerator(string Child, string Event, float Delay, float Chance);
+    private readonly Dictionary<string, InObjectGenerator?> _inObjectGenCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<(ActorRenderState Owner, string Child, float TimeLeft)> _pendingInObjectSpawns = new();
+
+    private InObjectGenerator? InObjectGeneratorOf(SiegeFX.Core.Assets.Template tpl)
+    {
+        if (_inObjectGenCache.TryGetValue(tpl.Name, out var hit)) return hit;
+        InObjectGenerator? g = null;
+        if (_templateStore is not null)
+        {
+            string? A(string name) => _templateStore.GetAttribute(tpl, "generator_in_object", name)?.Trim().Trim('"');
+            var child = A("child_template_name");
+            if (!string.IsNullOrEmpty(child))
+            {
+                var ci = System.Globalization.CultureInfo.InvariantCulture;
+                float.TryParse(A("spawn_delay"), System.Globalization.NumberStyles.Float, ci, out var delay);
+                float chance = float.TryParse(A("spawn_chance"), System.Globalization.NumberStyles.Float, ci, out var c) ? c : 1f;
+                g = new InObjectGenerator(child!, (A("spawn_event") ?? "").ToLowerInvariant(), MathF.Max(0f, delay), chance);
+            }
+        }
+        _inObjectGenCache[tpl.Name] = g;
+        return g;
+    }
+
+    /// <summary>Queues the actor's in-object spawn when its template authors
+    /// one for <paramref name="worldEvent"/> and the chance roll passes.</summary>
+    private void QueueInObjectSpawn(ActorRenderState owner, string worldEvent)
+    {
+        if (InObjectGeneratorOf(owner.Actor.Template) is not { } g || g.Event != worldEvent) return;
+        if (g.Chance < 1f && _pileSparkleRng.NextDouble() >= g.Chance) return;
+        _pendingInObjectSpawns.Add((owner, g.Child, g.Delay));
+    }
+
+    /// <summary>Places due in-object spawns: the child template's model as a
+    /// static prop at the owner's spot and facing (the skrubb's burrow stays
+    /// in the ground when the skrubb sinks or dies).</summary>
+    private void TickInObjectSpawns(float dt)
+    {
+        for (int i = _pendingInObjectSpawns.Count - 1; i >= 0; i--)
+        {
+            var (owner, child, left) = _pendingInObjectSpawns[i];
+            left -= dt;
+            if (left > 0f) { _pendingInObjectSpawns[i] = (owner, child, left); continue; }
+            _pendingInObjectSpawns.RemoveAt(i);
+            // Built like a map prop (see the static-prop loader): the mesh's
+            // root bind pose stands the Z-up model upright, then the
+            // template's scale_multiplier, then the owner's spot and facing.
+            // Placed raw, the burrow stood on end at the wrong size.
+            SiegeFX.Core.Assets.Template? ct = null;
+            if (_templateStore is null || !_templateStore.TryGet(child, out ct) || ct is null) continue;
+            var model = _templateStore.GetAttribute(ct, "aspect", "model")?.Trim().Trim('"');
+            var asp = string.IsNullOrEmpty(model) ? null : GetOrLoadPropAsp(model!);
+            if (asp is null || _gl is null)
+            {
+                Console.WriteLine($"[gen-in-object] {owner.Actor.Template.Name}: no model for '{child}'");
+                continue;
+            }
+            if (!_propGlMeshCache.TryGetValue(asp, out var glMesh))
+            {
+                try { glMesh = new StaticMesh(_gl, asp); }
+                catch { continue; }
+                _propGlMeshCache[asp] = glMesh;
+            }
+            // Size as an actor sizes itself: scale_base × scale_multiplier
+            // (the map-prop path reads only the multiplier, and the burrow
+            // drew about twice the original's size).
+            float scale = 1f;
+            var ci = System.Globalization.CultureInfo.InvariantCulture;
+            if (float.TryParse(_templateStore.GetAttribute(ct, "aspect", "scale_base"),
+                    System.Globalization.NumberStyles.Float, ci, out var sb) && sb > 0f)
+                scale *= sb;
+            if (float.TryParse(_templateStore.GetAttribute(ct, "aspect", "scale_multiplier"),
+                    System.Globalization.NumberStyles.Float, ci, out var sm) && sm > 0f)
+                scale *= sm;
+            var world = ComputeRootBindPose(asp) * owner.CurrentTransform;
+            if (scale != 1f) world = Matrix4x4.CreateScale(scale) * world;
+            _staticProps.Add(new StaticPropInstance
+            {
+                Mesh = glMesh,
+                Texture = ResolveAspTexture(asp),
+                World = world,
+                Asp = asp,
+                Template = child,
+                CenterY = owner.CurrentTransform.Translation.Y,
+            });
+            var p = owner.CurrentTransform.Translation;
+            Console.WriteLine($"[gen-in-object] {owner.Actor.Template.Name} placed {child} at ({p.X:F1},{p.Y:F1},{p.Z:F1}) scale {scale:F2}");
+        }
+    }
+
     private sealed class GeneratorState
     {
         public uint Scid;
@@ -23775,6 +23934,7 @@ void main()
         }
 
         if (_input is null) return;
+        _updateFrame++;
         // DS1's per-character elapsed play clock (shown in the Load window and
         // used as the Save window's default name). Accrues real wall time only
         // while a live world runs and no pause/modal holds it — measured before
@@ -24405,11 +24565,28 @@ void main()
                             }
                             if (!near && !hurt) continue;   // stay buried
                             s.StartupAwakened = true;
-                            if (s.Actor.GetClipIndex("awk") >= 0)
-                                s.Actor.PlayChoreOnce("awk", 1.6f);
-                            Console.WriteLine($"[reveal] {s.Actor.Template.Name} rises");
+                            s.Actor.Buried = false;
+                            s.Actor.Awakened = true;
+                            // The rise: the template's chore_misc wake (the
+                            // skrubb's rv), or the generic awk, played whole.
+                            string rise = s.Actor.GetClipIndex("wake") >= 0 ? "wake" : "awk";
+                            int riseIdx = s.Actor.GetClipIndex(rise);
+                            if (riseIdx >= 0)
+                                s.Actor.PlayChoreOnce(rise, s.Actor.Clips[riseIdx].AnimLength > 0f
+                                    ? s.Actor.Clips[riseIdx].AnimLength : 1.6f);
+                            Console.WriteLine($"[reveal] {s.Actor.Template.Name} rises ({(riseIdx >= 0 ? rise : "no rise clip")})");
                         }
                         else s.StartupAwakened = true;
+                    }
+                    // SC-GEN-IN-OBJECT — [generator_in_object] with
+                    // spawn_event = WE_ENEMY_SPOTTED fires the first time the
+                    // actor engages (the skrubb's burrow, hole_grs_02).
+                    if (!s.InObjectSpawnRolled && s.Brain is { } gb
+                        && gb.State is SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
+                                    or SiegeFX.Core.Actors.ActorBrain.BrainState.Attack)
+                    {
+                        s.InObjectSpawnRolled = true;
+                        QueueInObjectSpawn(s, "we_enemy_spotted");
                     }
                     // SC-DROOG-BOW (blindspot E9) — brain_bow.skrit: when a
                     // human-controlled friend enters the outer comfort zone,
@@ -26178,7 +26355,7 @@ void main()
         }
         foreach (var s in _actors)
         {
-            if (s.Hidden) continue;
+            if (s.Hidden || !s.IsSelectable) continue;
             if (!filter(s)) continue;
             if (!PickableFromPlayerFloor(s)) continue;
             var feet = s.CurrentTransform.Translation;
@@ -26236,7 +26413,7 @@ void main()
         {
             foreach (var s in _actors)
             {
-                if (s.Hidden || s.IsPlayer) continue;
+                if (s.Hidden || s.IsPlayer || !s.IsSelectable) continue;
                 // SC-PICK-FADED + SC-PICK-YBAND — invisible (faded-layer)
                 // actors and actors a FLOOR above/below never own the cursor.
                 if (!PickableFromPlayerFloor(s)) continue;
@@ -34218,7 +34395,7 @@ void main()
             // are normal outcomes).
             if (shot.TargetActor is { IsDead: false } ta)
             {
-                var chest = ta.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+                var chest = AimPoint(ta);
                 if (Vector3.DistanceSquared(shot.Pos, chest) <= RangedImpactRadius * RangedImpactRadius)
                 {
                     if (shot.Spell is not null)
@@ -34270,7 +34447,7 @@ void main()
                 foreach (var m in _party)
                 {
                     if (!ReferenceEquals(m.Actor.Combat, victim)) continue;
-                    var chest = m.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+                    var chest = AimPoint(m);
                     if (Vector3.DistanceSquared(shot.Pos, chest) <= RangedImpactRadius * RangedImpactRadius)
                     {
                         victim.ApplyDamage(shot.NpcDamage);
@@ -34537,7 +34714,7 @@ void main()
         var rng = new Random();
         float raw = SiegeFX.Core.Actors.CombatResolver.RollDamage(
             attacker, best.Actor.Stats, rng, attackerIsPlayer: true, ranged: true);
-        var hitPos = best.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+        var hitPos = AimPoint(best);
         // MP co-op: a client's arrow on a host-owned enemy resolves on the host.
         if (MpIsClientHitOnNetworkActor(best))
         {
@@ -34884,7 +35061,7 @@ void main()
                 if (ps.Target is { IsDead: false } rt)
                 {
                     SnapPlayerFacingTo(rt.CurrentTransform.Translation);
-                    aim = rt.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f);
+                    aim = AimPoint(rt);
                 }
                 else if (ps.Prop is { IsDestroyed: false } rp)
                 {
@@ -34984,7 +35161,7 @@ void main()
         // unkillable.
         float reach = PlayerMeleeReach(attacker) + 1.0f;
         float dx = tp.X - pp.X, dz = tp.Z - pp.Z;
-        var hitPos = tp + new Vector3(0f, 1.0f, 0f);
+        var hitPos = AimPoint(best);
         if (dx * dx + dz * dz > reach * reach)
         {
             Console.WriteLine(
@@ -36470,6 +36647,10 @@ void main()
             // an injected weapon, so let them through for swing/cast/ranged
             // visuals + the combat-music gate.
             if (!s.Actor.Stats.IsCombatant && !s.IsPartyMember) continue;
+            // A monster still in the ground (the skrubb) hasn't joined the
+            // fight: its enemy_spotted roar, the combat music and its call
+            // to packmates wait for the frame it rises, as in the original.
+            if (s.Actor.Buried) continue;
             var brain = s.Brain;
             if (brain is null) continue;
             if (brain.State == SiegeFX.Core.Actors.ActorBrain.BrainState.Chase
@@ -37188,7 +37369,7 @@ void main()
                     // so approximate: shoulder-height + a half-step forward
                     // along facing. Reads as "from the hand" to a casual eye.
                     var src = playerPos + _playerFacing * 0.45f + new Vector3(0f, 1.25f, 0f);
-                    var dst = tp        + new Vector3(0f, 1.0f, 0f);
+                    var dst = AimPoint(best!);
                     var elemColor = SpellElementColor(spell.Element);
                     // Phase 17-SC-H — invoke the spell's sfx_script through the
                     // VM (still partial: lightning/fire emitter verbs only).
@@ -38564,6 +38745,7 @@ void main()
         // settle). Same per-tick cadence as particles; a frag's settled
         // pose then lasts until lifetime expires.
         TickFragDebris(simDt);
+        TickInObjectSpawns(simDt);
         TickDoors(simDt);
         TickElevators(simDt);
         // SC-MOB-ROAM-AUDIT — 15s roam heartbeat to the session log:
@@ -40042,7 +40224,9 @@ void main()
             var shadowEye = _camera.Position;
             foreach (var a in _actors)
             {
-                if (a.Hidden || a.IsDead) continue;
+                // A monster still in the ground (the skrubb under its mound)
+                // casts nothing: the shadow gave away where it would rise.
+                if (a.Hidden || a.IsDead || a.Actor.Buried) continue;
                 if (partyOnly && !(a.IsPlayer || a.IsPartyMember)) continue;
                 var feet = a.CurrentTransform.Translation;
                 if (Vector3.DistanceSquared(feet, shadowEye) > 90f * 90f) continue;

@@ -53,6 +53,11 @@ public sealed record ActorStats(
     public float ComRange { get; init; }
     public float ReloadDelay { get; init; }
     public bool  AlertFriends { get; init; }
+    /// <summary>SC-MO-HOLD — [mind] movement_orders = mo_hold: the actor never
+    /// moves from its spot (the skrubb in its burrow). It turns to face a
+    /// target and attacks when the target is in range, as
+    /// job_attack_object_melee.skrit does under MO_HOLD.</summary>
+    public bool  HoldsPosition { get; init; }
 
     // SC-MOB-CASTER / SC-MOB-RANGED — attack-mode identity, parameter-driven
     // exactly like DS1's single shared brain skrit: WP_MELEE / WP_RANGED /
@@ -176,6 +181,8 @@ public sealed record ActorStats(
             ComRange          = ParseFloat(store.GetAttribute(template, "mind", "com_range")) ?? 0f,
             ReloadDelay       = ParseFloat(store.GetAttribute(template, "attack", "reload_delay")) ?? 0f,
             AlertFriends      = ParseBool(store.GetAttribute(template, "mind", "on_enemy_spotted_alert_friends")),
+            HoldsPosition     = string.Equals(Clean(store.GetAttribute(template, "mind", "movement_orders")), "mo_hold",
+                                              StringComparison.OrdinalIgnoreCase),
             WeaponPreference  = Clean(store.GetAttribute(template, "mind", "actor_weapon_preference")),
             AutoSwitchToMagic = ParseBool(store.GetAttribute(template, "mind", "actor_auto_switches_to_magic")),
             AutoSwitchToRanged = ParseBool(store.GetAttribute(template, "mind", "actor_auto_switches_to_ranged")),

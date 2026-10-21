@@ -80,10 +80,31 @@ public sealed class Actor
     /// <summary>Current blender-selected clip. Clamped to the legal range so the caller
     /// can index <see cref="Clips"/> blindly; defaults to <see cref="IdleClipIndex"/>
     /// before the first dispatch resolves.</summary>
-    public int CurrentClipIndex =>
-        Host.CurrentAnimIndex < 0 || Host.CurrentAnimIndex >= Clips.Length
-            ? (IdleClipIndex >= 0 && IdleClipIndex < Clips.Length ? IdleClipIndex : 0)
-            : Host.CurrentAnimIndex;
+    public int CurrentClipIndex
+    {
+        get
+        {
+            int idle = IdleClipIndex >= 0 && IdleClipIndex < Clips.Length ? IdleClipIndex : 0;
+            int h = Host.CurrentAnimIndex;
+            if (Buried && !Host.IsOverrideActive) return 0;
+            if (h < 0 || h >= Clips.Length) return idle;
+            // SC-BURROWER — once awake, an actor whose chore_default is its
+            // buried pose idles in its initial chore (the skrubb peeking
+            // from its mound) when the script asks for the default.
+            if (h == 0 && Awakened) return idle;
+            return h;
+        }
+    }
+
+    /// <summary>SC-BURROWER — a startup_reveal monster before it wakes: it
+    /// shows its chore_default pose (for the skrubb, below ground) whatever
+    /// the script asks, until something wakes it. Chore overrides (a hit
+    /// reaction) still show.</summary>
+    public bool Buried { get; set; }
+
+    /// <summary>SC-BURROWER — a startup_reveal monster after it woke: its idle
+    /// is its initial chore, not the buried chore_default.</summary>
+    public bool Awakened { get; set; }
 
     internal Actor(
         ActorInstance instance,
