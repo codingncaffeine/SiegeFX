@@ -23560,13 +23560,22 @@ void main()
     /// left them unrooted and a placed sword stood in its raw authoring
     /// frame (the intro legionnaire's sword in the air, the farm's hoe
     /// askew in the hay). Grip bones hold no geometry, so rooting at bone 0
-    /// is safe for every rigid item.</summary>
+    /// is safe for every rigid item.
+    /// An item whose bone 0 is its GRIP rests on the model bone under it
+    /// (named after the model): the grip is where a hand holds it, the
+    /// model bone how it lies. For a sword the two agree; a shield's model
+    /// bone turns its face (mesh Z) to point up, so the intro legionnaire's
+    /// shield lies flat as in the original instead of standing on edge.</summary>
     private Matrix4x4 ComposeItemPlacementWorld(AspMesh asp, SiegeFX.Core.Assets.NodePlacement p)
     {
-        var root = asp.BindPose.Length > 0 && MaxGeometryBone(asp) == 0
-            ? Matrix4x4.CreateFromQuaternion(asp.BindPose[0].Rotation)
-              * Matrix4x4.CreateTranslation(asp.BindPose[0].Translation)
-            : Matrix4x4.Identity;
+        var root = Matrix4x4.Identity;
+        if (asp.BindPose.Length > 0 && MaxGeometryBone(asp) == 0)
+        {
+            bool gripped = asp.BoneNames.Count > 1 && asp.BindPose.Length > 1
+                && string.Equals(asp.BoneNames[0], "grip", StringComparison.OrdinalIgnoreCase)
+                && asp.BoneParents.Length > 1 && asp.BoneParents[1] == 0;
+            root = AbsoluteBindPose(asp, gripped ? 1 : 0);
+        }
         var local = root *
                     Matrix4x4.CreateFromQuaternion(p.Orientation) *
                     Matrix4x4.CreateTranslation(p.LocalPosition);
