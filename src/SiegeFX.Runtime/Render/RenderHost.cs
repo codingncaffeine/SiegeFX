@@ -1852,6 +1852,45 @@ public sealed class RenderHost : IDisposable
     private readonly List<(string Label, double Ms)> _diagStageTimings = new();
     private readonly System.Diagnostics.Stopwatch _diagBootStopwatch = new();
     private const int FrameRingSize = 240;     // 4 sec at 60 Hz
+    // ALPHA-PERF-CULL — last frame's drawn/total counts per pass (diag line).
+    private (int Drawn, int Total) _cullTerrain, _cullProps, _cullActors;
+    private int _cullSceneSize = -1, _cullWarmupFrames;
+    private string _diagCullLine = "";
+    private readonly Dictionary<AspMesh, (Vector3 Center, float Radius)> _actorMeshBounds = new();
+
+    /// <summary>A prop's bounding sphere is in view. Padded so a door
+    /// swinging on its hinge or a spinning prop is never dropped while any
+    /// of it shows.</summary>
+    private static bool PropInView(StaticPropInstance prop, in SiegeFX.Core.Geometry.Frustum frustum)
+    {
+        var w = prop.World;
+        float scale = MathF.Max(new Vector3(w.M11, w.M12, w.M13).Length(),
+                      MathF.Max(new Vector3(w.M21, w.M22, w.M23).Length(),
+                                new Vector3(w.M31, w.M32, w.M33).Length()));
+        var center = Vector3.Transform(prop.Mesh.Center, w);
+        return frustum.IntersectsSphere(center, prop.Mesh.Radius * scale * 1.5f + 0.5f);
+    }
+
+    /// <summary>An actor's body is in view: a sphere around its mesh's
+    /// bind-pose bounds (a swing or a big stride stays inside the padding),
+    /// scaled with the actor.</summary>
+    private bool ActorInView(ActorRenderState s, in SiegeFX.Core.Geometry.Frustum frustum)
+    {
+        var mesh = s.Actor.Mesh;
+        if (!_actorMeshBounds.TryGetValue(mesh, out var b))
+        {
+            var mn = new Vector3(float.PositiveInfinity);
+            var mx = new Vector3(float.NegativeInfinity);
+            foreach (var v in mesh.Positions) { mn = Vector3.Min(mn, v); mx = Vector3.Max(mx, v); }
+            b = mn.X <= mx.X ? ((mn + mx) * 0.5f, (mx - mn).Length() * 0.5f) : (Vector3.Zero, 2f);
+            _actorMeshBounds[mesh] = b;
+        }
+        float scale = s.Actor.Stats.RenderScale > 0f ? s.Actor.Stats.RenderScale : 1f;
+        // Bind poses are authored Z-up or Y-up; center the sphere on the body
+        // height-wise either way and let the radius cover the rest.
+        var center = s.CurrentTransform.Translation + new Vector3(0f, b.Radius * scale * 0.5f, 0f);
+        return frustum.IntersectsSphere(center, (b.Radius * 1.5f + 1f) * scale);
+    }
     private readonly double[] _diagFrameMs = new double[FrameRingSize];
     private int _diagFrameRingHead;
     private int _diagFrameRingFill;
@@ -12623,6 +12662,9 @@ void main()
     /// is on, so non-diag runs pay nothing.</summary>
     private void DiagRecordFrame(double dt)
     {
+        if (_cullTerrain.Total > 0 || _cullActors.Total > 0)
+            _diagCullLine = $"drawn: terrain {_cullTerrain.Drawn}/{_cullTerrain.Total}, " +
+                            $"props {_cullProps.Drawn}/{_cullProps.Total}, actors {_cullActors.Drawn}/{_cullActors.Total}";
         _diagFrameMs[_diagFrameRingHead] = dt * 1000.0;
         _diagFrameRingHead = (_diagFrameRingHead + 1) % FrameRingSize;
         if (_diagFrameRingFill < FrameRingSize) _diagFrameRingFill++;
@@ -12646,7 +12688,7 @@ void main()
         double fps = avg > 0 ? 1000.0 / avg : 0;
 
         Console.WriteLine($"diag: frame avg={avg:F2}ms p50={p50:F2} p99={p99:F2} max={max:F2}  ({fps:F0} fps, " +
-                          $"actors={_actors.Count}, regions={_loadedRegions.Count})");
+                          $"actors={_actors.Count}, regions={_loadedRegions.Count}) {_diagCullLine}");
     }
 
     /// <summary>Phase 9a entry: load a rigged ASP + a skrit + N PRS clips, then let the
@@ -38898,6 +38940,28 @@ void main()
         }
         var aspect = size.Y == 0 ? 1f : (float)size.X / size.Y;
         var vp = _camera.GetViewProjection(aspect);
+        // ALPHA-PERF-CULL — draw only what the camera can see. Terrain, props
+        // and actors from every loaded region (player + neighbours: thousands
+        // of nodes and props, hundreds of actors) used to be drawn every frame
+        // wherever they were. Render-only: game logic never reads these loops.
+        var frustum = new SiegeFX.Core.Geometry.Frustum(vp);
+        _cullTerrain = _cullProps = _cullActors = default;
+        // Warm-up: for a few frames after the scene's terrain or props change
+        // (a region load or stream-in), draw everything, so the driver's
+        // first-use work (texture uploads, state setup) lands behind the load
+        // instead of hitching a camera pan the first time each piece turns
+        // into view.
+        int sceneSize = _regionInstances.Count + _staticProps.Count;
+        if (sceneSize != _cullSceneSize) { _cullSceneSize = sceneSize; _cullWarmupFrames = 3; }
+        if (_cullWarmupFrames > 0)
+        {
+            _cullWarmupFrames--;
+            frustum = SiegeFX.Core.Geometry.Frustum.Everything;
+        }
+        // A frame over 100ms is a hitch someone sees; the log lines around it
+        // (stamped to the millisecond) say what was loading.
+        if (dt > 0.1 && _player is not null)
+            Console.WriteLine($"[perf] slow frame {dt * 1000.0:F0}ms");
 
         // SC-TERRAIN-WHITE-GRID (audit fold — finding #3) — dev
         // fly-cam reference grid. Previously gated on
@@ -39031,6 +39095,12 @@ void main()
                 if (s.IsPlayer && s.Hidden)
                     BodyDiag("player-hidden", "player render state Hidden=TRUE — body draw SKIPPED");
                 if (s.Hidden) continue;
+                if (!s.IsPlayer)
+                {
+                    _cullActors.Total++;
+                    if (!ActorInView(s, frustum)) continue;
+                    _cullActors.Drawn++;
+                }
                 if (s.IsPlayer)
                 {
                     var dp = s.CurrentTransform.Translation;
@@ -39365,6 +39435,9 @@ void main()
                 // SC-FADE-GROUPS — hide with the anchor snode's fade state.
                 if (prop.NodeGuid != 0 && _fadedSnodeCounts.Count > 0
                     && _fadedSnodeCounts.ContainsKey(prop.NodeGuid)) continue;
+                _cullProps.Total++;
+                if (!PropInView(prop, frustum)) continue;
+                _cullProps.Drawn++;
                 if (!ReferenceEquals(prop.Texture, lastTex))
                 {
                     if (prop.Texture is not null)
@@ -39467,6 +39540,7 @@ void main()
                 // SC-REGION-LAYER-HIDE-ACTORS (follow-up) — no region stamp on
                 // actors yet; gear hides with the faded-snode gate below.
                 if (IsPosInFadedSnode(s.CurrentTransform.Translation)) continue;
+                if (!ActorInView(s, frustum)) continue;   // ALPHA-PERF-CULL
                 var npcClips = s.Actor.Clips;
                 int npcBones = s.Actor.Mesh.BoneCount;
                 if (_boneWorldsScratch.Length < npcBones)
@@ -40146,6 +40220,9 @@ void main()
                     // the lower region — only flips back on region
                     // change.
                     if (IsAbovePlayer(inst.RegionPath)) continue;
+                    if (pass == 0) _cullTerrain.Total++;
+                    if (!frustum.IntersectsAabb(inst.WorldAabbMin, inst.WorldAabbMax)) continue;
+                    if (pass == 0) _cullTerrain.Drawn++;
                     // SC-PROP-ANIM — nodal tex anim: gizmo-enabled V crawl
                     // on this node's textures (chains, belts). Wraps at 1.0
                     // so the float never loses precision over a long session.
