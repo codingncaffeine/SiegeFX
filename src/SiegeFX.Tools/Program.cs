@@ -114,6 +114,7 @@ static void PrintUsage()
     Console.WriteLine("  siegefx templates list     <tank> [--prefix=P] [--tag=T]");
     Console.WriteLine("  siegefx templates show     <tank> <name> [--raw]");
     Console.WriteLine("  siegefx templates clip-heights <Logic.dsres> <name>   (posed model height per chore clip)");
+    Console.WriteLine("  siegefx templates model-bones <Logic.dsres> <name>   (a template's model: bones, bind poses, geometry per bone)");
     Console.WriteLine("  siegefx templates stats    <tank> <name | --prefix=P>");
     Console.WriteLine("  siegefx templates combat   <tank> <attacker> <target> [--duels=N] [--seed=K]");
     Console.WriteLine("  siegefx templates loot     <tank> <name> [--rolls=N] [--seed=K]");
@@ -5566,6 +5567,7 @@ static int DispatchTemplates(string[] a)
         "list"   => CmdTemplatesList(a[1..]),
         "show"   => CmdTemplatesShow(a[1..]),
         "clip-heights" => CmdTemplatesClipHeights(a[1..]),
+        "model-bones" => CmdTemplatesModelBones(a[1..]),
         "resolve-textures" => CmdTemplatesResolveTextures(a[1..]),
         "stats"  => CmdTemplatesStats(a[1..]),
         "combat" => CmdTemplatesCombat(a[1..]),
@@ -5968,6 +5970,74 @@ static int CmdTemplatesList(string[] a)
         Console.WriteLine($"  [{t.TypeTag}] {t.Name}{parent}");
         shown++;
         if (shown >= 60) { Console.WriteLine($"  ... (showing first 60; {store.Count - shown}+ more)"); break; }
+    }
+    return 0;
+}
+
+/// <summary>`templates model-bones` — a template's model as the renderer
+/// roots it: each bone with its parent, bind translation and rotation (and
+/// where the rotation sends the model's X/Y/Z axes), how many corners bind
+/// to it, and the model's extent raw and after bone 0's bind pose. Shows
+/// which axis an item or prop stands on, without loading a level.</summary>
+static int CmdTemplatesModelBones(string[] a)
+{
+    if (a.Length != 2)
+    {
+        Console.Error.WriteLine("usage: siegefx templates model-bones <Logic.dsres> <template>");
+        Console.Error.WriteLine("       Objects.dsres is read from beside Logic.dsres");
+        return 1;
+    }
+    var objectsPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(a[0])) ?? ".", "Objects.dsres");
+    if (!File.Exists(objectsPath)) { Console.Error.WriteLine($"no Objects.dsres beside {a[0]}"); return 1; }
+    using var logicTank = TankFile.Open(a[0]);
+    using var objectsTank = TankFile.Open(objectsPath);
+    var (store, _) = TemplateStore.LoadFromTank(new TankReader(logicTank));
+    if (!store.TryGet(a[1], out var t) || t is null) { Console.Error.WriteLine($"template '{a[1]}' not found"); return 1; }
+    var resolver = new AssetResolver();
+    resolver.Add(new TankReader(objectsTank), "Objects.dsres");
+    var model = store.GetAttribute(t, "aspect", "model")?.Trim().Trim('"');
+    if (model is null || !resolver.TryLoadModel(model, out var aspBytes))
+    { Console.Error.WriteLine($"model '{model}' not found"); return 1; }
+    var mesh = AspMesh.Load(aspBytes);
+    Console.WriteLine($"model {model}: {mesh.Corners.Length} corners, {mesh.BoneCount} bone(s), skinned={mesh.HasSkin}");
+    var perBone = new int[Math.Max(1, mesh.BoneCount)];
+    for (int c = 0; c < mesh.Corners.Length; c++)
+    {
+        int primary = 0;
+        if (mesh.HasSkin && c < mesh.SkinWeights.Length)
+        {
+            var w = mesh.SkinWeights[c]; uint b = mesh.SkinBones[c]; float pw = -1f;
+            if (w.X > pw) { primary = (int)( b        & 0xFF); pw = w.X; }
+            if (w.Y > pw) { primary = (int)((b >>  8) & 0xFF); pw = w.Y; }
+            if (w.Z > pw) { primary = (int)((b >> 16) & 0xFF); pw = w.Z; }
+            if (w.W > pw) { primary = (int)((b >> 24) & 0xFF); }
+        }
+        if (primary >= 0 && primary < perBone.Length) perBone[primary]++;
+    }
+    static string Ax(Vector3 v) =>
+        MathF.Abs(v.X) >= MathF.Abs(v.Y) && MathF.Abs(v.X) >= MathF.Abs(v.Z) ? (v.X < 0 ? "-X" : "+X")
+        : MathF.Abs(v.Y) >= MathF.Abs(v.Z) ? (v.Y < 0 ? "-Y" : "+Y") : (v.Z < 0 ? "-Z" : "+Z");
+    for (int i = 0; i < mesh.BoneCount; i++)
+    {
+        var bp = i < mesh.BindPose.Length ? mesh.BindPose[i] : default;
+        var q = bp.Rotation;
+        string axes = $"X->{Ax(Vector3.Transform(Vector3.UnitX, q))} Y->{Ax(Vector3.Transform(Vector3.UnitY, q))} Z->{Ax(Vector3.Transform(Vector3.UnitZ, q))}";
+        int parent = i < mesh.BoneParents.Length ? mesh.BoneParents[i] : -1;
+        Console.WriteLine($"  [{i,2}] {mesh.BoneNames[i],-20} parent={parent,2}  t=({bp.Translation.X:F3},{bp.Translation.Y:F3},{bp.Translation.Z:F3})" +
+                          $"  q=({q.X:F3},{q.Y:F3},{q.Z:F3},{q.W:F3})  {axes}  corners={(i < perBone.Length ? perBone[i] : 0)}");
+    }
+    string Extent(Matrix4x4 m)
+    {
+        var lo = new Vector3(float.PositiveInfinity); var hi = new Vector3(float.NegativeInfinity);
+        foreach (var c in mesh.Corners) { var p = Vector3.Transform(mesh.Positions[c.VertexIndex], m); lo = Vector3.Min(lo, p); hi = Vector3.Max(hi, p); }
+        var e = hi - lo;
+        return $"size ({e.X:F2},{e.Y:F2},{e.Z:F2})  min ({lo.X:F2},{lo.Y:F2},{lo.Z:F2})";
+    }
+    Console.WriteLine($"  raw              {Extent(Matrix4x4.Identity)}");
+    if (mesh.BindPose.Length > 0)
+    {
+        var b0 = Matrix4x4.CreateFromQuaternion(mesh.BindPose[0].Rotation) * Matrix4x4.CreateTranslation(mesh.BindPose[0].Translation);
+        Console.WriteLine($"  bone-0 bind      {Extent(b0)}");
     }
     return 0;
 }

@@ -1772,6 +1772,12 @@ public sealed class RenderHost : IDisposable
         /// corresponding placement. Pairs with IsWorldInventory — Set only at
         /// world-inventory spawn time; never reused once recorded.</summary>
         public uint SourceScid;
+        /// <summary>World-placed items (inventory.gas) rest as the map placed
+        /// them: the item's model composed like a prop's, through its
+        /// placement and scale_multiplier. Null for every other pile, and
+        /// for placed items whose model couldn't be loaded; those draw in
+        /// the generic ground pose.</summary>
+        public Matrix4x4? PlacedWorld;
         public LootPile(Vector3 position, List<SiegeFX.Core.Actors.LootEntry> items)
         { Position = position; Items = items; }
     }
@@ -16127,10 +16133,18 @@ void main()
                 // mesh carries a root offset get nudged onto the prop-consistent spot.
                 // Falls back to the shortcut if the item mesh can't be loaded.
                 Vector3 world;
+                Matrix4x4? placedWorld = null;
                 var itemAsp = TryGetItemAsp(p.TemplateName);
                 if (itemAsp is not null)
                 {
-                    world = ComposePlacementWorld(itemAsp, p.Placement).Translation;
+                    var itemWorld = ComposeItemPlacementWorld(itemAsp, p.Placement);
+                    world = itemWorld.Translation;
+                    // The authored pose and size, as props are placed: the
+                    // intro's fallen legionnaire has his sword raised in his
+                    // hand and his shield on edge, both at 1.35x.
+                    float sm = _templateStore.TryGet(p.TemplateName, out var pt)
+                        ? ResolveScaleMultiplier(pt!, p.Node) : 1f;
+                    placedWorld = Matrix4x4.CreateScale(sm) * itemWorld;
                 }
                 else
                 {
@@ -16178,6 +16192,7 @@ void main()
                     IsWorldInventory = true,
                     SourceScid       = p.Scid,
                     DisplayOverride  = entry.IsGold ? p.TemplateName : "",
+                    PlacedWorld      = entry.IsGold ? null : placedWorld,
                 };
                 AddLootPile(pile);
                 spawned++;
@@ -23536,6 +23551,39 @@ void main()
     /// Z-up — the torch cantilevering off the wall. The correct test is whether
     /// any GEOMETRY binds past bone 0: attach bones carry no verts, so a rigid
     /// prop reads max-geometry-bone 0 regardless of how many sockets it has.</summary>
+    /// <summary>World transform of an item placed in a region
+    /// (inventory.gas), composed like <see cref="ComposePlacementWorld"/>
+    /// but rooted at bone 0's bind pose whenever all the geometry hangs on
+    /// bone 0. Item meshes are authored Z-up like props, and bone 0 carries
+    /// the stand-up; but weapons and shields also carry grip bones
+    /// (weapon_grip, shield_grip) that aren't AP_ sockets, so the prop rule
+    /// left them unrooted and a placed sword stood in its raw authoring
+    /// frame (the intro legionnaire's sword in the air, the farm's hoe
+    /// askew in the hay). Grip bones hold no geometry, so rooting at bone 0
+    /// is safe for every rigid item.
+    /// An item whose bone 0 is its GRIP rests on the model bone under it
+    /// (named after the model): the grip is where a hand holds it, the
+    /// model bone how it lies. For a sword the two agree; a shield's model
+    /// bone turns its face (mesh Z) to point up, so the intro legionnaire's
+    /// shield lies flat as in the original instead of standing on edge.</summary>
+    private Matrix4x4 ComposeItemPlacementWorld(AspMesh asp, SiegeFX.Core.Assets.NodePlacement p)
+    {
+        var root = Matrix4x4.Identity;
+        if (asp.BindPose.Length > 0 && MaxGeometryBone(asp) == 0)
+        {
+            bool gripped = asp.BoneNames.Count > 1 && asp.BindPose.Length > 1
+                && string.Equals(asp.BoneNames[0], "grip", StringComparison.OrdinalIgnoreCase)
+                && asp.BoneParents.Length > 1 && asp.BoneParents[1] == 0;
+            root = AbsoluteBindPose(asp, gripped ? 1 : 0);
+        }
+        var local = root *
+                    Matrix4x4.CreateFromQuaternion(p.Orientation) *
+                    Matrix4x4.CreateTranslation(p.LocalPosition);
+        if (_regionLayout is null) return local;
+        if (!_regionLayout.TryGetTransform(p.NodeGuid, out var nodeWorld)) return local;
+        return local * nodeWorld;
+    }
+
     private static Matrix4x4 ComputeRootBindPose(AspMesh asp)
     {
         if (asp.BindPose.Length == 0) return Matrix4x4.Identity;
@@ -39907,13 +39955,20 @@ void main()
             float worldInvR2 = WorldInventoryVisRadius * WorldInventoryVisRadius;
             Vector3 playerPos = _player?.CurrentTransform.Translation ?? Vector3.Zero;
             bool havePlayer = _player is not null;
+            var invCamPos = _camera.Position;
             foreach (var pile in _lootPiles)
             {
                 if (pile.IsWorldInventory && havePlayer)
                 {
+                    // Near the hero, or near the camera: a cutscene shot far
+                    // from the hero (the intro's fallen legionnaire) shows
+                    // the items lying in it.
                     float pdx = pile.Position.X - playerPos.X;
                     float pdz = pile.Position.Z - playerPos.Z;
-                    if (pdx * pdx + pdz * pdz > worldInvR2) continue;
+                    float cdx = pile.Position.X - invCamPos.X;
+                    float cdz = pile.Position.Z - invCamPos.Z;
+                    if (pdx * pdx + pdz * pdz > worldInvR2
+                        && cdx * cdx + cdz * cdz > worldInvR2) continue;
                 }
                 // SC-FADE-GROUPS — piles sitting in a faded-out layer hide
                 // with their terrain (a glittering surface pile would
@@ -40015,7 +40070,9 @@ void main()
                     // VERTICAL. Lay it flat on the world XZ floor (mesh Z, the
                     // thin axis, becomes world up), then random-spin + ground it
                     // at full scale (no half-size lift — the fan is ~2cm thick).
-                    var model = goldDisplay
+                    var model = pile.PlacedWorld is { } placed && pile.Throw is null
+                        ? placed
+                        : goldDisplay
                         ? Matrix4x4.CreateRotationX(-MathF.PI / 2f)
                           * Matrix4x4.CreateRotationY(pile.RotationY)
                           * Matrix4x4.CreateTranslation(pos.X, pos.Y + 0.02f, pos.Z)
