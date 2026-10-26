@@ -46,7 +46,7 @@ src/
   SiegeFX.Tools      the `siegefx` command line: format tools and the headless audits
   SiegeFX.Net.Eos    Epic Online Services multiplayer (needs Epic's SDK; not in the solution)
   SiegeSmith         modding studio & world builder on the same parsers (WPF, Windows)
-tests/               data-free unit tests (CI runs them on Linux and Windows)
+tests/               data-free unit tests (CI runs them on Linux, macOS and Windows)
 tools/               receipts.sh (the pre-push gate), the test-menu generator, ds1/ (the original game under Proton)
 packaging/           Linux desktop entry, smoke test, AUR package
 ```
@@ -80,7 +80,7 @@ See [Building and Running](https://github.com/codingncaffeine/SiegeFX/wiki/Build
 
 ## Checks
 
-- **CI** builds the solution on Linux (x64 and ARM64) and Windows with warnings as errors, runs the unit tests, builds the release artifacts and launches both Linux tarballs, each on its own architecture, on every push.
+- **CI** builds the solution on Linux (x64 and ARM64), macOS (Apple Silicon) and Windows with warnings as errors, runs the unit tests and the game's self-tests (on macOS also from a self-contained Apple Silicon build), builds the release artifacts and launches both Linux tarballs, each on its own architecture, on every push.
 - **`tools/receipts.sh`** is the gate before a push; it needs a game install: the build, the unit tests, the engine's self-tests, the [parity ledger](https://github.com/codingncaffeine/SiegeFX/wiki/Parity) against its committed baseline, and every spell's effect trace against `goldens/sfx-timelines`.
 - **`siegefx parity ledger <install>`** measures how much of the original content the engine handles (commands, quests, sounds, template fields, effects…) and lists each gap.
 - **`test-all.bat` / `test-all.sh`**: the phase-by-phase test menu, one entry per feature. Edit the .bat; `tools/test-menu.sh` generates the .sh from it.
