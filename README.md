@@ -74,13 +74,13 @@ dotnet build SiegeFX.sln -c Release
 
 SiegeFX finds a GOG or Steam install by itself: on Windows through the registry, on Linux where Steam (native, Flatpak or Snap), Heroic, Lutris, Bottles or a Wine prefix put it. Otherwise write your Dungeon Siege folder on the first line of `~/.config/siegefx/ds1path.txt` (Windows: `%APPDATA%\siegefx\ds1path.txt`), or set `SIEGEFX_DS1`. On Linux the game needs OpenGL 3.3 and, for multiplayer, OpenSSL 3; GLFW and OpenAL Soft come with the build.
 
-`./publish.sh vX.Y.Z` builds the release artifacts on Linux: the Linux tarball (self-contained, with a desktop entry), the Windows game zip and the SiegeSmith zip. `publish-alpha.bat` builds the Windows two on Windows.
+`./publish.sh vX.Y.Z` builds the release artifacts on Linux: the Linux tarballs for x64 and ARM64 (self-contained, with a desktop entry; the ARM64 one without internet play for now), the Windows game zip and the SiegeSmith zip. `publish-alpha.bat` builds the Windows two on Windows.
 
 See [Building and Running](https://github.com/codingncaffeine/SiegeFX/wiki/Building-and-Running) for controls and more.
 
 ## Checks
 
-- **CI** builds the solution on Linux and Windows with warnings as errors, runs the unit tests, builds all three release artifacts and launches the Linux one, on every push.
+- **CI** builds the solution on Linux (x64 and ARM64) and Windows with warnings as errors, runs the unit tests, builds the release artifacts and launches both Linux tarballs, each on its own architecture, on every push.
 - **`tools/receipts.sh`** is the gate before a push; it needs a game install: the build, the unit tests, the engine's self-tests, the [parity ledger](https://github.com/codingncaffeine/SiegeFX/wiki/Parity) against its committed baseline, and every spell's effect trace against `goldens/sfx-timelines`.
 - **`siegefx parity ledger <install>`** measures how much of the original content the engine handles (commands, quests, sounds, template fields, effects…) and lists each gap.
 - **`test-all.bat` / `test-all.sh`**: the phase-by-phase test menu, one entry per feature. Edit the .bat; `tools/test-menu.sh` generates the .sh from it.

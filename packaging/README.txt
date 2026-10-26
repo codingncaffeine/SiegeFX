@@ -12,6 +12,12 @@ installed. It needs a 64-bit distribution with glibc 2.34 or newer
 for multiplayer (libssl3 on Debian and Ubuntu; every desktop install has
 it).
 
+The linux-arm64 build is the same game for 64-bit ARM machines. It plays
+on the LAN and by direct IP but not over the internet yet: the Epic Online
+Services module that internet play uses is built for x64 only. It needs
+OpenGL 3.3 like the x64 build, which a Raspberry Pi's graphics driver does
+not offer (it stops at 3.1), so it is unlikely to run on a Pi.
+
 Running
 -------
 From this folder:

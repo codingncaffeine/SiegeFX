@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# packaging/smoke-test.sh <SiegeFX-<version>-linux-x64.tar.gz | installed command>
+# packaging/smoke-test.sh <SiegeFX-<version>-linux-<x64|arm64>.tar.gz | installed command>
 #                         [--ds1=PATH] [--expect-version=X.Y.Z] [--eos]
 #
 # Launches what a release ships - the program in a fresh extraction of the
@@ -10,7 +10,8 @@
 #   1. the three data-free self-tests (save round trip, dialogue, multiplayer
 #      loopback) start the program and its runtime;
 #   2. the session log names the build: the version in the tarball's name (or
-#      --expect-version) and the portable linux-x64 runtime;
+#      --expect-version) and the portable runtime it was built for
+#      (linux-x64 or linux-arm64, from the tarball's name or this machine);
 #   (--eos) internet play: the bundled EOS module and credentials log in to
 #      Epic and round-trip a lobby (needs the network; a test identity of its
 #      own, kept in scratch/eos-test-identity);
@@ -42,13 +43,18 @@ case "$target" in
         [ -f "$target" ] || { echo "smoke-test: no tarball at '$target'" >&2; exit 2; }
         name=$(basename "$target" .tar.gz)
         if [ -z "$expect" ]; then
-            expect=${name#SiegeFX-v}; expect=${expect%-linux-x64}
-            [ "$name" = SiegeFX-dev-linux-x64 ] && expect=""
+            expect=${name#SiegeFX-v}; expect=${expect%-linux-*}
+            [[ "$name" == SiegeFX-dev-linux-* ]] && expect=""
         fi
+        rid=linux-${name##*-linux-}
         tar -xzf "$target" -C "$work/extract"
         exe="$work/extract/$name/SiegeFX" ;;
     *)
-        exe=$target ;;
+        exe=$target
+        case $(uname -m) in
+            aarch64|arm64) rid=linux-arm64 ;;
+            *) rid=linux-x64 ;;
+        esac ;;
 esac
 if [ ! -x "$exe" ]; then
     echo "smoke-test: no program at '$exe'" >&2
@@ -87,7 +93,7 @@ build_line() {
     if [ -n "$expect" ] && [[ "$line" != "[log] SiegeFX $expect+"* ]]; then
         echo "expected version $expect"; return 1
     fi
-    [[ "$line" == *"(linux-x64)" ]] || { echo "expected the linux-x64 runtime"; return 1; }
+    [[ "$line" == *"($rid)" ]] || { echo "expected the $rid runtime"; return 1; }
 }
 step build-line build_line
 sed 's/^/        /' "$work/build-line.log"
