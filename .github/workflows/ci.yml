@@ -3,11 +3,14 @@ name: CI
 # Every push to main and every pull request:
 #   lint     no game content among the tracked files, shellcheck over every
 #            script, actionlint over the workflows;
-#   build    the whole solution on Linux and on Windows with warnings as
-#            errors, the data-free unit tests and the game's own self-tests
-#            (save round trip, dialogue tree, host and client over loopback);
-#   package  the release artifacts (publish.sh), the Linux tarball launched as
-#            shipped (packaging/smoke-test.sh), artifacts kept for a week;
+#   build    the whole solution on Linux (x64 and ARM) and on Windows with
+#            warnings as errors, the data-free unit tests and the game's own
+#            self-tests (save round trip, dialogue tree, host and client over
+#            loopback);
+#   package  the release artifacts (publish.sh), the x64 Linux tarball
+#            launched as shipped (packaging/smoke-test.sh), artifacts kept
+#            for a week;
+#   linux-arm64-tarball  the ARM Linux tarball launched as shipped, on ARM;
 #   windows-zip  the self-tests again, from the Windows zip as shipped.
 # The checks that need a Dungeon Siege install (the parity ledger, the effect
 # traces, the menu rendered from the tarball) run locally: tools/receipts.sh
@@ -55,7 +58,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2025]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-2025]
     runs-on: ${{ matrix.os }}
     # A hung test ends the job here, not at GitHub's six-hour limit.
     timeout-minutes: 30
@@ -72,8 +75,8 @@ jobs:
       - uses: actions/cache@v6
         with:
           path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props', 'global.json') }}
-          restore-keys: nuget-${{ runner.os }}-
+          key: nuget-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props', 'global.json') }}
+          restore-keys: nuget-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build (warnings are errors)
         run: dotnet build SiegeFX.sln -c Release -warnaserror
@@ -136,7 +139,7 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', 'Directory.Build.props', 'global.json') }}
           restore-keys: nuget-${{ runner.os }}-
 
-      # The Linux tarball and both Windows zips, as a release builds them.
+      # The Linux tarballs and both Windows zips, as a release builds them.
       - name: Build the release artifacts
         run: ./publish.sh dev
 
@@ -152,6 +155,23 @@ jobs:
             publish/*.zip
           retention-days: 7
           if-no-files-found: ignore
+
+  # The ARM Linux tarball as players get it, launched on an ARM machine: it is
+  # cross-built on x64 above, so this is the first time it runs.
+  linux-arm64-tarball:
+    needs: package
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: siegefx-${{ github.sha }}
+          path: publish
+
+      - name: Launch the tarball as shipped
+        run: packaging/smoke-test.sh publish/SiegeFX-dev-linux-arm64.tar.gz
 
   # The Windows zip as players get it: one self-contained, self-extracting
   # SiegeFX.exe. A packaging break (a native left out of the bundle, a module

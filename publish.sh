@@ -7,13 +7,15 @@
 #
 #   publish/SiegeFX-<version>-linux-x64.tar.gz        the game for Linux, one
 #                                                     folder: run ./SiegeFX
+#   publish/SiegeFX-<version>-linux-arm64.tar.gz      the same for 64-bit ARM
+#                                                     Linux, LAN and direct IP
 #   publish/SiegeFX-<version>-win-x64.zip             the game for Windows,
 #                                                     SiegeFX.exe as one file
 #   publish/SiegeSmith-v<csproj Version>-win-x64.zip  the modding studio
 #
 # <version> (e.g. v0.5.0) names the SiegeFX artifacts and is the version the
 # build reports in its session log; the default, "dev", keeps the version in
-# the csproj. Both games bundle the optional EOS module (internet play), each
+# the csproj. The x64 games bundle the optional EOS module (internet play), each
 # with its own native library, when an EOS SDK is unpacked at $EOS_SDK_ROOT
 # (default: EOS/SDK beside the repo folder), with the game's eos_config.txt
 # from $EOS_CONFIG (default: the save folder); without the SDK they are LAN and
@@ -57,38 +59,46 @@ bundle_eos() {  # bundle_eos <artifact folder> <module build> <native library>
     if [ -f "$creds" ]; then cp "$creds" "$1/eos_config.txt" && echo "  + eos_config.txt (the game's credentials)"; fi
 }
 
-echo
-echo "=== SiegeFX for Linux (self-contained linux-x64) ==="
-linux="SiegeFX-$ver-linux-x64"
-stage="$out/$linux"
-"$dotnet" publish "$repo/src/SiegeFX.Runtime" -c Release -f net10.0 -r linux-x64 --self-contained \
-    -p:DebugType=embedded "${stamp[@]}" -o "$stage" --nologo
-cp "$repo/packaging/README.txt" "$stage/README.txt"
-cp "$repo/LICENSE" "$repo/THIRD-PARTY-NOTICES.txt" "$stage/"
-bundle_eos "$stage" "$out/eos-linux" libEOSSDK-Linux-Shipping.so
-# The desktop entry and the icons, laid out as under /usr/share so a package
-# or a per-user install copies them as they are. The icons are the PNG frames
-# of the Windows icon, copied out byte for byte.
-install -Dm644 "$repo/packaging/siegefx.desktop" "$stage/share/applications/siegefx.desktop"
-ico="$repo/src/SiegeFX.Runtime/Assets/siegefx.ico"
-u32() { od -An -tu4 -j "$1" -N4 "$ico" | tr -d ' '; }
-frames=$(od -An -tu2 -j 4 -N2 "$ico" | tr -d ' ')
-for ((i = 0; i < frames; i++)); do
-    entry=$((6 + 16 * i))
-    px=$(od -An -tu1 -j "$entry" -N1 "$ico" | tr -d ' ')
-    [ "$px" -eq 0 ] && px=256
-    png="$stage/share/icons/hicolor/${px}x${px}/apps/siegefx.png"
-    mkdir -p "$(dirname "$png")"
-    # dd, not tail | head: head exits once it has its bytes and a tail still
-    # writing gets SIGPIPE, which pipefail turns into a failed publish (a race).
-    dd if="$ico" of="$png" iflag=skip_bytes,count_bytes bs=64K \
-        skip="$(u32 $((entry + 12)))" count="$(u32 $((entry + 8)))" status=none
-    if [ "$(od -An -tx1 -N8 "$png" | tr -d ' ')" != 89504e470d0a1a0a ]; then
-        echo "publish: icon frame ${px}x${px} in $ico is not a PNG" >&2
-        exit 1
-    fi
-done
-tar -C "$out" --sort=name --owner=0 --group=0 --numeric-owner -czf "$out/$linux.tar.gz" "$linux"
+# The Linux tarball for one runtime: linux-x64 or linux-arm64. The EOS module
+# is built for x64 only, so the ARM tarball plays on the LAN and by direct IP.
+linux_tarball() {   # linux_tarball <rid>
+    local rid=$1
+    echo
+    echo "=== SiegeFX for Linux (self-contained $rid) ==="
+    local linux="SiegeFX-$ver-$rid"
+    local stage="$out/$linux"
+    "$dotnet" publish "$repo/src/SiegeFX.Runtime" -c Release -f net10.0 -r "$rid" --self-contained \
+        -p:DebugType=embedded "${stamp[@]}" -o "$stage" --nologo
+    cp "$repo/packaging/README.txt" "$stage/README.txt"
+    cp "$repo/LICENSE" "$repo/THIRD-PARTY-NOTICES.txt" "$stage/"
+    if [ "$rid" = linux-x64 ]; then bundle_eos "$stage" "$out/eos-linux" libEOSSDK-Linux-Shipping.so; fi
+    # The desktop entry and the icons, laid out as under /usr/share so a package
+    # or a per-user install copies them as they are. The icons are the PNG frames
+    # of the Windows icon, copied out byte for byte.
+    install -Dm644 "$repo/packaging/siegefx.desktop" "$stage/share/applications/siegefx.desktop"
+    local ico="$repo/src/SiegeFX.Runtime/Assets/siegefx.ico"
+    u32() { od -An -tu4 -j "$1" -N4 "$ico" | tr -d ' '; }
+    local frames i entry px png
+    frames=$(od -An -tu2 -j 4 -N2 "$ico" | tr -d ' ')
+    for ((i = 0; i < frames; i++)); do
+        entry=$((6 + 16 * i))
+        px=$(od -An -tu1 -j "$entry" -N1 "$ico" | tr -d ' ')
+        [ "$px" -eq 0 ] && px=256
+        png="$stage/share/icons/hicolor/${px}x${px}/apps/siegefx.png"
+        mkdir -p "$(dirname "$png")"
+        # dd, not tail | head: head exits once it has its bytes and a tail still
+        # writing gets SIGPIPE, which pipefail turns into a failed publish (a race).
+        dd if="$ico" of="$png" iflag=skip_bytes,count_bytes bs=64K \
+            skip="$(u32 $((entry + 12)))" count="$(u32 $((entry + 8)))" status=none
+        if [ "$(od -An -tx1 -N8 "$png" | tr -d ' ')" != 89504e470d0a1a0a ]; then
+            echo "publish: icon frame ${px}x${px} in $ico is not a PNG" >&2
+            exit 1
+        fi
+    done
+    tar -C "$out" --sort=name --owner=0 --group=0 --numeric-owner -czf "$out/$linux.tar.gz" "$linux"
+}
+linux_tarball linux-x64
+linux_tarball linux-arm64
 
 echo
 echo "=== SiegeFX for Windows (single file, self-contained win-x64) ==="
