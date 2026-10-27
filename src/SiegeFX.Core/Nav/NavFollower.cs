@@ -39,6 +39,19 @@ public sealed class NavFollower
     /// in XZ. Subsequent Tick calls are no-ops until <see cref="SetTarget"/> is called.</summary>
     public bool ReachedGoal { get; private set; }
 
+    /// <summary>SC-ELEVATOR-RIDE — true while a moving elevator car or
+    /// stairwell carries the walker. The mesh under it still holds the car
+    /// at the stop it left until the car arrives and the mesh is rebuilt, so
+    /// the walker doesn't walk, and <see cref="SetTarget"/> only remembers
+    /// the target (<see cref="HeldTarget"/>) for the owner to give the
+    /// walker on the rebuilt mesh. Planning on the stale mesh walked a rider
+    /// to the departure floor (or lifted it onto the car's old floor) in
+    /// mid-ride, and it arrived meters off the car.</summary>
+    public bool Carried { get; set; }
+
+    /// <summary>The last target set while <see cref="Carried"/>.</summary>
+    public Vector3? HeldTarget { get; private set; }
+
     /// <summary>True when the follower can't reach the target (start or goal triangle
     /// not on the mesh, or triangles are in disconnected components). Tick becomes a
     /// no-op. Call <see cref="SetTarget"/> to retry with a different goal.</summary>
@@ -188,6 +201,7 @@ public sealed class NavFollower
     /// Safe to call mid-traversal; the follower will replan from wherever it is now.</summary>
     public void SetTarget(Vector3 target)
     {
+        if (Carried) { HeldTarget = target; return; }
         Target = target;
         ReachedGoal = false;
         PathBlocked = false;
@@ -406,6 +420,7 @@ public sealed class NavFollower
     /// already reached the goal or is blocked.</summary>
     public void Tick(float dt)
     {
+        if (Carried) return;
         if (ReachedGoal || PathBlocked || _path.Count == 0 || _waypoints.Count == 0) return;
         if (dt <= 0f) return;
 
