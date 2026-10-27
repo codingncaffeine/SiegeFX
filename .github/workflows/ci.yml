@@ -3,10 +3,12 @@ name: CI
 # Every push to main and every pull request:
 #   lint     no game content among the tracked files, shellcheck over every
 #            script, actionlint over the workflows;
-#   build    the whole solution on Linux (x64 and ARM) and on Windows with
-#            warnings as errors, the data-free unit tests and the game's own
-#            self-tests (save round trip, dialogue tree, host and client over
-#            loopback);
+#   build    the whole solution on Linux (x64 and ARM), on macOS (Apple
+#            Silicon) and on Windows with warnings as errors, the data-free
+#            unit tests and the game's own self-tests (save round trip,
+#            dialogue tree, host and client over loopback); on macOS also
+#            from a self-contained osx-arm64 build, as a Mac player would
+#            run it;
 #   package  the release artifacts (publish.sh), the x64 Linux tarball
 #            launched as shipped (packaging/smoke-test.sh), artifacts kept
 #            for a week;
@@ -58,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm, windows-2025]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2025]
     runs-on: ${{ matrix.os }}
     # A hung test ends the job here, not at GitHub's six-hour limit.
     timeout-minutes: 30
@@ -103,12 +105,41 @@ jobs:
           else
             game=src/SiegeFX.Runtime/bin/Release/net10.0/SiegeFX
           fi
+          # macOS has no timeout(1); perl's alarm outlives the exec.
+          limit=(timeout 180)
+          command -v timeout > /dev/null || limit=(perl -e 'alarm shift; exec @ARGV' 180)
           failed=0
           for t in save dialogue net; do
             echo "::group::selftest-$t"
-            timeout 180 "$game" "--selftest-$t" || { echo "::error::selftest-$t failed"; failed=1; }
+            "${limit[@]}" "$game" "--selftest-$t" || { echo "::error::selftest-$t failed"; failed=1; }
             echo "::endgroup::"
           done
+          exit $failed
+
+      # The game as a Mac player gets it: self-contained for Apple Silicon,
+      # with the bundled GLFW and OpenAL Soft libraries in place of a system
+      # copy. There is no Mac release artifact yet; this keeps the build that
+      # one would ship running.
+      - name: Self-tests from a self-contained osx-arm64 build
+        if: runner.os == 'macOS'
+        timeout-minutes: 15
+        env:
+          ALSOFT_DRIVERS: "null"
+        run: |
+          dotnet publish src/SiegeFX.Runtime -c Release -f net10.0 -r osx-arm64 --self-contained -o app --nologo
+          failed=0
+          for t in save dialogue net; do
+            echo "::group::selftest-$t"
+            perl -e 'alarm shift; exec @ARGV' 180 app/SiegeFX "--selftest-$t" || { echo "::error::selftest-$t failed"; failed=1; }
+            echo "::endgroup::"
+          done
+          # The build line of the newest session log names the runtime (the
+          # names are timestamps, so the glob's last match is the newest).
+          logs=("$HOME/Library/Application Support/SiegeFX/logs"/session-*.log)
+          log=${logs[${#logs[@]} - 1]}
+          line=$(grep -m1 '^\[log\] SiegeFX ' "$log") || true
+          echo "$line"
+          [[ "$line" == *"(osx-arm64)" ]] || { echo "::error::the session log does not name the osx-arm64 runtime"; failed=1; }
           exit $failed
 
       - name: Keep the hang dumps
