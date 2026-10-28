@@ -10502,6 +10502,7 @@ void main()
         _window.Update  += OnUpdate;
         _window.Render  += OnRender;
         _window.Resize  += OnResize;
+        _window.FramebufferResize += OnFramebufferResize;
         // Phase 16b — release GL resources while the context is still alive.
         // Silk.NET's Run() returns after the GLFW window is destroyed, so the
         // outer Dispose() runs with no current context and DeleteTextures
@@ -13295,7 +13296,7 @@ void main()
                     if (_lastRmbMovePos is { } lastRm
                         && MathF.Abs(pos.X - _rmbDownPos.X) > RmbClickDriftPx)
                     {
-                        _formationRotOffset += (pos.X - lastRm.X) * 0.008f;
+                        _formationRotOffset += (pos.X - lastRm.X) * WindowUnitsPerPixel() * 0.008f;
                         _rmbModalUsed = true;
                     }
                     _lastRmbMovePos = pos;
@@ -13304,8 +13305,9 @@ void main()
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
                 {
-                    float dx = pos.X - last.X;
-                    float dy = pos.Y - last.Y;
+                    float unit = WindowUnitsPerPixel();
+                    float dx = (pos.X - last.X) * unit;
+                    float dy = (pos.Y - last.Y) * unit;
                     if (_cameraMode == CameraMode.Chase)
                     {
                         // Phase 23-SC-OPTIONS-FOLD2-FOLD — route through Camera.YawIncrement
@@ -27691,6 +27693,20 @@ void main()
     }
 
     private Vector2 MousePx(IMouse mouse) => ToFramebufferPx(mouse.Position);
+
+    /// <summary>Window coordinates per framebuffer pixel: 1 on Windows and
+    /// Linux, 0.5 on a Retina Mac. Turns a mouse movement measured in
+    /// framebuffer pixels back into how far the mouse actually moved, so
+    /// drag-to-turn gains (camera orbit, formation facing) feel the same on
+    /// every screen instead of turning twice as far on a Retina one.</summary>
+    private float WindowUnitsPerPixel()
+    {
+        if (_window is null) return 1f;
+        var ws = _window.Size;
+        var fb = _window.FramebufferSize;
+        if (ws.X <= 0 || fb.X <= 0) return 1f;
+        return (float)ws.X / fb.X;
+    }
 
     /// <summary>SC-SCREEN-PICK — pick the actor whose SCREEN body the
     /// cursor is on: project the feet→head segment of every candidate to
@@ -43486,7 +43502,6 @@ void main()
 
     private void OnResize(Vector2D<int> size)
     {
-        _gl?.Viewport(size);
         // ALPHA-2V — remember the last windowed size (free-resize freedom;
         // restored at boot + when leaving fullscreen). Fullscreen sizes are
         // display modes, not window memory, so they don't record — and
@@ -43499,6 +43514,15 @@ void main()
             _optionsMenu.Live.WindowW = size.X;
             _optionsMenu.Live.WindowH = size.Y;
         }
+    }
+
+    /// <summary>The GL viewport covers the framebuffer, which is in pixels.
+    /// Resize reports the window size, which on a Retina Mac is half the
+    /// framebuffer: a viewport set from it drew the scene into the lower-left
+    /// quarter after a resize or a fullscreen switch.</summary>
+    private void OnFramebufferResize(Vector2D<int> size)
+    {
+        _gl?.Viewport(size);
     }
 
     private bool _glDisposed;
