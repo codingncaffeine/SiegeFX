@@ -10651,7 +10651,7 @@ void main()
                 // world; other clicks are swallowed while it is up.
                 if (_victoryActive && btn == MouseButton.Left && _victoryTimer >= 1.5f)
                 {
-                    int vmx = (int)m.Position.X, vmy = (int)m.Position.Y;
+                    int vmx = (int)MousePx(m).X, vmy = (int)MousePx(m).Y;
                     bool In((int x, int y, int w, int h) r) =>
                         r.w > 0 && vmx >= r.x && vmx < r.x + r.w && vmy >= r.y && vmy < r.y + r.h;
                     if (In(_victoryOkRect) || In(_victoryXRect))
@@ -10672,17 +10672,17 @@ void main()
                         // dispatch (otherwise the click also fires axis cycle
                         // on press, which we don't want).
                         if (_heroPreview is not null
-                            && _heroPreview.TryStartDrag((int)m.Position.X, (int)m.Position.Y,
-                                _window.Size.X, _window.Size.Y))
+                            && _heroPreview.TryStartDrag((int)MousePx(m).X, (int)MousePx(m).Y,
+                                _window.FramebufferSize.X, _window.FramebufferSize.Y))
                         {
                             // drag started — eat the click
                         }
                         else
                         {
                             var sz = _window.FramebufferSize;
-                            _creator.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                            _creator.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                             // SC-CD-PREVNEXT-WIRE — register prev/next press.
-                            _csMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                            _csMenu.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                         }
                     }
                     return;
@@ -10695,7 +10695,7 @@ void main()
                 if (_optionsMenu.IsOpen && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _optionsMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _optionsMenu.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 // Phase 24-MAINMENU step 5+6 — main menu eats LMB while
@@ -10709,12 +10709,12 @@ void main()
                 // SC-DEVMODE — clicks inside the dev console never reach the
                 // world (the panel handles them on mouse-up).
                 if (_devConsoleOpen && btn == MouseButton.Left
-                    && DevConsoleContains((int)m.Position.X, (int)m.Position.Y))
+                    && DevConsoleContains((int)MousePx(m).X, (int)MousePx(m).Y))
                     return;
                 // SC-DEFEAT — the defeat question is modal while up.
                 if (DefeatDialogActive && btn == MouseButton.Left)
                 {
-                    DefeatClick((int)m.Position.X, (int)m.Position.Y, isUp: false);
+                    DefeatClick((int)MousePx(m).X, (int)MousePx(m).Y, isUp: false);
                     return;
                 }
                 // SC-MAINMENU-LOADGAME — the frontend Load window is modal over
@@ -10728,10 +10728,10 @@ void main()
                     if (_frontendScene?.State != Hud.FrontendScene.ScreenState.LoadGame)
                         return;
                     var fb = _window.FramebufferSize;
-                    if (!_loadDialog.IsInsidePanel((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y))
+                    if (!_loadDialog.IsInsidePanel((int)MousePx(m).X, (int)MousePx(m).Y, fb.X, fb.Y))
                         CloseLoadDialog();
                     else
-                        _loadDialog.OnMouseDown((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y);
+                        _loadDialog.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, fb.X, fb.Y);
                     return;
                 }
                 if (_bootMode && _frontendScene is not null
@@ -10739,7 +10739,7 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _mainMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _mainMenu.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 if (_bootMode && _frontendScene is not null
@@ -10747,7 +10747,7 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _spMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _spMenu.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 if (_bootMode && _frontendScene is not null
@@ -10763,8 +10763,8 @@ void main()
                     // safely; whichever rect contains the click sets
                     // its own _pressed and the matching OnMouseUp
                     // commits the action.
-                    _creator.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
-                    _csMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _creator.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
+                    _csMenu.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 if (_bootMode && _frontendScene is not null
@@ -10772,7 +10772,7 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _diffMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _diffMenu.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 if (_bootMode && _frontendScene is not null
@@ -10780,7 +10780,7 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _mpMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _mpMenu.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 if (_bootMode && _frontendScene is not null
@@ -10789,7 +10789,7 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _mpSession.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _mpSession.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 if (_bootMode && _frontendScene is not null
@@ -10797,7 +10797,7 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _mpStaging.OnMouseDown((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _mpStaging.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 // Phase 23-SC-OPTIONS-D — RMB on a cycle widget steps
@@ -10807,7 +10807,7 @@ void main()
                 if (_optionsMenu.IsOpen && btn == MouseButton.Right)
                 {
                     var sz = _window.FramebufferSize;
-                    _optionsMenu.OnRightClickWidget((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _optionsMenu.OnRightClickWidget((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 // Save Game window / Adventurer's Handbook eat LMB while open
@@ -10816,26 +10816,26 @@ void main()
                 if (_saveDialog.IsOpen && btn == MouseButton.Left)
                 {
                     var fb = _window.FramebufferSize;
-                    _saveDialog.OnMouseDown((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y);
+                    _saveDialog.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, fb.X, fb.Y);
                     return;
                 }
                 if (_loadDialog.IsOpen && btn == MouseButton.Left)
                 {
                     var fb = _window.FramebufferSize;
-                    _loadDialog.OnMouseDown((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y);
+                    _loadDialog.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, fb.X, fb.Y);
                     return;
                 }
                 if (_handbook.IsOpen && btn == MouseButton.Left)
                 {
                     var fb = _window.FramebufferSize;
-                    _handbook.OnMouseDown((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y);
+                    _handbook.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, fb.X, fb.Y);
                     return;
                 }
                 // Phase 15d — pause menu eats LMB while it's open so a click on
                 // a button doesn't also retarget the follower behind the panel.
                 if (_pauseMenu.IsOpen && btn == MouseButton.Left)
                 {
-                    _pauseMenu.OnMouseDown((int)m.Position.X, (int)m.Position.Y);
+                    _pauseMenu.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y);
                     return;
                 }
                 // Phase 20d — vendor trade overlay; same modal rules as dialogue.
@@ -10846,17 +10846,17 @@ void main()
                 {
                     if (btn == MouseButton.Left)
                     {
-                        bool inFrame = _vendor.OnMouseDown((int)m.Position.X, (int)m.Position.Y,
-                                            ActiveInventory.Count, _window.Size.X, _window.Size.Y);
+                        bool inFrame = _vendor.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y,
+                                            ActiveInventory.Count, _window.FramebufferSize.X, _window.FramebufferSize.Y);
                         // Phase 25c — DS1 opens your inventory beside the
                         // store; clicking one of your items while trading
                         // sells it at the panel's sell price.
                         if (!inFrame && _inventoryOpen
-                            && _inventoryPanel.IsPointInPanel((int)m.Position.X, (int)m.Position.Y,
-                                                              _window.Size.X, _window.Size.Y))
+                            && _inventoryPanel.IsPointInPanel((int)MousePx(m).X, (int)MousePx(m).Y,
+                                                              _window.FramebufferSize.X, _window.FramebufferSize.Y))
                         {
-                            int sellIdx = _inventoryPanel.TryHitTestItem((int)m.Position.X, (int)m.Position.Y,
-                                _window.Size.X, _window.Size.Y, ActiveInventory, TryGetItemGridSize);
+                            int sellIdx = _inventoryPanel.TryHitTestItem((int)MousePx(m).X, (int)MousePx(m).Y,
+                                _window.FramebufferSize.X, _window.FramebufferSize.Y, ActiveInventory, TryGetItemGridSize);
                             if (sellIdx >= 0)
                                 ApplyVendorAction(new Hud.VendorAction(Hud.VendorActionKind.Sell, sellIdx));
                         }
@@ -10870,7 +10870,7 @@ void main()
                 if (_dialogue.IsOpen && (btn == MouseButton.Left || btn == MouseButton.Right))
                 {
                     if (btn == MouseButton.Left)
-                        _dialogue.OnMouseDown((int)m.Position.X, (int)m.Position.Y);
+                        _dialogue.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y);
                     return;
                 }
                 // SC-QUEST-UI-C — journal screen captures LMB while open. It
@@ -10883,9 +10883,9 @@ void main()
                 if (_questLogOpen && _progression is not null
                     && (btn == MouseButton.Left || btn == MouseButton.Right))
                 {
-                    int mx = (int)m.Position.X, my = (int)m.Position.Y;
+                    int mx = (int)MousePx(m).X, my = (int)MousePx(m).Y;
                     if (btn == MouseButton.Left
-                        && _questLogPanel.OnMouseDown(mx, my, _window.Size.X, _window.Size.Y, _progression.Journal))
+                        && _questLogPanel.OnMouseDown(mx, my, _window.FramebufferSize.X, _window.FramebufferSize.Y, _progression.Journal))
                     {
                         if (_questLogPanel.ConsumeCloseRequest())
                         {
@@ -10909,7 +10909,7 @@ void main()
                 // handlers below.
                 if (btn == MouseButton.Left && _player is not null)
                 {
-                    int mx = (int)m.Position.X, my = (int)m.Position.Y;
+                    int mx = (int)MousePx(m).X, my = (int)MousePx(m).Y;
                     // SC-HUD-DRAG — while Shift is held, LMB is reserved for
                     // HUD arranging: a hit on a movable piece grabs it, and
                     // EVERY HUD button below stays quiet either way (per the
@@ -10928,26 +10928,26 @@ void main()
                     // Compass hide/show toggle (top-right) — only live while the
                     // dial is actually on screen (NIS off).
                     if (_nisPhase == NisPhase.Off &&
-                        CompassHitTest(mx, my, _window.Size.X, _window.Size.Y)) return;
+                        CompassHitTest(mx, my, _window.FramebufferSize.X, _window.FramebufferSize.Y)) return;
                     // SC-MP-PLAYERS — roster panel clicks: close button, then
                     // swallow anything on the dialog so the world can't be
                     // clicked through it.
                     if (_mpPlayersPanel.IsOpen)
                     {
-                        if (_mpPlayersPanel.IsPointInClose(mx, my, _window.Size.X, _window.Size.Y))
+                        if (_mpPlayersPanel.IsPointInClose(mx, my, _window.FramebufferSize.X, _window.FramebufferSize.Y))
                         {
                             _mpPlayersPanel.IsOpen = false;
                             _audio?.Play(SfxGuiInventory);
                             return;
                         }
-                        if (_mpPlayersPanel.IsPointInPanel(mx, my, _window.Size.X, _window.Size.Y))
+                        if (_mpPlayersPanel.IsPointInPanel(mx, my, _window.FramebufferSize.X, _window.FramebufferSize.Y))
                             return;
                     }
                     // Phase 27 — party HUD clicks. The field_commands panel is
                     // always on screen (DS1 shows it from game start, solo or
                     // not), so its clicks are always live; the team-portrait
                     // cells only exist once followers have joined.
-                    var fc = _fieldPanel.HitTest(mx, my, _window.Size.X, _window.Size.Y,
+                    var fc = _fieldPanel.HitTest(mx, my, _window.FramebufferSize.X, _window.FramebufferSize.Y,
                                                  _fcMinimized, _fcCommandsCollapsed,
                                                  showChat: _mpNetSession is not null);
                     if (fc != Hud.FieldCommandsPanel.Action.None) { OnFieldCommand(fc); return; }
@@ -10956,7 +10956,7 @@ void main()
                     {
                         int followerCells = _party.Count - 1;
                         int cellCount = followerCells + (PlayerSummon is not null ? 1 : 0);
-                        var th = _teamPortraits.HitTest(mx, my, _window.Size.Y, cellCount);
+                        var th = _teamPortraits.HitTest(mx, my, _window.FramebufferSize.Y, cellCount);
                         // SC-SUMMON-UI — the trailing cell is the summon:
                         // click selects it (orders/disband then act on it);
                         // it has no inventory or slots, so those are inert.
@@ -11033,7 +11033,7 @@ void main()
                     }
                     bool railOpen = _charPanelOpen || _inventoryOpen ||
                                     (_spellBookOpen && _spellbookOpenedWithI);
-                    var awpHit = _characterAwp.HitTest(mx, my, _window.Size.Y,
+                    var awpHit = _characterAwp.HitTest(mx, my, _window.FramebufferSize.Y,
                                                        railOpen || _awpExpertMode);
                     switch (awpHit)
                     {
@@ -11116,18 +11116,18 @@ void main()
                 // X on inventory / spell book panels resolves here too.
                 if (btn == MouseButton.Left)
                 {
-                    int mx = (int)m.Position.X, my = (int)m.Position.Y;
+                    int mx = (int)MousePx(m).X, my = (int)MousePx(m).Y;
                     // Phase 22-A SC-HUD-DATABAR — bottom-row HUD buttons capture
                     // LMB before anything else. The bar is always-on (no IsOpen
                     // gate), so this swallows the click even when no modal is
                     // up — otherwise pause/potion/journal/menu buttons would
                     // fall through to click-to-move.
-                    var dbDown = _dataBar.MouseDown(_window.Size.X, _window.Size.Y, mx, my);
+                    var dbDown = _dataBar.MouseDown(_window.FramebufferSize.X, _window.FramebufferSize.Y, mx, my);
                     if (dbDown is not null) return;
                     // SC-DATABAR-DOCK — pressing the EMPTY band (no button)
                     // arms the relocate drag; releasing in the other half of
                     // the screen docks the bar there (manual: drag to top).
-                    var dbBand = Hud.DataBar.ProjectBgRect(_window.Size.X, _window.Size.Y);
+                    var dbBand = Hud.DataBar.ProjectBgRect(_window.FramebufferSize.X, _window.FramebufferSize.Y);
                     if (my >= dbBand.Y && my < dbBand.Y + dbBand.H)
                     {
                         _dataBarDragArm = true;
@@ -11142,7 +11142,7 @@ void main()
                     // the live spellbook visibility).
                     if (_charPanelOpen)
                     {
-                        var sz2 = _window.Size;
+                        var sz2 = _window.FramebufferSize;
                         float irs2 = Hud.InfoRailLayout.Scale(sz2.Y);
                         // SC-HUD-DRAG — anchor to the LIVE (possibly dragged)
                         // sheet rect, not the authored dock.
@@ -11207,7 +11207,7 @@ void main()
                     // sheet up — the user's "not wired at all" repro).
                     if (_charPanelOpen && _player is not null && btn == MouseButton.Left
                         && _paperdoll.IsPointInViewButton(mx, my,
-                               _paperdollRect.X, _paperdollRect.Y, _window.Size.Y))
+                               _paperdollRect.X, _paperdollRect.Y, _window.FramebufferSize.Y))
                     {
                         _pdViewActive = true;
                         _pdViewYaw = 0f;
@@ -11223,7 +11223,7 @@ void main()
                     // "can't equip Tattered Leather in the paperdoll" report.
                     if (_charPanelOpen && _player is not null && btn == MouseButton.Left)
                     {
-                        var pdSz = _window.Size;
+                        var pdSz = _window.FramebufferSize;
                         var pdSlot = _paperdoll.TryHitTestSlot(mx, my,
                             _paperdollRect.X, _paperdollRect.Y, pdSz.Y);
                         if (pdSlot is not null)
@@ -11413,7 +11413,7 @@ void main()
                 // doesn't see a click-to-move on an inventory backdrop hit.
                 if (_inventoryOpen && btn == MouseButton.Left)
                 {
-                    int imx = (int)m.Position.X, imy = (int)m.Position.Y;
+                    int imx = (int)MousePx(m).X, imy = (int)MousePx(m).Y;
                     // Phase 21-SC-SCROLL-D — LMB-while-dragging-a-scroll on
                     // the inventory panel drops the cursor scroll into the
                     // inventory as a scroll item. Reference is the spell
@@ -11447,7 +11447,7 @@ void main()
                         return;
                     }
                     if (_cursorScroll is not null
-                        && _inventoryPanel.IsPointInPanel(imx, imy, _window.Size.X, _window.Size.Y))
+                        && _inventoryPanel.IsPointInPanel(imx, imy, _window.FramebufferSize.X, _window.FramebufferSize.Y))
                     {
                         var spell = _cursorScroll;
                         ActiveInventory.Add(new SiegeFX.Core.Actors.LootEntry(
@@ -11478,7 +11478,7 @@ void main()
                         if (_cursorItem is null)
                         {
                             int mIdx = _companionInvPanel.TryHitTestItem(imx, imy,
-                                _window.Size.X, _window.Size.Y, memberBag, TryGetItemGridSize);
+                                _window.FramebufferSize.X, _window.FramebufferSize.Y, memberBag, TryGetItemGridSize);
                             if (mIdx >= 0)
                             {
                                 var clicked = memberBag[mIdx];
@@ -11493,7 +11493,7 @@ void main()
                             return;
                         }
                         int occupied = _companionInvPanel.TryHitTestItem(imx, imy,
-                            _window.Size.X, _window.Size.Y, memberBag, TryGetItemGridSize);
+                            _window.FramebufferSize.X, _window.FramebufferSize.Y, memberBag, TryGetItemGridSize);
                         if (occupied < 0)
                         {
                             // Keep Fill + BookSpells riding the transfer (a
@@ -11521,10 +11521,10 @@ void main()
                     // scroll-pickup intent. Non-scroll items still go
                     // through the existing intra-grid drag path below.
                     if (_cursorScroll is null && _cursorItem is null && _spellCatalog is not null
-                        && _inventoryPanel.IsPointInPanel(imx, imy, _window.Size.X, _window.Size.Y))
+                        && _inventoryPanel.IsPointInPanel(imx, imy, _window.FramebufferSize.X, _window.FramebufferSize.Y))
                     {
                         int idx = _inventoryPanel.TryHitTestItem(imx, imy,
-                            _window.Size.X, _window.Size.Y, ActiveInventory, TryGetItemGridSize);
+                            _window.FramebufferSize.X, _window.FramebufferSize.Y, ActiveInventory, TryGetItemGridSize);
                         if (idx >= 0)
                         {
                             // SC-CTRL-DROP — Ctrl+click an inventory item:
@@ -11570,7 +11570,7 @@ void main()
                     // press; MouseUp releases.
                     if (_charPanelOpen && _player is not null
                         && _paperdoll.IsPointInViewButton(imx, imy,
-                               _paperdollRect.X, _paperdollRect.Y, _window.Size.Y))
+                               _paperdollRect.X, _paperdollRect.Y, _window.FramebufferSize.Y))
                     {
                         _pdViewActive = true;
                         _pdViewYaw = 0f;
@@ -11581,7 +11581,7 @@ void main()
                     // INFORAIL-PAPERDOLL-INTERACT — paperdoll slot click.
                     if (_charPanelOpen && _player is not null)
                     {
-                        var sz = _window.Size;
+                        var sz = _window.FramebufferSize;
                         // SC-HUD-DRAG — anchor to the LIVE (possibly dragged)
                         // sheet rect so slot clicks land wherever it sits.
                         var slotName = _paperdoll.TryHitTestSlot(imx, imy,
@@ -11600,10 +11600,10 @@ void main()
                     // hit on a panel-internal click means empty cell.
                     if (_cursorItem is not null && _inventoryOpen
                         && _inventoryPanel.IsPointInPanel(imx, imy,
-                                _window.Size.X, _window.Size.Y))
+                                _window.FramebufferSize.X, _window.FramebufferSize.Y))
                     {
                         int existingIdx = _inventoryPanel.TryHitTestItem(imx, imy,
-                            _window.Size.X, _window.Size.Y, ActiveInventory, TryGetItemGridSize);
+                            _window.FramebufferSize.X, _window.FramebufferSize.Y, ActiveInventory, TryGetItemGridSize);
                         if (existingIdx < 0)
                         {
                             // Empty cell — drop item into inventory.
@@ -11655,9 +11655,9 @@ void main()
                         // splinter).
                     }
                     _inventoryPanel.OnMouseDown(imx, imy,
-                        _window.Size.X, _window.Size.Y, ActiveInventory, TryGetItemGridSize);
+                        _window.FramebufferSize.X, _window.FramebufferSize.Y, ActiveInventory, TryGetItemGridSize);
                     if (_inventoryPanel.IsPointInPanel(imx, imy,
-                            _window.Size.X, _window.Size.Y))
+                            _window.FramebufferSize.X, _window.FramebufferSize.Y))
                         return;
                     // LMB outside the panel with inventory still open: skip the
                     // panel and fall through so a click-to-move still works while
@@ -11671,11 +11671,11 @@ void main()
                     if (_inventoryOpen && _cursorItem is null && _cursorScroll is null
                         && _window is not null)
                     {
-                        int lmx = (int)m.Position.X, lmy = (int)m.Position.Y;
-                        if (_inventoryPanel.IsPointInPanel(lmx, lmy, _window.Size.X, _window.Size.Y))
+                        int lmx = (int)MousePx(m).X, lmy = (int)MousePx(m).Y;
+                        if (_inventoryPanel.IsPointInPanel(lmx, lmy, _window.FramebufferSize.X, _window.FramebufferSize.Y))
                         {
                             int li = _inventoryPanel.TryHitTestItem(lmx, lmy,
-                                _window.Size.X, _window.Size.Y, ActiveInventory, TryGetItemGridSize);
+                                _window.FramebufferSize.X, _window.FramebufferSize.Y, ActiveInventory, TryGetItemGridSize);
                             if (li >= 0 && li < ActiveInventory.Count
                                 && TryOpenLoreBook(ActiveInventory[li].Reference))
                                 return;
@@ -11716,7 +11716,7 @@ void main()
                     // moved to middle-mouse, DS1's authored binding); it
                     // only records the press point so MouseUp can fire the
                     // tap action (talk / attack / cast).
-                    _rmbDownPos = m.Position;
+                    _rmbDownPos = MousePx(m);
                     // SC-RMB-FORMATION — arm the formation modal.
                     _rmbHeld = true;
                     _rmbModalUsed = false;
@@ -11771,12 +11771,12 @@ void main()
                 // fired, matching DS1's move-on-press feel).
                 else if (btn == MouseButton.Left)
                 {
-                    _lmbWorldDownPos = m.Position;
+                    _lmbWorldDownPos = MousePx(m);
                     _lmbDownAtMs = Environment.TickCount64;
                     _marqueeActive = false;
-                    if (!TryClickToTalk(m.Position) && !DispatchAbilityClick(m.Position))
+                    if (!TryClickToTalk(MousePx(m)) && !DispatchAbilityClick(MousePx(m)))
                     {
-                        TryClickToMove(m.Position);
+                        TryClickToMove(MousePx(m));
                         // SC-HOLD-MOVE — keep steering while held.
                         _lmbWorldMoveHeld = true;
                         _lmbMoveRepeatIn = 0.15f;
@@ -11807,16 +11807,16 @@ void main()
                 if (btn == MouseButton.Left && _cursorItem is not null
                     && _charPanelOpen && _player is not null)
                 {
-                    int rmx = (int)m.Position.X, rmy = (int)m.Position.Y;
+                    int rmx = (int)MousePx(m).X, rmy = (int)MousePx(m).Y;
                     var relSlot = _paperdoll.TryHitTestSlot(rmx, rmy,
-                        _paperdollRect.X, _paperdollRect.Y, _window.Size.Y);
+                        _paperdollRect.X, _paperdollRect.Y, _window.FramebufferSize.Y);
                     // SC-FORGIVING-DROP (blindspot E5) — the manual: an item
                     // dropped ANYWHERE on the Equipment Panel lands in its
                     // correct slot. When the release misses every slot rect
                     // but sits inside the panel, resolve the item's own slot.
                     if (relSlot is null
                         && _paperdoll.IsPointInPanel(rmx, rmy,
-                               _paperdollRect.X, _paperdollRect.Y, _window.Size.Y))
+                               _paperdollRect.X, _paperdollRect.Y, _window.FramebufferSize.Y))
                         relSlot = PaperdollSlotForItem(_cursorItem.Value.Reference);
                     if (relSlot is not null
                         && !string.Equals(PaperdollSlotToEsTag(relSlot) ?? "",
@@ -11888,8 +11888,8 @@ void main()
                     _portraitDragActive = false;
                     _teamPortraits.GrabbedPartyIndex = -1;
                     int followerCellsUp = _party.Count - 1;
-                    var thUp = _teamPortraits.HitTest((int)m.Position.X, (int)m.Position.Y,
-                        _window.Size.Y, followerCellsUp + (PlayerSummon is not null ? 1 : 0));
+                    var thUp = _teamPortraits.HitTest((int)MousePx(m).X, (int)MousePx(m).Y,
+                        _window.FramebufferSize.Y, followerCellsUp + (PlayerSummon is not null ? 1 : 0));
                     if (dragged && thUp.Kind != Hud.TeamPortraits.HitKind.None
                         && thUp.Member < followerCellsUp && thUp.Member + 1 != pressIdx)
                     {
@@ -11913,7 +11913,7 @@ void main()
                 if (btn == MouseButton.Left && _marqueeActive)
                 {
                     if (Environment.TickCount64 - _lmbDownAtMs < 600)
-                        ApplyMarqueeSelection(m.Position);
+                        ApplyMarqueeSelection(MousePx(m));
                     _marqueeActive = false;
                     _lmbWorldDownPos = null;
                     return;
@@ -11928,15 +11928,15 @@ void main()
                     // SC-VIEW-ROTATE — releasing ends the character spin.
                     if (_pdViewActive) { _pdViewActive = false; return; }
                     var dbClick = _dataBar.MouseUp(
-                        _window.Size.X, _window.Size.Y,
-                        (int)m.Position.X, (int)m.Position.Y);
+                        _window.FramebufferSize.X, _window.FramebufferSize.Y,
+                        (int)MousePx(m).X, (int)MousePx(m).Y);
                     if (dbClick is not null) { OnDataBarClick(dbClick.Value); return; }
                     // SC-DATABAR-DOCK — finish the relocate drag: released
                     // in the opposite half → dock there; persists via prefs.
                     if (_dataBarDragArm)
                     {
                         _dataBarDragArm = false;
-                        bool wantTop = m.Position.Y < _window.Size.Y * 0.5f;
+                        bool wantTop = MousePx(m).Y < _window.FramebufferSize.Y * 0.5f;
                         if (wantTop != Hud.DataBar.DockTop)
                         {
                             Hud.DataBar.DockTop = wantTop;
@@ -11963,12 +11963,12 @@ void main()
                         else
                         {
                             var sz = _window.FramebufferSize;
-                            _creator.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                            _creator.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                             // SC-CD-PREVNEXT-WIRE — also commit Previous/Next
                             // clicks. Without this the press registered (in
                             // OnMouseDown) but the up never matched, so the
                             // Previous button silently did nothing.
-                            _csMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                            _csMenu.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                         }
                     }
                     return;
@@ -11980,17 +11980,17 @@ void main()
                 if (_optionsMenu.IsOpen && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _optionsMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _optionsMenu.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 // SC-DEVMODE — dev console buttons dispatch on mouse-up.
                 if (_devConsoleOpen && btn == MouseButton.Left
-                    && DevConsoleClick((int)m.Position.X, (int)m.Position.Y))
+                    && DevConsoleClick((int)MousePx(m).X, (int)MousePx(m).Y))
                     return;
                 // SC-DEFEAT — YES/NO/HELP commit on mouse-up.
                 if (DefeatDialogActive && btn == MouseButton.Left)
                 {
-                    DefeatClick((int)m.Position.X, (int)m.Position.Y, isUp: true);
+                    DefeatClick((int)MousePx(m).X, (int)MousePx(m).Y, isUp: true);
                     return;
                 }
                 // SC-MAINMENU-LOADGAME — frontend Load window click-up commits
@@ -12002,7 +12002,7 @@ void main()
                         return;
                     var fb = _window.FramebufferSize;
                     HandleLoadDialogResult(
-                        _loadDialog.OnMouseUp((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y));
+                        _loadDialog.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, fb.X, fb.Y));
                     return;
                 }
                 // Phase 24-MAINMENU step 5+6 — main menu click-up commits
@@ -12013,7 +12013,7 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _mainMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _mainMenu.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 if (_bootMode && _frontendScene is not null
@@ -12021,7 +12021,7 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _spMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _spMenu.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 if (_bootMode && _frontendScene is not null
@@ -12029,8 +12029,8 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _creator.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
-                    _csMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _creator.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
+                    _csMenu.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 if (_bootMode && _frontendScene is not null
@@ -12038,7 +12038,7 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _diffMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _diffMenu.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 if (_bootMode && _frontendScene is not null
@@ -12046,7 +12046,7 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _mpMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _mpMenu.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 if (_bootMode && _frontendScene is not null
@@ -12055,7 +12055,7 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _mpSession.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _mpSession.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 if (_bootMode && _frontendScene is not null
@@ -12063,33 +12063,33 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
-                    _mpStaging.OnMouseUp((int)m.Position.X, (int)m.Position.Y, sz.X, sz.Y);
+                    _mpStaging.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
                 if (_saveDialog.IsOpen && btn == MouseButton.Left)
                 {
                     var fb = _window.FramebufferSize;
                     HandleSaveDialogResult(
-                        _saveDialog.OnMouseUp((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y));
+                        _saveDialog.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, fb.X, fb.Y));
                     return;
                 }
                 if (_loadDialog.IsOpen && btn == MouseButton.Left)
                 {
                     var fb = _window.FramebufferSize;
                     HandleLoadDialogResult(
-                        _loadDialog.OnMouseUp((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y));
+                        _loadDialog.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, fb.X, fb.Y));
                     return;
                 }
                 if (_handbook.IsOpen && btn == MouseButton.Left)
                 {
                     var fb = _window.FramebufferSize;
                     HandleHandbookResult(
-                        _handbook.OnMouseUp((int)m.Position.X, (int)m.Position.Y, fb.X, fb.Y));
+                        _handbook.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, fb.X, fb.Y));
                     return;
                 }
                 if (_pauseMenu.IsOpen && btn == MouseButton.Left)
                 {
-                    HandleInGameMenuAction(_pauseMenu.OnMouseUp((int)m.Position.X, (int)m.Position.Y));
+                    HandleInGameMenuAction(_pauseMenu.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y));
                     return;
                 }
                 // Phase 20d — vendor LMB-up. Resolve the press to a Buy/Sell
@@ -12100,8 +12100,8 @@ void main()
                 {
                     if (btn == MouseButton.Left)
                     {
-                        var act = _vendor.OnMouseUp((int)m.Position.X, (int)m.Position.Y,
-                                                    ActiveInventory.Count, _window.Size.X, _window.Size.Y);
+                        var act = _vendor.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y,
+                                                    ActiveInventory.Count, _window.FramebufferSize.X, _window.FramebufferSize.Y);
                         if (!act.IsNone) ApplyVendorAction(act);
                     }
                     return;
@@ -12110,7 +12110,7 @@ void main()
                 {
                     if (btn == MouseButton.Left)
                     {
-                        _dialogue.OnMouseUp((int)m.Position.X, (int)m.Position.Y);
+                        _dialogue.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y);
                         var questJoined = _dialogue.ConsumePendingQuestActivation();
                         // SC-ENDGAME — a node can author SEVERAL activate_quest
                         // values (the King grants quest_find_artifacts AND
@@ -12178,8 +12178,8 @@ void main()
                 // and swallows the up-edge when it landed on the parchment.
                 if (_questLogOpen && btn == MouseButton.Left)
                 {
-                    if (_questLogPanel.OnMouseUp((int)m.Position.X, (int)m.Position.Y,
-                                                 _window.Size.X, _window.Size.Y))
+                    if (_questLogPanel.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y,
+                                                 _window.FramebufferSize.X, _window.FramebufferSize.Y))
                         return;
                 }
                 // Phase 9-SC-9 — resolve a drag release. If the user moved the
@@ -12190,12 +12190,12 @@ void main()
                 if (btn == MouseButton.Left) _invArrangePressed = false;
                 if (_inventoryOpen && btn == MouseButton.Left)
                 {
-                    var drag = _inventoryPanel.OnMouseUp((int)m.Position.X, (int)m.Position.Y,
-                        _window.Size.X, _window.Size.Y, ActiveInventory, TryGetItemGridSize);
+                    var drag = _inventoryPanel.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y,
+                        _window.FramebufferSize.X, _window.FramebufferSize.Y, ActiveInventory, TryGetItemGridSize);
                     if (drag.Kind == InventoryPanel.ActionKind.DropToWorld)
                         DropInventoryItem(drag.ItemIndex);
-                    if (_inventoryPanel.IsPointInPanel((int)m.Position.X, (int)m.Position.Y,
-                            _window.Size.X, _window.Size.Y))
+                    if (_inventoryPanel.IsPointInPanel((int)MousePx(m).X, (int)MousePx(m).Y,
+                            _window.FramebufferSize.X, _window.FramebufferSize.Y))
                         return;
                 }
                 // SC-CAM-MMB — middle-mouse release ends the camera orbit
@@ -12226,8 +12226,8 @@ void main()
                     // during an RMB hold, so the release position is reliable:
                     // compare it against the press point directly. A nearly-
                     // zero drift means the user tapped without dragging.
-                    float rmbDrift = MathF.Abs(m.Position.X - _rmbDownPos.X)
-                                   + MathF.Abs(m.Position.Y - _rmbDownPos.Y);
+                    float rmbDrift = MathF.Abs(MousePx(m).X - _rmbDownPos.X)
+                                   + MathF.Abs(MousePx(m).Y - _rmbDownPos.Y);
                     if (rmbDrift <= RmbClickDriftPx && !rmbModalConsumed)
                     {
                         // Phase 20a — talk before attack. If the click landed on
@@ -12277,8 +12277,9 @@ void main()
                     }
                 }
             };
-            mouse.MouseMove += (_, pos) =>
+            mouse.MouseMove += (_, rawPos) =>
             {
+                var pos = ToFramebufferPx(rawPos);
                 // Phase 21-SC-SCROLL-PRE — track the latest mouse position for
                 // any UI that needs cursor-anchored rendering (the spell-scroll
                 // drag follows the cursor across panels). _lastMousePos below
@@ -12295,14 +12296,14 @@ void main()
                 // Phase 22-A SC-HUD-DATABAR — keep hover state fresh so per-
                 // button textures swap to _hov on rollover. Per-frame cost is
                 // 7 rect tests; negligible.
-                _dataBar.UpdateHover(_window.Size.X, _window.Size.Y, (int)pos.X, (int)pos.Y);
+                _dataBar.UpdateHover(_window.FramebufferSize.X, _window.FramebufferSize.Y, (int)pos.X, (int)pos.Y);
                 // INFORAIL — AWP button hover swap. Tracks rail state so
                 // CharacterAwp swaps to the -hov atlas when the cursor is
                 // over either the wide Inventory button or the close arrow.
                 bool awpRailOpen = _charPanelOpen || _inventoryOpen ||
                                   (_spellBookOpen && _spellbookOpenedWithI);
                 _awpHover = _characterAwp.HitTest((int)pos.X, (int)pos.Y,
-                                                  _window.Size.Y, awpRailOpen || _awpExpertMode);
+                                                  _window.FramebufferSize.Y, awpRailOpen || _awpExpertMode);
                 // Phase 21d-2a-viii-b — creator hover updates so ◄► buttons
                 // highlight under the cursor.
                 if (_creator.IsOpen)
@@ -12367,7 +12368,7 @@ void main()
                     _dialogue.OnMouseMove((int)pos.X, (int)pos.Y);
                 if (_vendor.IsOpen)
                     _vendor.OnMouseMove((int)pos.X, (int)pos.Y,
-                                        ActiveInventory.Count, _window.Size.X, _window.Size.Y);
+                                        ActiveInventory.Count, _window.FramebufferSize.X, _window.FramebufferSize.Y);
                 if (_inventoryOpen)
                     _inventoryPanel.OnMouseMove((int)pos.X, (int)pos.Y);
                     // SC-INV-ARRANGE — hover state for the arrange button's
@@ -12377,7 +12378,7 @@ void main()
                 // SC-QUEST-UI-C — journal button / arrow / corner-X hover so
                 // the jbox faces + arrows highlight under the cursor.
                 if (_questLogOpen)
-                    _questLogPanel.OnMouseMove((int)pos.X, (int)pos.Y, _window.Size.X, _window.Size.Y);
+                    _questLogPanel.OnMouseMove((int)pos.X, (int)pos.Y, _window.FramebufferSize.X, _window.FramebufferSize.Y);
                 // Phase 23-SC-OPTIONS-A — hover state for tab + bottom
                 // buttons so the options dialog highlights under the cursor.
                 if (_optionsMenu.IsOpen)
@@ -17264,7 +17265,7 @@ void main()
 
     private bool TryBeginHudDrag(int mx, int my)
     {
-        int vw = _window.Size.X, vh = _window.Size.Y;
+        int vw = _window.FramebufferSize.X, vh = _window.FramebufferSize.Y;
         var (cxr, cyr, csz) = CompassRect(vw, vh);
         if (mx >= cxr && mx < cxr + csz && my >= cyr && my < cyr + csz)
         {
@@ -17343,7 +17344,7 @@ void main()
 
     private void MoveHudDrag(int mx, int my)
     {
-        int vw = _window.Size.X, vh = _window.Size.Y;
+        int vw = _window.FramebufferSize.X, vh = _window.FramebufferSize.Y;
         if (vw <= 0 || vh <= 0) return;
         // Clamp so a piece can't be flung entirely off-screen and lost.
         float nx = Math.Clamp((mx - _hudDragOffX) / (float)vw, 0f, 0.95f);
@@ -17383,7 +17384,7 @@ void main()
     private void SnapHudPieceOnRelease(HudDragPiece piece)
     {
         const int Th = 14; // snap threshold, device px
-        int vw = _window.Size.X, vh = _window.Size.Y;
+        int vw = _window.FramebufferSize.X, vh = _window.FramebufferSize.Y;
         if (vw <= 0 || vh <= 0) return;
         var s = _optionsMenu.Live;
 
@@ -17489,7 +17490,7 @@ void main()
     /// the piece tracks the cursor live.</summary>
     private void ApplyHudPieceOffsets()
     {
-        int vw = _window.Size.X, vh = _window.Size.Y;
+        int vw = _window.FramebufferSize.X, vh = _window.FramebufferSize.Y;
         var s = _optionsMenu.Live;
         _characterAwp.OffsetX = s.AwpPosX >= 0f ? (int)MathF.Round(s.AwpPosX * vw) : 0;
         _characterAwp.OffsetY = s.AwpPosY >= 0f ? (int)MathF.Round(s.AwpPosY * vh) : 0;
@@ -26507,6 +26508,21 @@ void main()
         return !IsPosInFadedSnode(p);
     }
 
+    /// <summary>Mouse positions arrive in window coordinates, but the HUD,
+    /// hit-tests and picks all work in framebuffer pixels. They match on
+    /// Windows and Linux; on a Retina Mac the framebuffer is 2x the window,
+    /// so an unscaled cursor only reaches the top-left quarter.</summary>
+    private Vector2 ToFramebufferPx(Vector2 windowPos)
+    {
+        if (_window is null) return windowPos;
+        var ws = _window.Size;
+        var fb = _window.FramebufferSize;
+        if (ws.X <= 0 || ws.Y <= 0) return windowPos;
+        return new Vector2(windowPos.X * fb.X / ws.X, windowPos.Y * fb.Y / ws.Y);
+    }
+
+    private Vector2 MousePx(IMouse mouse) => ToFramebufferPx(mouse.Position);
+
     /// <summary>SC-SCREEN-PICK — pick the actor whose SCREEN body the
     /// cursor is on: project the feet→head segment of every candidate to
     /// screen and take the one nearest the cursor (camera depth breaks
@@ -30016,7 +30032,7 @@ void main()
         // SC-COMPANION-SPELLBOOK — members with a spell book occupy a double
         // slot (bag + their spell panel), so routing walks the published
         // per-tile layout instead of assuming a uniform stride.
-        int stride = Hud.InventoryPanel.PanelWidth(_window.Size.Y);
+        int stride = Hud.InventoryPanel.PanelWidth(_window.FramebufferSize.Y);
         foreach (var (pidx, x, _) in _companionTileLayout)
             if (mx >= x && mx < x + stride)
                 return (pidx, x, cr.Y);
@@ -32193,12 +32209,12 @@ void main()
         var cr = _companionRowRect;
         if (cr.W <= 0 || _companionTileLayout.Count == 0) return null;
         if (my < cr.Y || my >= cr.Y + cr.H) return null;
-        int stride = Hud.InventoryPanel.PanelWidth(_window.Size.Y);
+        int stride = Hud.InventoryPanel.PanelWidth(_window.FramebufferSize.Y);
         foreach (var (pidx, x, hasBook) in _companionTileLayout)
         {
             if (!hasBook) continue;
             int sx = x + stride;
-            if (mx >= sx && mx < sx + Hud.SpellBookPanel.WidthAt(_window.Size.Y))
+            if (mx >= sx && mx < sx + Hud.SpellBookPanel.WidthAt(_window.FramebufferSize.Y))
                 return (pidx, sx, cr.Y);
         }
         return null;
@@ -33516,7 +33532,7 @@ void main()
     /// panel can flip the cursor or raise a tip through it.</summary>
     private bool CursorOverUiPanel(int mx, int my)
     {
-        var sz = _window.Size;
+        var sz = _window.FramebufferSize;
         if (_inventoryOpen && _inventoryPanel.IsPointInPanel(mx, my, sz.X, sz.Y)) return true;
         var cr = _companionRowRect;
         if (_inventoryOpen && cr.W > 0
@@ -37119,7 +37135,7 @@ void main()
         // heals never consider enemies.
         if (spell.Kind == SiegeFX.Core.Assets.SpellKind.SelfHeal)
         {
-            best = TryPickPartyMemberAt(_input.Mice[0].Position);
+            best = TryPickPartyMemberAt(MousePx(_input.Mice[0]));
             BeginPlayerCast(slot, spell, best, prop: null, magicLevel);
             return;
         }
@@ -37129,7 +37145,7 @@ void main()
         if (spell.Kind == SiegeFX.Core.Assets.SpellKind.Other
             && (spell.Enchantments.Count > 0 || spell.ReactiveArmorScript.Length > 0))
         {
-            best = TryPickPartyMemberAt(_input.Mice[0].Position);
+            best = TryPickPartyMemberAt(MousePx(_input.Mice[0]));
             BeginPlayerCast(slot, spell, best, prop: null, magicLevel);
             return;
         }
@@ -37138,7 +37154,7 @@ void main()
         // cast with no target at all.
         if (spell.Kind == SiegeFX.Core.Assets.SpellKind.Other && spell.SwitchesAlignment)
         {
-            var pacTgt = PickActorAtCursor(_input.Mice[0].Position, s2 =>
+            var pacTgt = PickActorAtCursor(MousePx(_input.Mice[0]), s2 =>
                 !s2.IsDead && !s2.IsPlayer && !s2.IsPartyMember
                 && s2.Actor.Stats.IsCombatant && s2.IsEvilAligned && s2.IsSelectable);
             if (pacTgt is null) { AddFloatingText("no target", playerPos + new Vector3(0f, 2.1f, 0f), new Vector4(0.85f, 0.85f, 0.85f, 1f)); return; }
@@ -37158,7 +37174,7 @@ void main()
         // corpse spells from its dead-target abort).
         if (spell.TargetsDeadEnemy)
         {
-            var corpse = TryPickCorpseAt(_input.Mice[0].Position);
+            var corpse = TryPickCorpseAt(MousePx(_input.Mice[0]));
             if (corpse is null) return;
             var cp = corpse.CurrentTransform.Translation;
             float kdx = cp.X - playerPos.X, kdz = cp.Z - playerPos.Z;
@@ -37187,7 +37203,7 @@ void main()
         if (spell.Kind == SiegeFX.Core.Assets.SpellKind.OffensiveInstantHit)
         {
             if (_actors.Count == 0) return;
-            var cursor = _input.Mice[0].Position;
+            var cursor = MousePx(_input.Mice[0]);
             var size = _window.FramebufferSize;
             if (size.X <= 0 || size.Y <= 0) return;
 
@@ -41207,7 +41223,7 @@ void main()
                 int mx = -1, my = -1;
                 if (_input is not null && _input.Mice.Count > 0)
                 {
-                    var mp = _input.Mice[0].Position;
+                    var mp = MousePx(_input.Mice[0]);
                     mx = (int)mp.X;
                     my = (int)mp.Y;
                 }
