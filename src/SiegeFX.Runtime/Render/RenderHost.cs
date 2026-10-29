@@ -7899,12 +7899,17 @@ public sealed class RenderHost : IDisposable
         if (p is null) return default;
         var t = p.CurrentTransform.Translation;
         float yaw = MathF.Atan2(_playerFacing.X, _playerFacing.Z);
-        ushort life = (ushort)System.Math.Clamp((int)p.Actor.Combat.CurrentLife, 0, ushort.MaxValue);
+        ushort life = MpWireLife(p.Actor.Combat.CurrentLife);
         byte flags = 0;
         if (p.IsMoving) flags |= (byte)SiegeFX.Core.Net.MpPlayerFlags.Moving;
         if (p.IsDead)   flags |= (byte)SiegeFX.Core.Net.MpPlayerFlags.Dead;
         return new SiegeFX.Core.Net.MpPlayerState(0, t.X, t.Y, t.Z, yaw, life, flags, MpChoreOf(p));
     }
+
+    // Life on the wire is whole points and 0 means dead: a mob at 0.1 rounded
+    // down read as a corpse on clients while it went on fighting on the host.
+    private static ushort MpWireLife(float life) =>
+        life <= 0f ? (ushort)0 : (ushort)Math.Clamp((int)MathF.Ceiling(life), 1, ushort.MaxValue);
 
     // Co-op: the swing/cast an actor last started, for the other machines to replay.
     private static SiegeFX.Core.Net.MpChore MpChoreOf(ActorRenderState a)
@@ -7944,7 +7949,7 @@ public sealed class RenderHost : IDisposable
             var pos = a.CurrentTransform.Translation;
             list.Add(new SiegeFX.Core.Net.MpActorState(
                 a.Actor.Instance.Scid, pos.X, pos.Y, pos.Z,
-                (ushort)System.Math.Clamp((int)a.Actor.Combat.CurrentLife, 0, ushort.MaxValue),
+                MpWireLife(a.Actor.Combat.CurrentLife),
                 MpChoreOf(a)));
         }
         return list;
@@ -8322,7 +8327,7 @@ public sealed class RenderHost : IDisposable
                     var p = a.CurrentTransform.Translation;
                     list.Add(new SiegeFX.Core.Net.MpActorState(
                         a.Actor.Instance.Scid, p.X, p.Y, p.Z,
-                        (ushort)System.Math.Clamp((int)a.Actor.Combat.CurrentLife, 0, ushort.MaxValue)));
+                        MpWireLife(a.Actor.Combat.CurrentLife)));
                 }
                 return list;
             };
