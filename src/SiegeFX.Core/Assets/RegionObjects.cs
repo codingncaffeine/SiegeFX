@@ -94,6 +94,31 @@ public static class RegionObjects
     /// pickable-item partition is data-driven and visible at a glance.</summary>
     public const string WorldInventoryFile = "inventory.gas";
 
+    /// <summary>Which world level's object set to read where a map authors
+    /// several. multiplayer_world (Maps/MpWorld.dsmap, main.gas <c>[worlds]</c>
+    /// regular / veteran / elite) ships every region's objects under
+    /// <c>objects/&lt;level&gt;/</c> (806 files each) and none flat; map_world
+    /// keeps them flat in <c>objects/</c>, so this only matters for the former.</summary>
+    public static string WorldLevel { get; set; } = "regular";
+
+    /// <summary>The directory (trailing slash) a region's object .gas files live
+    /// in: <c>{region}/objects/</c>, or <c>{region}/objects/{WorldLevel}/</c>
+    /// when the region has no flat object files but that level's set exists.
+    /// Callers that enumerate object files use this as their prefix.</summary>
+    public static string ObjectsPrefix(TankReader tank, string regionPath)
+    {
+        var flat = regionPath.TrimEnd('/') + "/objects/";
+        foreach (var f in ProbeFiles)
+            if (tank.TryGetFile(flat + f, out _)) return flat;
+        var level = flat + WorldLevel + "/";
+        foreach (var f in ProbeFiles)
+            if (tank.TryGetFile(level + f, out _)) return level;
+        return flat;
+    }
+
+    static readonly string[] ProbeFiles =
+        { "actor.gas", "non_interactive.gas", "special.gas", "generator.gas", "container.gas", "interactive.gas" };
+
     public static (IReadOnlyList<ActorInstance> Actors, IReadOnlyList<string> Diagnostics) LoadActors(
         TankReader tank, string regionPath) =>
         LoadPlacements(tank, regionPath, "actor.gas");
@@ -109,6 +134,9 @@ public static class RegionObjects
         var diags = new List<string>();
         var norm = regionPath.TrimEnd('/');
         var actorPath = norm + "/objects/" + fileName;
+        // multiplayer_world: the object files sit one level down, per world level.
+        if (!tank.TryGetFile(actorPath, out _))
+            actorPath = ObjectsPrefix(tank, norm) + fileName;
 
         if (!tank.TryGetFile(actorPath, out _))
         {
