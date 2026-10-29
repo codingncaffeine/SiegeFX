@@ -92,4 +92,25 @@ public class GasDocumentTests
         var utf16 = new byte[] { 0xFF, 0xFE, (byte)'[', 0 };
         Assert.Throws<InvalidDataException>(() => GasDocument.Load(utf16));
     }
+
+    [Fact]
+    public void StrayQuoteLeftOpenToEofClosesAtTheLineBreak()
+    {
+        // The Czech translation's tooltips.gas authors a doubled closing quote,
+        // leaving an odd quote that would otherwise run to the end of the file.
+        var doc = GasDocument.Parse("[a]\n{\n\tx = \"one\"\";\n\ty = 2;\n}\n");
+        var a = Assert.Single(doc.Roots);
+        Assert.Equal("\"one\"\"", a.Attributes[0].Value);
+        Assert.Equal("2", a.Attributes[1].Value);
+    }
+
+    [Fact]
+    public void QuotedValuesMaySpanLines()
+    {
+        // Shipped saves and effect scripts author multi-line quoted values.
+        var doc = GasDocument.Parse("[a]\n{\n\tcmd = \"line one;\n\tline two\";\n\ty = 2;\n}\n");
+        var a = Assert.Single(doc.Roots);
+        Assert.Equal("\"line one;\n\tline two\"", a.Attributes[0].Value);
+        Assert.Equal("2", a.Attributes[1].Value);
+    }
 }
