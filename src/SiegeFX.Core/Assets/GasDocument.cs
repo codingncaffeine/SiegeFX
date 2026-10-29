@@ -29,7 +29,20 @@ public sealed class GasDocument
                 throw new InvalidDataException("GAS file has UTF-16 BE BOM; DS1 ships ASCII/UTF-8 only");
         }
         if (s.Length >= 3 && s[0] == 0xEF && s[1] == 0xBB && s[2] == 0xBF) s = s[3..];
-        return Parse(System.Text.Encoding.UTF8.GetString(s));
+        return Parse(DecodeText(s));
+    }
+
+    static readonly System.Text.Encoding StrictUtf8 =
+        new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    /// <summary>Decodes DS1 text (GAS, skrit). Valid UTF-8 reads as UTF-8; anything
+    /// else is a code-page file (cp1252 retail, cp1250 Czech/Polish translations)
+    /// and reads byte for byte as Latin-1, so each char keeps its byte value: DS1's
+    /// bitmap fonts index glyphs 32..255 by that byte, in the font's own code page.</summary>
+    public static string DecodeText(ReadOnlySpan<byte> bytes)
+    {
+        try { return StrictUtf8.GetString(bytes); }
+        catch (System.Text.DecoderFallbackException) { return System.Text.Encoding.Latin1.GetString(bytes); }
     }
 
     public static GasDocument Parse(string text)
@@ -165,11 +178,35 @@ public sealed class GasDocument
         private string ReadValueUntilSemicolon()
         {
             var start = _pos;
+            var startLine = _line;
+            var value = ReadValueUntilSemicolon(strayQuotes: false);
+            if (value is not null) return value;
+            // A stray quote (the Czech translation's `"...na obrazovce"";`) leaves
+            // a string open to EOF. DS1 reads past it; retry with a quote after a
+            // closed string read as a plain character until the line ends, which
+            // only changes values that failed above.
+            _pos = start;
+            _line = startLine;
+            return ReadValueUntilSemicolon(strayQuotes: true)
+                ?? throw Err("unterminated attribute value (missing ';')");
+        }
+
+        private string? ReadValueUntilSemicolon(bool strayQuotes)
+        {
+            var start = _pos;
             var inQuote = false;
+            var closedOnLine = false;
             while (_pos < _src.Length)
             {
                 var c = _src[_pos];
-                if (c == '"') { inQuote = !inQuote; _pos++; continue; }
+                if (c == '"' && !(strayQuotes && closedOnLine))
+                {
+                    inQuote = !inQuote;
+                    closedOnLine = !inQuote;
+                    _pos++;
+                    continue;
+                }
+                if (c == '\n') closedOnLine = false;
                 if (!inQuote && c == '[' && _pos + 1 < _src.Length && _src[_pos + 1] == '[')
                 {
                     _pos += 2;
@@ -193,7 +230,7 @@ public sealed class GasDocument
                 if (c == '\n') _line++;
                 _pos++;
             }
-            if (_pos >= _src.Length) throw Err("unterminated attribute value (missing ';')");
+            if (_pos >= _src.Length) return null;
             return _src[start.._pos];
         }
 

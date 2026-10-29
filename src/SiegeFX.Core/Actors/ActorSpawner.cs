@@ -659,7 +659,7 @@ public sealed class ActorSpawner
         }
         try
         {
-            var src = System.Text.Encoding.UTF8.GetString(bytes);
+            var src = GasDocument.DecodeText(bytes);
             var script = SkritParser.Parse(src);
             var bind = new SkritBinder(script).Bind();
             var program = new SkritCompiler(script, bind).Compile();
