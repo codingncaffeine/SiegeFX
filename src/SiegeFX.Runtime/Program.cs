@@ -186,6 +186,9 @@ else if (args.Length >= 1 && args[0] == "--play-region")
     playLogic     = args[3];
     playObjects   = args[4];
     regionPath    = args[5];
+    // New and loaded games relaunch into this branch, so it takes the same
+    // translation tanks the menu did.
+    ConfigureOverlayTanks(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(playLogic))!);
 }
 else if (args.Length >= 1 && args[0] == "--sfx-filmstrip")
 {
