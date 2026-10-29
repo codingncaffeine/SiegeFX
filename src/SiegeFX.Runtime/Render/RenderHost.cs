@@ -3197,7 +3197,7 @@ public sealed class RenderHost : IDisposable
         for (int i = 0; i < _actors.Count; i++)
         {
             var s = _actors[i];
-            if (s.IsPlayer || s.IsDead) continue;
+            if (s.IsPlayer || s.IsRemotePlayer || s.IsDead) continue;
             if (!s.Actor.Combat.ConsumeJustDied()) continue;
             // SC-DOWNED — a party member's first fall is UNCONSCIOUS, not
             // dead (manual: healable back up; death only past the authored
@@ -6445,6 +6445,15 @@ public sealed class RenderHost : IDisposable
                     session.SendLootSpawn(pl.NetId, pl.Position.X, pl.Position.Y, pl.Position.Z,
                                           PileWireEntries(pl), toPeer: id);
                 }
+            // ...and on every generator-spawned mob already alive, which the
+            // client never spawns itself.
+            if (session.IsHost)
+                foreach (var a in _actors)
+                    if (MpIsHostSpawnedMob(a) && !a.IsDead)
+                    {
+                        var p = a.CurrentTransform.Translation;
+                        session.SendActorSpawn(a.Actor.Instance.Scid, a.Actor.Template.Name, p.X, p.Y, p.Z, toPeer: id);
+                    }
         };
         // SC-MP-PLAYERS — character cards + in-game chat overlay.
         session.OnPlayerInfo = MpApplyPlayerInfo;
@@ -6455,6 +6464,12 @@ public sealed class RenderHost : IDisposable
         // inside session.Tick on the render thread.
         session.OnItemGive = (from, _, slot, itemRef) => MpOnItemGive(from, slot, itemRef);
         session.OnRecruitGrant = MpOnRecruitGrant;
+        session.OnPropBreak = MpOnPropBreak;
+        if (!asHost)
+        {
+            session.OnPlayerHit = MpOnPlayerHit;
+            session.OnActorSpawn = MpOnActorSpawn;
+        }
         if (asHost)
         {
             session.OnLootTake = MpOnLootTakeHost;
@@ -6469,6 +6484,7 @@ public sealed class RenderHost : IDisposable
         if (!asHost) session.ApplyDelta = MpApplyWorldDelta; // P3 — host-owned enemies
         if (!asHost) session.OnJoinAccepted = id =>
         {
+            MpRemoveRemoteAvatar(id); // never draw ourselves as a remote player
             _mpPlayerNames[id] = name;
             _mpLastSentInfo = null;   // (re)announce our card to the host
             MpToast("Joined — playing with the host");
@@ -6522,6 +6538,7 @@ public sealed class RenderHost : IDisposable
         _eosTick?.Invoke();
         MpPumpEos(_mpTransport);
         _mpNetSession?.Tick(_frameDtSeconds);
+        MpForwardRemoteAvatarDamage();
         MpInterpolateRemoteActors((float)_frameDtSeconds);
         // SC-MP-PLAYERS — publish our character card when it changes (join,
         // level-up, rename). Checked on a 2s cadence; record equality keeps
@@ -8013,6 +8030,21 @@ public sealed class RenderHost : IDisposable
     // (suppress their local AI) and index them by authored SCID. The region is
     // identical on both machines, so SCIDs match; static props aren't network-
     // owned — they're already placed correctly by the shared region load.
+    private int _mpIndexedActorCount = -1;
+
+    // Neighbour regions stream their placed mobs in as the party walks; the
+    // host drives those too (same authored scids on both machines).
+    private void MpIndexStreamedActors()
+    {
+        _mpIndexedActorCount = _actors.Count;
+        foreach (var a in _actors)
+        {
+            if (a.IsNetworkOwned || a.IsPlayer || a.IsRemotePlayer || a.IsPartyMember || a.Brain is null) continue;
+            a.IsNetworkOwned = true;
+            _mpScidIndex.TryAdd(a.Actor.Instance.Scid, a);
+        }
+    }
+
     private void MpMarkClientWorldActors()
     {
         _mpScidIndex.Clear();
@@ -8024,6 +8056,7 @@ public sealed class RenderHost : IDisposable
             _mpScidIndex[a.Actor.Instance.Scid] = a;
             n++;
         }
+        _mpIndexedActorCount = _actors.Count;
         SiegeFX.Core.Net.NetLog.Info($"client: {n} world actors are host-authoritative (local AI suppressed)");
     }
 
@@ -8032,6 +8065,7 @@ public sealed class RenderHost : IDisposable
     // from motion; life==0 propagates the host's kills so the corpse shows.
     private void MpApplyWorldDelta(uint tick, IReadOnlyList<SiegeFX.Core.Net.MpActorState> actors)
     {
+        if (_actors.Count != _mpIndexedActorCount) MpIndexStreamedActors();
         foreach (var st in actors)
         {
             if (!_mpScidIndex.TryGetValue(st.Scid, out var a)) continue;
@@ -8096,6 +8130,90 @@ public sealed class RenderHost : IDisposable
         if (best.Actor.Combat.ConsumeJustDied())
             HandleActorKilledByHit(best, dealt);
     }
+
+    // Generator children carry runtime scids (0xFE000001 up), handed out in
+    // spawn order. Only the host spawns them; clients mirror each one under
+    // the host's scid via ActorSpawn, so hits and deltas name the same mob.
+    private const uint GeneratorChildScidBase = 0xFE000001;
+    private static bool MpIsHostSpawnedMob(ActorRenderState a) =>
+        !a.IsPlayer && !a.IsRemotePlayer && !a.IsPartyMember && a.Brain is not null
+        && a.Actor.Instance.Scid >= GeneratorChildScidBase;
+
+    private bool MpIsInRegionClient =>
+        _mpNetSession is { IsHost: false }
+        && string.Equals(_mpInRegionRole, "client", StringComparison.OrdinalIgnoreCase);
+
+    // Client: mirror a host-spawned mob as a network-owned actor.
+    private void MpOnActorSpawn(uint scid, string template, float x, float y, float z)
+    {
+        if (_actorSpawner is null || _mpScidIndex.ContainsKey(scid)) return;
+        var inst = SiegeFX.Core.Assets.ActorInstance.CreateSynthetic(
+            template, scid, new Vector3(x, y, z), Quaternion.Identity);
+        var spawned = _actorSpawner.Spawn(new[] { inst });
+        if (spawned.Count == 0) { SiegeFX.Core.Net.NetLog.Warn($"host actor {scid:x8} '{template}' failed to spawn"); return; }
+        AttachActorsToScene(spawned, _navMesh);
+        foreach (var rs in _actors)
+            if (ReferenceEquals(rs.Actor, spawned[0]))
+            {
+                rs.IsNetworkOwned = true;
+                rs.NetTargetPos = new Vector3(x, y, z);
+                rs.NetHasTarget = true;
+                _mpScidIndex[scid] = rs;
+                SiegeFX.Core.Net.NetLog.Info($"client: mirrored host mob {template} {scid:x8}");
+                break;
+            }
+    }
+
+    // Host: enemies here fight remote avatars too (PickBrainQuarry). The
+    // avatar's owner keeps its life, so whatever an avatar lost this frame
+    // goes to that player and the stand-in is topped back up.
+    private void MpForwardRemoteAvatarDamage()
+    {
+        if (_mpNetSession is not { IsHost: true } host) return;
+        foreach (var a in _actors)
+        {
+            if (!a.IsRemotePlayer || a.NetPlayerId <= 0) continue;
+            float lost = a.Actor.Stats.MaxLife - a.Actor.Combat.CurrentLife;
+            if (lost <= 0f) continue;
+            host.SendPlayerHit(a.NetPlayerId, lost);
+            a.Actor.Combat.ResetToFull();
+        }
+    }
+
+    // Client: a host-run enemy hit our player.
+    private void MpOnPlayerHit(float damage)
+    {
+        if (_player is null || _player.IsDead) return;
+        float dealt = _player.Actor.Combat.ApplyDamage(damage);
+        if (dealt <= 0f) return;
+        SpawnBloodHit(_player);
+        AddFloatingText($"-{dealt:F0}", _player.CurrentTransform.Translation + new Vector3(0f, 1.8f, 0f),
+                        new Vector4(1f, 0.35f, 0.2f, 1f));
+    }
+
+    // Both: another machine shattered a breakable. Visuals only: whoever broke
+    // it rolled the loot, which reaches everyone through the host's piles.
+    private void MpOnPropBreak(uint scid)
+    {
+        foreach (var prop in _staticProps)
+        {
+            if (prop.Scid != scid || prop.IsDestroyed) continue;
+            prop.Life = 0f;
+            prop.IsDestroyed = true;
+            SpawnPropDebris(prop);
+            PlayPropBreakSfx(prop);
+            if (_particles is not null)
+            {
+                var origin = prop.World.Translation + new Vector3(0f, 0.4f, 0f);
+                _particles.SpawnSmoke(origin, new Vector4(1f, 1f, 1f, 1f), 0.8f, 1.2f, 12);
+                _particles.SpawnSpark(origin, new Vector4(0.85f, 0.7f, 0.45f, 1f), 0.6f, 0.6f, 14);
+            }
+            MarkAllObstacles();
+            return;
+        }
+    }
+
+    private void MpAnnouncePropBreak(StaticPropInstance prop) => _mpNetSession?.SendPropBreak(prop.Scid);
 
     // SC-MP-EOS P8 — stand up the host-authoritative session driver over the
     // active transport and enter the staging area. The engine supplies the
@@ -19207,6 +19325,7 @@ void main()
         if (prop.IsDestroyed) return;
         prop.Life = 0f;
         prop.IsDestroyed = true;
+        MpAnnouncePropBreak(prop);
         SpawnPropDebris(prop);
         LogPropLootDrop(prop);
         PlayPropBreakSfx(prop);
@@ -19504,6 +19623,7 @@ void main()
     private void SpawnGeneratorChild(GeneratorState g)
     {
         if (_actorSpawner is null) return;
+        if (MpIsInRegionClient) return; // the host spawns it and sends ActorSpawn
         var inst = SiegeFX.Core.Assets.ActorInstance.CreateSynthetic(
             g.ChildTemplate, _nextGeneratorChildScid++, g.Position, Quaternion.Identity);
         var spawned = _actorSpawner.Spawn(new[] { inst });
@@ -19526,6 +19646,14 @@ void main()
                         { rs.Brain.AssignPatrol(route, loops); break; }
             }
         }
+        if (_mpNetSession is { IsHost: true } mpHost)
+            foreach (var rs in _actors)
+                if (ReferenceEquals(rs.Actor, spawned[0]))
+                {
+                    var p = rs.CurrentTransform.Translation;
+                    mpHost.SendActorSpawn(inst.Scid, g.ChildTemplate, p.X, p.Y, p.Z);
+                    break;
+                }
         Console.WriteLine($"[generator] 0x{g.Scid:X8} spawned {g.ChildTemplate} ({onMesh} on-mesh / {offMesh} pinned)");
     }
 
@@ -21549,6 +21677,23 @@ void main()
         if (best is null && _player is not null && !_player.IsDead
             && !_player.Actor.Combat.Downed)
             best = _player;
+        // Co-op host: a remote player's avatar is party too; its owner takes
+        // the hits (MpForwardRemoteAvatarDamage).
+        if (_mpNetSession is { IsHost: true })
+            foreach (var a in _actors)
+            {
+                if (!a.IsRemotePlayer || a.IsDead) continue;
+                var p = a.CurrentTransform.Translation;
+                float dx = p.X - from.X, dz = p.Z - from.Z;
+                float d2 = dx * dx + dz * dz;
+                float bd2 = float.MaxValue;
+                if (best is not null)
+                {
+                    var bp = best.CurrentTransform.Translation;
+                    bd2 = (bp.X - from.X) * (bp.X - from.X) + (bp.Z - from.Z) * (bp.Z - from.Z);
+                }
+                if (d2 < bd2) best = a;
+            }
         if (best is null) best = bestDowned;
         if (best is null && _player is not null && !_player.IsDead) best = _player;
         return best;
@@ -25904,6 +26049,36 @@ void main()
         }
     }
 
+    private static string LastHeroPath =>
+        Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "last_hero.txt");
+
+    private static void SaveLastHeroEnv(IDictionary<string, string?> env)
+    {
+        try
+        {
+            var lines = env.Where(kv => kv.Key.StartsWith("SIEGEFX_HERO_", StringComparison.Ordinal) && kv.Value is not null)
+                           .Select(kv => $"{kv.Key}={kv.Value}");
+            File.WriteAllLines(LastHeroPath, lines);
+        }
+        catch (Exception ex) { Console.WriteLine($"[hero] last hero not saved: {ex.Message}"); }
+    }
+
+    private static void LoadLastHeroEnv(IDictionary<string, string?> env)
+    {
+        try
+        {
+            if (!File.Exists(LastHeroPath)) return;
+            foreach (var line in File.ReadAllLines(LastHeroPath))
+            {
+                int eq = line.IndexOf('=');
+                if (eq > 0 && line.StartsWith("SIEGEFX_HERO_", StringComparison.Ordinal))
+                    env[line[..eq]] = line[(eq + 1)..];
+            }
+            Console.WriteLine("[hero] co-op hero dressed as the last single-player hero");
+        }
+        catch (Exception ex) { Console.WriteLine($"[hero] last hero not loaded: {ex.Message}"); }
+    }
+
     private void LaunchRegionViaRelaunch(string ds1ResourcesDir, MpRelaunch? mp = null)
     {
         try
@@ -25982,6 +26157,10 @@ void main()
             // load path forwarded it before).
             if (!string.IsNullOrEmpty(_creator.HeroName))
                 psi.Environment["SIEGEFX_HERO_NAME"] = _creator.HeroName;
+            // Co-op has no character creator: a multiplayer launch dresses the
+            // hero as the last one made for a single-player game.
+            if (mp is null && _creator.Confirmed) SaveLastHeroEnv(psi.Environment);
+            else if (mp is not null && !_creator.Confirmed) LoadLastHeroEnv(psi.Environment);
             psi.Environment["SIEGEFX_DIFFICULTY"] = _difficulty.ToString();
             // Skip the splash on relaunch — we already saw it.
             psi.Environment["SIEGEFX_NOVIDEO"] = "1";
@@ -31135,6 +31314,7 @@ void main()
         if (prop.Life <= 0f)
         {
             prop.IsDestroyed = true;
+            MpAnnouncePropBreak(prop);
             // Phase 21-SC-BARREL-C — frag-mesh debris from the template's
             // [physics][break_particulate] block. The smoke puff + sparkle
             // ring stays as the on-impact "shatter" cue; the frag instances
@@ -31253,6 +31433,7 @@ void main()
         if (prop.Life <= 0f)
         {
             prop.IsDestroyed = true;
+            MpAnnouncePropBreak(prop);
             if (_particles is not null)
             {
                 var origin = prop.World.Translation + new Vector3(0f, 0.4f, 0f);

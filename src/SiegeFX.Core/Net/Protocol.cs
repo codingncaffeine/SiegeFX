@@ -42,6 +42,10 @@ public enum MpMsg : byte
     ItemGive    = 23,  // any→host→target: hand an item to another player [from u8][target u8][slotLen slot][refLen ref]
     RecruitRequest = 24, // client→host: hire NPC companion [scid u32]
     RecruitGrant   = 25, // host→all: NPC joined a player's party [scid u32][player u8]
+    PlayerHit      = 26, // host→one client: a host-run enemy hit that player [damage f32]
+    PropBreak      = 27, // any→host→others: a breakable prop shattered [scid u32]
+    ActorSpawn     = 28, // host→client: a runtime-spawned (generator) actor the host owns
+                         // [scid u32][templateLen u8][template][x f32][y f32][z f32]
 }
 
 /// <summary>Wire-protocol identity. Bump <see cref="Version"/> whenever a
@@ -52,7 +56,8 @@ public enum MpMsg : byte
 /// human-readable reason.</summary>
 public static class MpProtocol
 {
-    public const ushort Version = 3;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot
+    public const ushort Version = 4;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
+                                        // v4: PlayerHit, PropBreak, ActorSpawn
 }
 
 /// <summary>The JoinAccept world snapshot is the save JSON, indented: 130 kB

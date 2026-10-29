@@ -101,4 +101,36 @@ public class MpJoinTests
         Assert.Equal(1, client.LocalPlayerId);
         Assert.Equal(Array.Empty<byte>(), applied);
     }
+
+    [Fact]
+    public void CoopEventsReachTheRightMachine()
+    {
+        var (host, client, _) = Pair([]);
+        client.SendJoinRequest();
+        Pump(host, client);
+
+        uint hostSawBreak = 0, clientSawBreak = 0;
+        host.OnPropBreak = s => hostSawBreak = s;
+        client.OnPropBreak = s => clientSawBreak = s;
+        client.SendPropBreak(0x01C00DA3);
+        Pump(host, client);
+        Assert.Equal(0x01C00DA3u, hostSawBreak);
+        Assert.Equal(0u, clientSawBreak);          // not echoed to its sender
+
+        host.SendPropBreak(0x01C00DA4);
+        Pump(host, client);
+        Assert.Equal(0x01C00DA4u, clientSawBreak);
+
+        float hit = 0;
+        client.OnPlayerHit = d => hit = d;
+        host.SendPlayerHit(client.LocalPlayerId, 7.5f);
+        Pump(host, client);
+        Assert.Equal(7.5f, hit);
+
+        (uint Scid, string Tpl, float X)? spawn = null;
+        client.OnActorSpawn = (scid, tpl, x, _, _) => spawn = (scid, tpl, x);
+        host.SendActorSpawn(0xFE000001, "krug_scout", 3f, 0f, -5f);
+        Pump(host, client);
+        Assert.Equal((0xFE000001u, "krug_scout", 3f), spawn);
+    }
 }
