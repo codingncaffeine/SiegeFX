@@ -6476,11 +6476,9 @@ public sealed class RenderHost : IDisposable
 
         if (asHost)
         {
-            session.BuildSnapshot = () =>
-            {
-                try { return SiegeFX.Core.Save.SaveStore.Serialize(CaptureSave()); }
-                catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"snapshot build: {ex.Message}"); return System.Array.Empty<byte>(); }
-            };
+            // No BuildSnapshot here: the in-region client sets no ApplySnapshot
+            // (the world comes from its own region load plus the 15 Hz deltas),
+            // and the whole save it would carry outgrows a UDP datagram.
             session.EnumerateActors = MpEnumerateWorldActors;
             session.ApplyClientHit = MpApplyClientHit; // F3 — client hits resolve here
             transport.PeerConnected += id => SiegeFX.Core.Net.NetLog.Info($"in-region: peer {id} joined ({transport.Peers.Count} in world)");

@@ -52,7 +52,40 @@ public enum MpMsg : byte
 /// human-readable reason.</summary>
 public static class MpProtocol
 {
-    public const ushort Version = 2;   // v2: ClientInfo/PlayerInfo character cards
+    public const ushort Version = 3;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot
+}
+
+/// <summary>The JoinAccept world snapshot is the save JSON, indented: 130 kB
+/// for the farm, past the 64 kB a UDP datagram carries. Brotli brings it to a
+/// few kB.</summary>
+public static class MpSnapshot
+{
+    /// <summary>Unpacked size cap: a hostile or corrupt frame cannot balloon.</summary>
+    public const int MaxUnpackedBytes = 64 * 1024 * 1024;
+
+    public static byte[] Pack(byte[] snapshot)
+    {
+        if (snapshot.Length == 0) return snapshot;
+        using var ms = new System.IO.MemoryStream();
+        using (var br = new System.IO.Compression.BrotliStream(ms, System.IO.Compression.CompressionLevel.Optimal))
+            br.Write(snapshot);
+        return ms.ToArray();
+    }
+
+    public static byte[] Unpack(byte[] packed)
+    {
+        if (packed.Length == 0) return packed;
+        using var br = new System.IO.Compression.BrotliStream(new System.IO.MemoryStream(packed), System.IO.Compression.CompressionMode.Decompress);
+        using var ms = new System.IO.MemoryStream();
+        var buf = new byte[81920];
+        int n;
+        while ((n = br.Read(buf, 0, buf.Length)) > 0)
+        {
+            if (ms.Length + n > MaxUnpackedBytes) throw new System.IO.InvalidDataException("snapshot too large");
+            ms.Write(buf, 0, n);
+        }
+        return ms.ToArray();
+    }
 }
 
 /// <summary>Input command verbs a client sends up (host resolves them

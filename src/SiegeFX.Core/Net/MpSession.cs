@@ -87,6 +87,19 @@ public sealed class MpSession : IDisposable
     const double DeltaInterval = 1.0 / 15.0; // 15 Hz authoritative deltas
     public int MaxPlayers = 8;
     int _playerCount = 1; // host counts as 1
+    // Host: each joined peer's JoinAccept, re-sent when its JoinRequest repeats
+    // (the first accept was lost) without counting the player twice.
+    readonly Dictionary<int, byte[]> _joinAccepts = new();
+    // Client: JoinRequest repeats until the host answers; UDP drops are silent
+    // and a client that never hears JoinAccept plays as player 0, the host's id.
+    bool _joinPending;
+    double _joinRetryTimer;
+    const double JoinRetryInterval = 1.0;
+    /// <summary>Largest compressed snapshot sent in a JoinAccept. The frame is
+    /// one UDP datagram (65507 B ceiling, less transport and AEAD headers), and
+    /// smaller frames fragment less on the internet. Larger snapshots are left
+    /// out: the player id still arrives.</summary>
+    public const int MaxSnapshotBytes = 32 * 1024;
     readonly Dictionary<int, MpPlayerState> _players = new(); // host: player id -> latest pose
 
     public MpSession(ISessionTransport transport, bool isHost, string localName)
@@ -99,7 +112,7 @@ public sealed class MpSession : IDisposable
     {
         if (IsHost)
         {
-            _playerCount = Math.Max(1, _playerCount - 1);
+            if (_joinAccepts.Remove(peer)) _playerCount = Math.Max(1, _playerCount - 1);
             _players.Remove(peer);
             OnPlayerLeft?.Invoke(peer);
             Broadcast(new MpWriter().U8((byte)MpMsg.PlayerLeft).U8((byte)peer).ToArray());
@@ -111,6 +124,8 @@ public sealed class MpSession : IDisposable
     public void SendJoinRequest()
     {
         if (IsHost) return;
+        _joinPending = true;
+        _joinRetryTimer = 0;
         _t.Send(0, new MpWriter().U8((byte)MpMsg.JoinRequest).U16(MpProtocol.Version).Str(_localName).Span);
         NetLog.Info($"session: sent JoinRequest as '{_localName}' (protocol v{MpProtocol.Version})");
     }
@@ -249,6 +264,17 @@ public sealed class MpSession : IDisposable
         while (_t.TryReceive(out int peer, out var data))
             Handle(peer, data);
 
+        if (!IsHost && _joinPending && _t.Peers.Count > 0)
+        {
+            _joinRetryTimer += dt;
+            if (_joinRetryTimer >= JoinRetryInterval)
+            {
+                _joinRetryTimer = 0;
+                _t.Send(0, new MpWriter().U8((byte)MpMsg.JoinRequest).U16(MpProtocol.Version).Str(_localName).Span);
+                NetLog.Warn("session: no JoinAccept yet — JoinRequest re-sent");
+            }
+        }
+
         if (IsHost)
         {
             _deltaTimer += dt;
@@ -357,6 +383,12 @@ public sealed class MpSession : IDisposable
                     NetLog.Warn($"session: rejected peer {peer} — protocol v{ver} != host v{MpProtocol.Version}");
                     return;
                 }
+                if (_joinAccepts.TryGetValue(peer, out var accepted))
+                {
+                    _t.Send(peer, accepted);
+                    NetLog.Info($"session: player {peer} asked again — JoinAccept re-sent");
+                    return;
+                }
                 if (_playerCount >= MaxPlayers)
                 {
                     _t.Send(peer, new MpWriter().U8((byte)MpMsg.JoinReject).Str("Game is full.").Span);
@@ -365,16 +397,24 @@ public sealed class MpSession : IDisposable
                 }
                 _playerCount++;
                 var snap = BuildSnapshot?.Invoke() ?? Array.Empty<byte>();
-                var w = new MpWriter(8 + snap.Length);
-                w.U8((byte)MpMsg.JoinAccept).U8((byte)peer).U32((uint)snap.Length);
-                foreach (var b in snap) w.U8(b);
-                _t.Send(peer, w.Span);
+                var packed = MpSnapshot.Pack(snap);
+                if (packed.Length > MaxSnapshotBytes)
+                {
+                    NetLog.Warn($"session: snapshot {snap.Length}B packs to {packed.Length}B > {MaxSnapshotBytes}B — sent without it");
+                    packed = Array.Empty<byte>();
+                }
+                var w = new MpWriter(8 + packed.Length);
+                w.U8((byte)MpMsg.JoinAccept).U8((byte)peer).U32((uint)packed.Length);
+                foreach (var b in packed) w.U8(b);
+                var accept = w.ToArray();
+                _joinAccepts[peer] = accept;
+                _t.Send(peer, accept);
                 OnPlayerJoined?.Invoke(peer, name);
                 Broadcast(new MpWriter().U8((byte)MpMsg.PlayerJoined).U8((byte)peer).Str(name).ToArray());
                 // Catch the late joiner up on every known character card.
                 foreach (var info in _infos.Values)
                     _t.Send(peer, BuildPlayerInfoFrame(info));
-                NetLog.Info($"session: player {peer} '{name}' joined, sent snapshot ({snap.Length}B), now {_playerCount}/{MaxPlayers}");
+                NetLog.Info($"session: player {peer} '{name}' joined, sent snapshot ({snap.Length}B, {packed.Length}B packed), now {_playerCount}/{MaxPlayers}");
                 break;
             }
             case MpMsg.Input when IsHost:
@@ -485,8 +525,13 @@ public sealed class MpSession : IDisposable
             {
                 int assigned = r.U8();
                 uint len = r.U32();
-                var snap = r.Rest((int)Math.Min(len, (uint)int.MaxValue));
+                var packed = r.Rest((int)Math.Min(len, (uint)int.MaxValue));
                 if (r.Bad) { NetLog.Error("session: malformed JoinAccept — snapshot dropped"); return; }
+                if (!_joinPending) return; // a re-sent accept we already applied
+                _joinPending = false;
+                byte[] snap;
+                try { snap = MpSnapshot.Unpack(packed); }
+                catch (Exception ex) { NetLog.Error($"session: JoinAccept snapshot unreadable ({ex.Message}) — joined without it"); snap = Array.Empty<byte>(); }
                 LocalPlayerId = assigned;
                 ApplySnapshot?.Invoke(snap);
                 OnJoinAccepted?.Invoke(assigned);
@@ -496,6 +541,7 @@ public sealed class MpSession : IDisposable
             case MpMsg.JoinReject when !IsHost:
             {
                 string reason = r.Str();
+                _joinPending = false;
                 OnJoinRejected?.Invoke(r.Bad ? "rejected" : reason);
                 NetLog.Warn($"session: join rejected: {reason}");
                 break;
