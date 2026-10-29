@@ -42,6 +42,10 @@ public enum MpMsg : byte
     ItemGive    = 23,  // any→host→target: hand an item to another player [from u8][target u8][slotLen slot][refLen ref]
     RecruitRequest = 24, // client→host: hire NPC companion [scid u32]
     RecruitGrant   = 25, // host→all: NPC joined a player's party [scid u32][player u8]
+    PlayerHit      = 26, // host→one client: a host-run enemy hit that player [damage f32]
+    PropBreak      = 27, // any→host→others: a breakable prop shattered [scid u32]
+    ActorSpawn     = 28, // host→client: a runtime-spawned (generator) actor the host owns
+                         // [scid u32][templateLen u8][template][x f32][y f32][z f32]
 }
 
 /// <summary>Wire-protocol identity. Bump <see cref="Version"/> whenever a
@@ -52,7 +56,41 @@ public enum MpMsg : byte
 /// human-readable reason.</summary>
 public static class MpProtocol
 {
-    public const ushort Version = 2;   // v2: ClientInfo/PlayerInfo character cards
+    public const ushort Version = 5;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
+                                        // v4: PlayerHit, PropBreak, ActorSpawn; v5: chores in the pose frames
+}
+
+/// <summary>The JoinAccept world snapshot is the save JSON, indented: 130 kB
+/// for the farm, past the 64 kB a UDP datagram carries. Brotli brings it to a
+/// few kB.</summary>
+public static class MpSnapshot
+{
+    /// <summary>Unpacked size cap: a hostile or corrupt frame cannot balloon.</summary>
+    public const int MaxUnpackedBytes = 64 * 1024 * 1024;
+
+    public static byte[] Pack(byte[] snapshot)
+    {
+        if (snapshot.Length == 0) return snapshot;
+        using var ms = new System.IO.MemoryStream();
+        using (var br = new System.IO.Compression.BrotliStream(ms, System.IO.Compression.CompressionLevel.Optimal))
+            br.Write(snapshot);
+        return ms.ToArray();
+    }
+
+    public static byte[] Unpack(byte[] packed)
+    {
+        if (packed.Length == 0) return packed;
+        using var br = new System.IO.Compression.BrotliStream(new System.IO.MemoryStream(packed), System.IO.Compression.CompressionMode.Decompress);
+        using var ms = new System.IO.MemoryStream();
+        var buf = new byte[81920];
+        int n;
+        while ((n = br.Read(buf, 0, buf.Length)) > 0)
+        {
+            if (ms.Length + n > MaxUnpackedBytes) throw new System.IO.InvalidDataException("snapshot too large");
+            ms.Write(buf, 0, n);
+        }
+        return ms.ToArray();
+    }
 }
 
 /// <summary>Input command verbs a client sends up (host resolves them
@@ -121,13 +159,21 @@ public ref struct MpReader
 
 /// <summary>One actor's authoritative pose in a StateDelta. Kept a plain
 /// struct so the delta loop allocates nothing per actor.</summary>
-public readonly record struct MpActorState(uint Scid, float X, float Y, float Z, ushort Life);
+public readonly record struct MpActorState(uint Scid, float X, float Y, float Z, ushort Life,
+                                           MpChore Chore = default);
+
+/// <summary>The last one-shot chore an actor started (swing, cast): a counter
+/// that moves on each start, the clip index and its length in 50 ms steps. A
+/// receiver replays the clip when the counter moves, so a lost frame costs at
+/// most one swing's animation, never a stuck one.</summary>
+public readonly record struct MpChore(byte Seq, byte Clip, byte Duration);
 
 /// <summary>One player's pose in a PlayerDelta / ClientState frame. Movement is
 /// client-authoritative (retail friend-trust), so each machine reports its own
 /// pose and the host fans the whole set back out. Yaw is the heading in radians
 /// (atan2(facing.X, facing.Z), matching the engine's player-facing convention).</summary>
-public readonly record struct MpPlayerState(byte Player, float X, float Y, float Z, float Yaw, ushort Life, byte Flags);
+public readonly record struct MpPlayerState(byte Player, float X, float Y, float Z, float Yaw, ushort Life, byte Flags,
+                                            MpChore Chore = default);
 
 /// <summary>A player's character card — the DS1 in-game player panel row
 /// (in_game_player_panel_characters.gas: Player / Character / Class / STR /

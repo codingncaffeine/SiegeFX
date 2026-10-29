@@ -74,7 +74,22 @@ public sealed class ActorHostBridge : IHostBridge
         }
         _overrideAnimIndex = idx;
         _overrideRemaining = durationSec;
+        // Co-op mirrors one-shot chores (swings, casts) by this counter; the
+        // long pins (death, NIS end-frame holds) travel as state instead.
+        if (durationSec < MaxMirroredChoreSec)
+        {
+            ChoreSeq++;
+            ChoreClip = idx;
+            ChoreDuration = durationSec;
+        }
     }
+
+    /// <summary>Longest chore co-op mirrors (its length rides a byte of 50 ms steps).</summary>
+    public const float MaxMirroredChoreSec = 12.75f;
+    /// <summary>Bumped by every one-shot chore override; see <see cref="OverrideAnimIndex"/>.</summary>
+    public byte ChoreSeq { get; private set; }
+    public int ChoreClip { get; private set; } = -1;
+    public float ChoreDuration { get; private set; }
 
     /// <summary>Drain the override timer. Called from the runtime per logic tick;
     /// no-op when no override is active.</summary>
