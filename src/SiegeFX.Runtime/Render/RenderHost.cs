@@ -740,13 +740,16 @@ public sealed class RenderHost : IDisposable
                 ? _playerSpellbook.Primary : _playerSpellbook.Secondary;
             if (spell is not null && spell.Kind != SiegeFX.Core.Assets.SpellKind.SelfHeal)
             {
-                Console.WriteLine($"[auto-defend] casting at {foe.Actor.Template.Name}");
+                Console.WriteLine($"[auto-defend] casting at {foe.Actor.Template.Name} " +
+                    $"({(wasHit ? "hero was hit" : "Attack Freely scan")})");
                 BeginPlayerCast(slot, spell, foe, prop: null, _progression?.Level ?? 1);
                 return;
             }
         }
-        Console.WriteLine($"[auto-defend] engaging {foe.Actor.Template.Name}");
+        Console.WriteLine($"[auto-defend] engaging {foe.Actor.Template.Name} " +
+            $"({(wasHit ? "hero was hit" : "Attack Freely scan")}, {Vector3.Distance(foe.CurrentTransform.Translation, pp):F1}u away)");
         _pendingAttackTarget = foe; // the walk-up drive swings + auto-attacks
+        _pendingAttackLeash = radius;
     }
 
     private void EnsureBloodTextures()
@@ -4795,6 +4798,24 @@ public sealed class RenderHost : IDisposable
     private LootPile? _hoverPile;
     private bool _hoverPileIsGoldOrSpell;
     private LootPile? _pendingPickupPile;
+
+    /// <summary>A pile the hero can loot from where he stands: within
+    /// PickupReach in plan view and on his floor. Plan view alone let the
+    /// hero loot a potion off a table on the farmhouse's ground floor from
+    /// the floor above it (2.4u up), and pick it up walking over it.</summary>
+    private static bool InPickupReach(Vector3 player, Vector3 pile)
+    {
+        float dx = pile.X - player.X, dz = pile.Z - player.Z;
+        return dx * dx + dz * dz <= PickupReach * PickupReach && PickupHeightInReach(player, pile);
+    }
+
+    /// <summary>On the hero's floor: from a little below his feet (the
+    /// ground dipping) to a table top above them.</summary>
+    private static bool PickupHeightInReach(Vector3 player, Vector3 pile)
+    {
+        float dy = pile.Y - player.Y;
+        return dy >= -1.0f && dy <= 1.8f;
+    }
     private const float PickupReach = 2.4f;
     // SC-GOLD-PILES — sparse glint spawner for gold piles (gold.bmp look).
     private readonly Random _pileSparkleRng = new(7);
@@ -10363,6 +10384,7 @@ void main()
                     // explicit orders (SC-SELECT-MOVE).
                     if (_selectedPartyIdx.Contains(0))
                     {
+                        EndPlayerAttackLoop();
                         _playerFollower?.SetTarget(_playerFollower.Position);
                         _pendingAttackTarget = null;
                         _pendingCastTarget = null;
@@ -12269,8 +12291,10 @@ void main()
                                     }
                                     break;
                                 default:
+                                    _attackClickFromRmb = true;
                                     if (TryClickToAttack(_rmbDownPos))
                                         _audio?.Play(SfxOrderAttack);
+                                    _attackClickFromRmb = false;
                                     break;
                             }
                         }
@@ -15070,6 +15094,7 @@ void main()
                 // lf_human_player gate; computer-only zones are
                 // rejected as paths.
                 Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+                PartialPathFallback = true,
                 DiagnosticLogging = true,
             };
             if (pendingTarget is { } tgt) _playerFollower.SetTarget(tgt);
@@ -21813,6 +21838,7 @@ void main()
                         _playerFollower = new SiegeFX.Core.Nav.NavFollower(nav, pos, speed)
                         {
                             Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+                            PartialPathFallback = true,
                             DiagnosticLogging = true,
                         };
                     }
@@ -21889,6 +21915,7 @@ void main()
                         _playerFollower = new SiegeFX.Core.Nav.NavFollower(nav, pos, speed)
                         {
                             Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+                            PartialPathFallback = true,
                             DiagnosticLogging = true,
                         };
                     }
@@ -22501,7 +22528,7 @@ void main()
                 var pos = _playerFollower.Position;
                 var speed = _playerFollower.Speed;
                 _playerFollower = new SiegeFX.Core.Nav.NavFollower(nav, pos, speed)
-                { Traversal = SiegeFX.Core.Nav.NavTraversal.Player, DiagnosticLogging = true };
+                { Traversal = SiegeFX.Core.Nav.NavTraversal.Player, PartialPathFallback = true, DiagnosticLogging = true };
             }
         }
     }
@@ -24976,29 +25003,51 @@ void main()
                             float ddx = after.X - tp.X;
                             float ddz = after.Z - tp.Z;
                             float pdist = MathF.Sqrt(ddx * ddx + ddz * ddz);
-                            if (pdist > MeleeChaseGiveUp)
+                            // SC-PATHING — the line is the melee approach
+                            // (obstacle, e.g. a fence) or the bow's sight
+                            // (a building); a blocked line keeps the hero
+                            // closing in until it clears.
+                            bool lineBlocked = pdist <= r && (_weaponIsRanged
+                                ? IsSightBlocked(after, tp)
+                                : _navMesh is not null && _navMesh.SegmentCrossesBlocked(after, tp));
+                            var step = SiegeFX.Core.Actors.HeroApproach.Decide(pdist, r, lineBlocked, _playerFollower.PathBlocked);
+                            if (step != SiegeFX.Core.Actors.HeroApproachStep.Act && pdist > _pendingAttackLeash)
                             {
                                 Console.WriteLine(
-                                    $"click-attack: gave up on {pat.Actor.Template.Name} " +
-                                    $"(dist={pdist:F1}u)");
+                                    $"[auto-defend] {pat.Actor.Template.Name} is {pdist:F1}u away, past the " +
+                                    $"movement order's {_pendingAttackLeash:F1}u: not following");
+                                _playerFollower.SetTarget(after);
                                 _pendingAttackTarget = null;
                             }
-                            else if (pdist <= r
-                                     && !(!_weaponIsRanged && _navMesh is not null
-                                          && _navMesh.SegmentCrossesBlocked(after, tp))
-                                     && !(_weaponIsRanged && IsSightBlocked(after, tp)))
+                            else switch (step)
                             {
-                                PerformPlayerSwing(pat, atk);
-                                _pendingAttackTarget = null;
-                            }
-                            else
-                            {
-                                // SC-PATHING — out of reach OR the melee
-                                // approach is obstacle-blocked (fence) OR the
-                                // bow's sight line is occluded (building):
-                                // keep walking; the A* routes around now that
-                                // blockers mark the mesh.
-                                _playerFollower.SetTarget(ComputeApproachPoint(after, tp, r));
+                                case SiegeFX.Core.Actors.HeroApproachStep.Act:
+                                    // In reach: stop the walk here (it was
+                                    // pathing to the target itself).
+                                    _playerFollower.SetTarget(after);
+                                    if (_playerSwing is null)
+                                        Console.WriteLine(
+                                            $"click-attack: reached {pat.Actor.Template.Name} " +
+                                            $"(dist={pdist:F1}u, reach={r:F1}u), attacking");
+                                    PerformPlayerSwing(pat, atk);
+                                    // A swing can't start mid-cast or mid-drink:
+                                    // keep the order until one does.
+                                    if (_playerSwing is not null) _pendingAttackTarget = null;
+                                    break;
+                                case SiegeFX.Core.Actors.HeroApproachStep.GiveUp:
+                                    Console.WriteLine(
+                                        $"click-attack: gave up on {pat.Actor.Template.Name} " +
+                                        $"(dist={pdist:F1}u, no path)");
+                                    _pendingAttackTarget = null;
+                                    break;
+                                default:
+                                    // Path to the target itself, as a chasing
+                                    // monster does; the walk ends the tick the
+                                    // hero is in reach with a clear line. A
+                                    // straight-line stand point could sit in a
+                                    // river or behind a cliff and fail.
+                                    _playerFollower.SetTarget(tp);
+                                    break;
                             }
                         }
                     }
@@ -25032,24 +25081,30 @@ void main()
                             float cdx = after.X - pcPos.X;
                             float cdz = after.Z - pcPos.Z;
                             float cdist = MathF.Sqrt(cdx * cdx + cdz * cdz);
-                            if (cdist > MeleeChaseGiveUp)
+                            bool cBlocked = cdist <= pcSpell!.CastRange && IsSightBlocked(after, pcPos);
+                            switch (SiegeFX.Core.Actors.HeroApproach.Decide(cdist, pcSpell.CastRange, cBlocked, _playerFollower.PathBlocked))
                             {
-                                Console.WriteLine($"click-cast: gave up (dist={cdist:F1}u)");
-                                _pendingCastTarget = null;
-                                _pendingCastProp = null;
-                            }
-                            else if (cdist <= pcSpell!.CastRange && !IsSightBlocked(after, pcPos))
-                            {
-                                BeginPlayerCast(_pendingCastSlot, pcSpell,
-                                    _pendingCastTarget, _pendingCastProp,
-                                    _progression?.Level ?? 1);
-                                _pendingCastTarget = null;
-                                _pendingCastProp = null;
-                            }
-                            else
-                            {
-                                _playerFollower.SetTarget(ComputeApproachPoint(
-                                    after, pcPos, MathF.Max(1.5f, pcSpell.CastRange * 0.9f)));
+                                case SiegeFX.Core.Actors.HeroApproachStep.Act:
+                                    _playerFollower.SetTarget(after);
+                                    BeginPlayerCast(_pendingCastSlot, pcSpell,
+                                        _pendingCastTarget, _pendingCastProp,
+                                        _progression?.Level ?? 1);
+                                    _pendingCastTarget = null;
+                                    _pendingCastProp = null;
+                                    break;
+                                case SiegeFX.Core.Actors.HeroApproachStep.GiveUp:
+                                    Console.WriteLine($"click-cast: gave up (dist={cdist:F1}u, no path)");
+                                    _pendingCastTarget = null;
+                                    _pendingCastProp = null;
+                                    break;
+                                default:
+                                    // Path to an actor itself (see the attack
+                                    // drive); a prop blocks its own footprint,
+                                    // so walk to a free stand point by it.
+                                    _playerFollower.SetTarget(_pendingCastProp is not null
+                                        ? FindWalkableApproach(after, pcPos, MathF.Max(1.5f, pcSpell.CastRange * 0.9f))
+                                        : pcPos);
+                                    break;
                             }
                         }
                     }
@@ -25070,30 +25125,34 @@ void main()
                             float bdx = after.X - bPos.X;
                             float bdz = after.Z - bPos.Z;
                             float bdist = MathF.Sqrt(bdx * bdx + bdz * bdz);
-                            if (bdist > MeleeChaseGiveUp)
-                            {
-                                Console.WriteLine($"click-break: gave up on {pbp.Template} (dist={bdist:F1}u)");
-                                _pendingBreakProp = null;
-                            }
                             // SC-PROP-BREAK-REACH — reach-only melee gate (see
                             // TryClickBreak): no line-of-nav check for breakables,
                             // so a clustered barrel isn't walled off by its
                             // neighbours' (or its own) does_block_path footprint.
-                            else if (bdist <= bReach
-                                     && !(_weaponIsRanged && IsSightBlocked(after, bPos)))
+                            bool bBlocked = bdist <= bReach && _weaponIsRanged && IsSightBlocked(after, bPos);
+                            switch (SiegeFX.Core.Actors.HeroApproach.Decide(bdist, bReach, bBlocked, _playerFollower.PathBlocked))
                             {
-                                // PerformPropBreak no-ops while a swing/cast is
-                                // in flight — keep the latch so the next tick
-                                // retries instead of dropping the click.
-                                if (_playerSwing is null && _playerCast is null)
-                                {
-                                    PerformPropBreak(pbp, bAtk);
+                                case SiegeFX.Core.Actors.HeroApproachStep.Act:
+                                    _playerFollower.SetTarget(after);
+                                    // PerformPropBreak no-ops while a swing/cast is
+                                    // in flight — keep the latch so the next tick
+                                    // retries instead of dropping the click.
+                                    if (_playerSwing is null && _playerCast is null)
+                                    {
+                                        PerformPropBreak(pbp, bAtk);
+                                        _pendingBreakProp = null;
+                                    }
+                                    break;
+                                case SiegeFX.Core.Actors.HeroApproachStep.GiveUp:
+                                    Console.WriteLine($"click-break: gave up on {pbp.Template} (dist={bdist:F1}u, no path)");
                                     _pendingBreakProp = null;
-                                }
-                            }
-                            else
-                            {
-                                _playerFollower.SetTarget(FindWalkableApproach(after, bPos, bReach));
+                                    break;
+                                case SiegeFX.Core.Actors.HeroApproachStep.CloseIn:
+                                    _playerFollower.SetTarget(bPos);
+                                    break;
+                                default:
+                                    _playerFollower.SetTarget(FindWalkableApproach(after, bPos, bReach));
+                                    break;
                             }
                         }
                     }
@@ -26538,6 +26597,25 @@ void main()
         var vp = _camera.GetViewProjection((float)size.X / size.Y);
         ActorRenderState? best = null;
         float bestScore = float.MaxValue;
+        // How far the cursor ray travels before it meets the ground. An actor
+        // farther from the camera than that (with a margin for its body) is
+        // behind what the cursor is on: a tiny figure in the distance drawn
+        // near the click, or one over a rise.
+        var eye = _camera.Position;
+        float groundDist = float.MaxValue;
+        if (_navMesh is not null && Matrix4x4.Invert(vp, out var invVp))
+        {
+            float ndcX = cursorPx.X / size.X * 2f - 1f, ndcY = 1f - cursorPx.Y / size.Y * 2f;
+            var nh = Vector4.Transform(new Vector4(ndcX, ndcY, -1f, 1f), invVp);
+            var fh = Vector4.Transform(new Vector4(ndcX, ndcY, 1f, 1f), invVp);
+            if (MathF.Abs(nh.W) > 1e-6f && MathF.Abs(fh.W) > 1e-6f)
+            {
+                var n = new Vector3(nh.X, nh.Y, nh.Z) / nh.W;
+                var rd = new Vector3(fh.X, fh.Y, fh.Z) / fh.W - n;
+                if (rd.LengthSquared() > 1e-8f && _navMesh.TryRaycast(n, rd, rd.Length(), out _, out var gp))
+                    groundDist = Vector3.Distance(eye, gp);
+            }
+        }
         bool Project(Vector3 world, out Vector2 px, out float depth)
         {
             var h = Vector4.Transform(new Vector4(world, 1f), vp);
@@ -26568,9 +26646,32 @@ void main()
             if (d > radius) continue;
             // Nearest-to-cursor wins; near-ties go to the closer actor.
             float score = d + depth * 0.05f;
-            if (score < bestScore) { bestScore = score; best = s; }
+            if (score >= bestScore) continue;
+            if (Vector3.Distance(eye, feet + new Vector3(0f, 1.0f, 0f)) > groundDist + 3f) continue;
+            if (HiddenFromCamera(feet)) continue;
+            bestScore = score; best = s;
         }
         return best;
+    }
+
+    /// <summary>You click what you see: true when terrain the camera treats
+    /// as solid (<see cref="CameraBoundsHitDistance"/>: camera-blocking
+    /// nodes, minus faded and hidden upper-layer ones) stands between the
+    /// camera and both the actor's chest and head. A monster behind a hill
+    /// or a wall used to be picked whenever its outline fell under the
+    /// cursor, and the hero set off on a long walk round to reach it.</summary>
+    private bool HiddenFromCamera(Vector3 feet)
+    {
+        var eye = _camera.Position;
+        return Blocked(feet + new Vector3(0f, 1.0f, 0f)) && Blocked(feet + new Vector3(0f, 1.8f, 0f));
+
+        bool Blocked(Vector3 p)
+        {
+            var d = p - eye;
+            float len = d.Length();
+            if (len < 1f) return false;
+            return CameraBoundsHitDistance(eye, d / len, len - 0.5f) < len - 0.5f;
+        }
     }
 
     private ActorRenderState? PickHoverActor()
@@ -26649,7 +26750,7 @@ void main()
                 var p = _playerFollower.Position;
                 float dx = pk.Position.X - p.X, dz = pk.Position.Z - p.Z;
                 float d2 = dx * dx + dz * dz;
-                if (d2 <= PickupReach * PickupReach)
+                if (InPickupReach(p, pk.Position))
                 {
                     _pendingPickupPile = null;
                     LootPileNow(pk, idx);
@@ -28744,6 +28845,7 @@ void main()
             _playerFollower = new SiegeFX.Core.Nav.NavFollower(navMesh, spawnPos, speed)
             {
                 Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
+                PartialPathFallback = true,
                 // SC-NAV-STAIR-DIAG — player-only nav diag log. Lets us see
                 // [nav-target] / [nav-stuck] for the player's path without
                 // the 347 NPC wanderers drowning the output.
@@ -29636,6 +29738,7 @@ void main()
             RequestLockedUseNear(hit);
             if (heroSelected)
             {
+                EndPlayerAttackLoop();
                 _playerFollower.SetTarget(hit);
                 // ALPHA-2 USE-POINTS — a queued lever pull walks to the lever's
                 // authored stand spot (the farm winch's is ON the elevator grate, so
@@ -30363,6 +30466,12 @@ void main()
     // 1-3 profile to keep the kill loop playable until the stat fix lands in
     // Phase 13e.
     private const float ClickAttackRadius = 3f;
+    // The ground-disc fallback behind the on-screen pick for attack clicks
+    // (and the "is this an attack click" gate): a click near a lone enemy's
+    // feet still attacks it. It was ClickAttackRadius, from before the
+    // screen pick existed; 3u around the click swallowed every escape click
+    // near the hero while gremals swarmed him.
+    private const float ClickAttackFallbackRadius = 1.5f;
     // SC-CURSOR-ARBITRATION — breakable props are small stationary targets
     // (a barrel body is ~0.5-1u); picking them with the full 3u combat
     // radius let a barrel across the table steal clicks and the cursor
@@ -30477,14 +30586,43 @@ void main()
     // reach" falls back to MeleeReachFallback; only authored long-reach
     // weapons (polearms, two-handers) override it.
     private const float MeleeReachAttackRangeThreshold = 1.5f;
-    // Phase 12-SC-1 — once latched, abandon the walk-up if the target wandered
-    // farther than this. Bigger than reach so a moving krug doesn't break the
-    // chase mid-stride; smaller than aggro so we don't track across the map.
-    private const float MeleeChaseGiveUp = 14f;
     // Phase 12-SC-1 — pending click-attack target. Set when the player RMBs an
     // enemy beyond reach: the follower walks up, and once inside MeleeReach the
     // per-tick check fires the actual swing through PerformPlayerSwing.
     private ActorRenderState? _pendingAttackTarget;
+    // SC-FC-HERO — how far the target may be for the walk-up to go on: no
+    // limit for a target the player clicked; the movement order's reach
+    // (Hold Ground / Engage / Move Freely) for one auto-defend picked, so
+    // Hold Ground doesn't chase.
+    private float _pendingAttackLeash = float.PositiveInfinity;
+
+    /// <summary>A move or stop order ends the hero's attack loop: the swing
+    /// or cast in progress is dropped (a blow not yet landed never lands)
+    /// and no next one starts. Without this the loop restarted on its own
+    /// target after the order: the hero fired while running, or turned back
+    /// to chase what the player was retreating from.</summary>
+    /// <summary>True while a right-button tap runs the attack click (for the
+    /// order trace in <see cref="TryClickToAttack"/>).</summary>
+    private bool _attackClickFromRmb;
+
+    private void EndPlayerAttackLoop()
+    {
+        if (_playerSwing is null && _playerCast is null) return;
+        _playerSwing = null;
+        _playerCast = null;
+        _player?.Actor.Host.OverrideAnimIndex(-1, 0f);
+    }
+
+    /// <summary>An attack or cast replaces the hero's walk: the hero stops
+    /// where it stands to swing or cast, as the original's attack order
+    /// replaces its move order. Without this, attacking an enemy already in
+    /// reach (a click, a right-click cast) left the earlier move order
+    /// running, and the hero slid across the ground mid-swing.</summary>
+    private void HaltPlayerWalk()
+    {
+        if (_playerFollower is not { ReachedGoal: false } f) return;
+        f.SetTarget(f.Position);
+    }
     // SC-CAST-APPROACH — pending walk-up-and-cast latch: clicking an enemy
     // (or breakable) beyond the active spell's CastRange runs the hero into
     // range and re-initiates the cast, mirroring the melee/bow walk-up
@@ -30541,10 +30679,18 @@ void main()
         var dir  = far_ - near;
         if (dir.LengthSquared() < 1e-8f || MathF.Abs(dir.Y) < 1e-4f) return false;
 
-        float planeY = _player.CurrentTransform.Translation.Y;
-        float t = (planeY - near.Y) / dir.Y;
-        if (t < 0f) return false;
-        var groundHit = near + dir * t;
+        // The ground under the cursor: where the ray meets the walk mesh, as a
+        // move click resolves it. The plane at the hero's height is the
+        // fallback only: clicking a slope that rises above the hero put that
+        // plane's point far beyond the hill, beside some unseen monster.
+        Vector3 groundHit;
+        if (_navMesh is null || !_navMesh.TryRaycast(near, dir, dir.Length(), out _, out groundHit))
+        {
+            float planeY = _player.CurrentTransform.Translation.Y;
+            float t = (planeY - near.Y) / dir.Y;
+            if (t < 0f) return false;
+            groundHit = near + dir * t;
+        }
 
         // SC-SCREEN-PICK — you attack what you SEE: the projected-body
         // pick replaces the old plane-at-player-Y XZ radius (which missed
@@ -30559,7 +30705,7 @@ void main()
             && s.Actor.Stats.IsCombatant && (forceAtk || s.IsEvilAligned) && s.IsSelectable);
         if (best is null)
         {
-            float bestDist = ClickAttackRadius;
+            float bestDist = ClickAttackFallbackRadius;
             foreach (var s in _actors)
             {
                 if (s.IsDead) continue;
@@ -30572,7 +30718,7 @@ void main()
                 float dx = pos.X - groundHit.X;
                 float dz = pos.Z - groundHit.Z;
                 float d  = MathF.Sqrt(dx * dx + dz * dz);
-                if (d < bestDist) { bestDist = d; best = s; }
+                if (d < bestDist && !HiddenFromCamera(pos)) { bestDist = d; best = s; }
             }
         }
         if (best is null)
@@ -30627,6 +30773,7 @@ void main()
         // SC-PATHING-LOS — a bow needs SIGHT: an enemy behind a building is
         // in range but the shot would fly through the wall; approach until
         // the sight line clears (DS1's FindClearLosPoint behavior).
+        _pendingAttackLeash = float.PositiveInfinity;   // a clicked target is followed anywhere
         bool meleeObstructed = !_weaponIsRanged && _navMesh is not null
             && _navMesh.SegmentCrossesBlocked(pPos, tPos);
         bool rangedSightBlocked = _weaponIsRanged && IsSightBlocked(pPos, tPos);
@@ -30636,16 +30783,20 @@ void main()
             _pendingCastTarget = null;
             _pendingCastProp = null;
             _pendingBreakProp = null;
-            // Walk to a point just inside reach on the player→target line so
-            // the follower stops at swinging distance instead of plowing in.
-            var stop = ComputeApproachPoint(pPos, tPos, reach);
-            _playerFollower?.SetTarget(stop);
+            // Path to the target; the per-tick drive stops the walk as soon
+            // as the hero is in reach with a clear line.
+            _playerFollower?.SetTarget(tPos);
             Console.WriteLine(
                 $"click-attack: approaching {best.Actor.Template.Name} " +
                 $"(dist={playerDist:F1}u, reach={reach:F1}u)");
             return true;
         }
 
+        // SC-ORDER-TRACE — every attack start names what started it, so a
+        // shot the player didn't mean can be traced to its source.
+        Console.WriteLine(
+            $"click-attack: {best.Actor.Template.Name} in reach (dist={playerDist:F1}u, " +
+            $"reach={reach:F1}u, {(_attackClickFromRmb ? "right" : "left")} click)");
         PerformPlayerSwing(best, attackerStats);
         return true;
     }
@@ -30814,16 +30965,13 @@ void main()
             if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-FADED + SC-PICK-YBAND
             var p = s.CurrentTransform.Translation;
             float dx = p.X - hit.X, dz = p.Z - hit.Z;
-            if (dx * dx + dz * dz < ClickAttackRadius * ClickAttackRadius) return true;
+            if (dx * dx + dz * dz < ClickAttackFallbackRadius * ClickAttackFallbackRadius) return true;
         }
         return false;
     }
 
     static Vector3 ComputeApproachPoint(Vector3 from, Vector3 toCenter, float stopShortBy)
     {
-        var d = new Vector3(toCenter.X - from.X, 0f, toCenter.Z - from.Z);
-        float len = d.Length();
-        if (len < 1e-3f) return from;
         // Phase 21-SC-BARREL-FOLD — DS1 stops the hero at the edge of
         // swing reach, not deep inside it. Pre-fold's 0.8x stand-off had
         // the hero plant 0.4u past the reach boundary toward the target,
@@ -30834,9 +30982,7 @@ void main()
         // clears the target's body bubble for the typical hero/krug
         // pairing. Eyes-on the user expects "stands close to but not on
         // top of" — that's this distance.
-        float walk = MathF.Max(0f, len - stopShortBy * 0.95f);
-        var dir = d / len;
-        return new Vector3(from.X + dir.X * walk, toCenter.Y, from.Z + dir.Z * walk);
+        return SiegeFX.Core.Actors.HeroApproach.PointInReach(from, toCenter, stopShortBy);
     }
 
     /// <summary>SC-PROP-BREAK-REACH — pick a WALKABLE stand point to approach a
@@ -30884,10 +31030,18 @@ void main()
     private bool TryClickToBreakProp(Vector3 groundHit)
     {
         if (_player is null) return false;
-        StaticPropInstance? best = null;
-        // SC-CURSOR-ARBITRATION — props pick with their own tighter radius
-        // (see ClickBreakableRadius) instead of the 3u combat radius.
-        float bestDist = ClickBreakableRadius;
+        // SC-SCREEN-PICK — the breakable drawn under the cursor wins. The
+        // ground disc alone missed crates clicked from bow range: the cursor
+        // ray passes over the crate and meets the ground well behind it.
+        // Only decline for a pile when the cursor is actually OVER it; the
+        // old ground-distance yield made a pile near the barrels swallow
+        // deliberate barrel clicks (and vice versa).
+        var screen = PickInteractiveAtCursor(_currentMousePos);
+        if (screen.Pile is not null) return false;
+        StaticPropInstance? best = screen.Prop;
+        // SC-CURSOR-ARBITRATION — the ground fallback picks props with their
+        // own tighter radius (see ClickBreakableRadius).
+        float bestDist = best is null ? ClickBreakableRadius : 0f;
         foreach (var prop in _staticProps)
         {
             if (!prop.IsBreakable || prop.IsDestroyed) continue;
@@ -30898,10 +31052,6 @@ void main()
             if (d < bestDist) { bestDist = d; best = prop; }
         }
         if (best is null) return false;
-        // SC-SCREEN-PICK — only decline for a pile when the cursor is
-        // actually OVER it; the old ground-distance yield made a pile near
-        // the barrels swallow deliberate barrel clicks (and vice versa).
-        if (PickInteractiveAtCursor(_currentMousePos).Pile is not null) return false;
 
         var attackerStats = GetPlayerAttackStats();
         float reach = PlayerEngageReach(attackerStats);
@@ -34426,8 +34576,16 @@ void main()
         return dirXZ * velH + new Vector3(0f, velH * tan, 0f);
     }
 
-    private void SpawnRangedShot(RangedShot shot, Vector3 src, Vector3 aimPoint, float speed)
+    private void SpawnRangedShot(RangedShot shot, Vector3 src, Vector3 aimPoint, float speed, string? shooter = null)
     {
+        // SC-ORDER-TRACE — every projectile names who loosed it and at what,
+        // so a stray shot in a recording can be found in the log.
+        string at = shot.TargetActor?.Actor.Template.Name
+                    ?? (shot.TargetProp is not null ? "a prop" : null)
+                    ?? (shot.NpcTargetCombat is not null ? "the party" : "the ground");
+        Console.WriteLine($"[shot] {(shot.FromPlayer ? "hero" : shooter ?? "npc")} -> {at} " +
+                          $"from ({src.X:F1},{src.Y:F1},{src.Z:F1}) to ({aimPoint.X:F1},{aimPoint.Y:F1},{aimPoint.Z:F1})" +
+                          (shot.Spell is not null ? $" spell {shot.Spell.Name}" : ""));
         shot.Pos = src;
         shot.Vel = SolveBallistic(src, aimPoint, MathF.Max(1f, speed), shot.Gravity);
         _rangedShots.Add(shot);
@@ -35049,6 +35207,7 @@ void main()
             ? _playerSpellbook.PrimaryCooldownRemaining
             : _playerSpellbook.SecondaryCooldownRemaining;
         if (cd > 0f) return;
+        HaltPlayerWalk();
         if (best is not null) SnapPlayerFacingTo(best.CurrentTransform.Translation);
         else if (prop is not null) SnapPlayerFacingTo(prop.World.Translation);
         // No target for an offensive spell → immediate release so the
@@ -35182,7 +35341,10 @@ void main()
         float elev = target is not null
             ? target.CurrentTransform.Translation.Y - _player!.CurrentTransform.Translation.Y
             : 0f;
+        HaltPlayerWalk();
         var clip = _player!.Actor.PickNextSwingClip(elev);
+        Console.WriteLine($"[swing] hero {(_weaponIsRanged ? "bow" : "melee")} at " +
+                          $"{target?.Actor.Template.Name ?? (prop is not null ? "a prop" : "nothing")}");
         if (clip is null)
         {
             // No authored attack chore — land the hit immediately (legacy
@@ -35306,11 +35468,14 @@ void main()
                 float dx = tp.X - pp.X, dz = tp.Z - pp.Z;
                 if (dx * dx + dz * dz <= reach * reach)
                 {
+                    if (!ReferenceEquals(tgt, ps.Target))
+                        Console.WriteLine($"attack-loop: switching to {tgt.Actor.Template.Name}");
                     SnapPlayerFacingTo(tp);
                     StartPlayerSwing(tgt, prop: null, ps.Attacker);
                 }
                 else
                 {
+                    Console.WriteLine($"attack-loop: {tgt.Actor.Template.Name} stepped out of reach, following");
                     _pendingAttackTarget = tgt;
                 }
             }
@@ -36900,7 +37065,7 @@ void main()
                         ImpactSfxScript = ammo.BreakEffect,
                         FlightSfxScript = ResolveAmmoFlightEffect(brain.CastSpell),
                     };
-                    SpawnRangedShot(lshot, castSrc, castTo, brain.CastSpell.LaunchVelocity);
+                    SpawnRangedShot(lshot, castSrc, castTo, brain.CastSpell.LaunchVelocity, s.Actor.Template.Name);
                     // Mesh-less ammo still flies (hit lands); a tinted streak
                     // stands in as the tracer, same rule as NPC thrown rocks.
                     if (lshot.Mesh is null && _particles is not null)
@@ -36990,7 +37155,7 @@ void main()
                     NpcDamage = thrDmg,
                     NpcTargetCombat = thrTarget,
                 };
-                SpawnRangedShot(shot, throwSrc, aim, s.RangedVelocity);
+                SpawnRangedShot(shot, throwSrc, aim, s.RangedVelocity, s.Actor.Template.Name);
                 if (shot.Mesh is null && _particles is not null)
                     _particles.SpawnProjectile(throwSrc, aim,
                         new Vector4(0.55f, 0.48f, 0.40f, 1f), 0.45f, 18f, 0);
@@ -37187,8 +37352,7 @@ void main()
                 _pendingAttackTarget = null;
                 _pendingPickupPile = null;
                 _pendingBreakProp = null;
-                _playerFollower?.SetTarget(ComputeApproachPoint(
-                    playerPos, cp, MathF.Max(1.5f, spell.CastRange * 0.9f)));
+                _playerFollower?.SetTarget(cp);
                 Console.WriteLine($"click-cast: approaching corpse {corpse.Actor.Template.Name} " +
                                   $"(dist={kdist:F1}u, range={spell.CastRange:F1}u)");
                 return;
@@ -37277,7 +37441,7 @@ void main()
                         _pendingAttackTarget = null;
                         _pendingPickupPile = null;
                         _pendingBreakProp = null;
-                        _playerFollower?.SetTarget(ComputeApproachPoint(
+                        _playerFollower?.SetTarget(FindWalkableApproach(
                             playerPos, bpPos, MathF.Max(1.5f, spell.CastRange * 0.9f)));
                         Console.WriteLine($"click-cast: approaching {bestProp.Template} " +
                                           $"(dist={bdist:F1}u, range={spell.CastRange:F1}u)");
@@ -37307,8 +37471,7 @@ void main()
                 _pendingAttackTarget = null;
                 _pendingPickupPile = null;
                 _pendingBreakProp = null;
-                _playerFollower?.SetTarget(ComputeApproachPoint(
-                    playerPos, ctp, MathF.Max(1.5f, spell.CastRange * 0.9f)));
+                _playerFollower?.SetTarget(ctp);
                 Console.WriteLine($"click-cast: approaching {best.Actor.Template.Name} " +
                                   $"(dist={cdist:F1}u, range={spell.CastRange:F1}u)");
                 return;
@@ -38716,7 +38879,7 @@ void main()
         {
             float pdx = pick.Position.X - playerPos.X, pdz = pick.Position.Z - playerPos.Z;
             float pdist = MathF.Sqrt(pdx * pdx + pdz * pdz);
-            if (pdist > PickupReach)
+            if (!InPickupReach(playerPos, pick.Position))
             {
                 _pendingPickupPile = pick;
                 _pendingAttackTarget = null;
@@ -38741,7 +38904,8 @@ void main()
                 // Still unreachable but already close-ish (the barrels only
                 // block the last meter): loot with a generous arm's reach
                 // rather than looping a dead click.
-                if (_playerFollower.PathBlocked && pdist <= PickupReach * 1.6f)
+                if (_playerFollower.PathBlocked && pdist <= PickupReach * 1.6f
+                    && PickupHeightInReach(playerPos, pick.Position))
                     return LootPileNow(pick, bestIdx);
                 _moveMarkerPos = pick.Position;
                 _moveMarkerAge = 0f;

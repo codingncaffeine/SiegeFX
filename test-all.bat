@@ -187,6 +187,7 @@ echo  114. SC-MP-EOS P3 NET ROUND-TRIP  - headless host^<-^>client: join+snapsho
 echo  115. FRONTEND CHROME SHOTS        - offscreen PNG receipts of the MainMenu + SinglePlayer chrome (goldens\frontend-shots; compare vs retail)
 echo  116. ENDGAME: GOM ARENA           - spawn in gom2 with dev console (tilde: god/kill) + debug spells; kill Gom then Super Gom = quest complete + VICTORY card
 echo  117. ENEMY CHASE-SIM AUDIT        - headless directed-movement audit (walker-vs-A* divergence, incl. generator children); new-game region set + optional all-region sweep
+echo  119. HERO MOVE-SIM AUDIT          - headless hero movement: random clicks (wrong-way starts, detours, stuck) + bow walk-up to targets 5-40u away; new-game region set
 echo.
 echo   B.  Rebuild (dotnet build -c Release)
 echo   Q.  Quit
@@ -310,6 +311,7 @@ if /i "%CHOICE%"=="114" goto T114
 if /i "%CHOICE%"=="115" goto T115
 if /i "%CHOICE%"=="116" goto T116
 if /i "%CHOICE%"=="117" goto T117
+if /i "%CHOICE%"=="119" goto T119
 if /i "%CHOICE%"=="B" goto BUILD
 if /i "%CHOICE%"=="Q" goto END
 goto MENU
@@ -2707,6 +2709,22 @@ echo  sweeps every region one mesh at a time (2026-07-19: 57/81 regions
 echo  with failures - the standing burn-down list).]
 echo.
 "%TOOL%" region chase-sim "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" /world/maps/map_world/regions/fh_r1,/world/maps/map_world/regions/bc_r1,/world/maps/map_world/regions/fh_r1a,/world/maps/map_world/regions/hc_r1,/world/maps/map_world/regions/path2crypts
+echo.
+pause
+goto MENU
+
+:T119
+echo.
+echo --- HERO MOVE-SIM AUDIT (headless hero movement, new-game set) ---
+echo [From random standing points in the fh_r1 set: (1) clicks the ground
+echo  5-40u away and walks the hero there with its own follower settings,
+echo  counting wrong-way starts, long detours and STUCK/PINNED walks;
+echo  (2) orders an attack on a target 5-40u away with a 10u bow and drives
+echo  the game's walk-up rules tick by tick: IN-REACH, GAVE-UP (no path) or
+echo  PINNED. Prints start/goal points to replay failures. Append --diag
+echo  for the follower's own nav logging.]
+echo.
+"%TOOL%" region hero-sim "%DS1%\Maps\World.dsmap" "%DS1%\Resources\Terrain.dsres" /world/maps/map_world/regions/fh_r1,/world/maps/map_world/regions/bc_r1,/world/maps/map_world/regions/fh_r1a,/world/maps/map_world/regions/hc_r1,/world/maps/map_world/regions/path2crypts
 echo.
 pause
 goto MENU
