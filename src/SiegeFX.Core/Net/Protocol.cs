@@ -56,8 +56,8 @@ public enum MpMsg : byte
 /// human-readable reason.</summary>
 public static class MpProtocol
 {
-    public const ushort Version = 4;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
-                                        // v4: PlayerHit, PropBreak, ActorSpawn
+    public const ushort Version = 5;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
+                                        // v4: PlayerHit, PropBreak, ActorSpawn; v5: chores in the pose frames
 }
 
 /// <summary>The JoinAccept world snapshot is the save JSON, indented: 130 kB
@@ -159,13 +159,21 @@ public ref struct MpReader
 
 /// <summary>One actor's authoritative pose in a StateDelta. Kept a plain
 /// struct so the delta loop allocates nothing per actor.</summary>
-public readonly record struct MpActorState(uint Scid, float X, float Y, float Z, ushort Life);
+public readonly record struct MpActorState(uint Scid, float X, float Y, float Z, ushort Life,
+                                           MpChore Chore = default);
+
+/// <summary>The last one-shot chore an actor started (swing, cast): a counter
+/// that moves on each start, the clip index and its length in 50 ms steps. A
+/// receiver replays the clip when the counter moves, so a lost frame costs at
+/// most one swing's animation, never a stuck one.</summary>
+public readonly record struct MpChore(byte Seq, byte Clip, byte Duration);
 
 /// <summary>One player's pose in a PlayerDelta / ClientState frame. Movement is
 /// client-authoritative (retail friend-trust), so each machine reports its own
 /// pose and the host fans the whole set back out. Yaw is the heading in radians
 /// (atan2(facing.X, facing.Z), matching the engine's player-facing convention).</summary>
-public readonly record struct MpPlayerState(byte Player, float X, float Y, float Z, float Yaw, ushort Life, byte Flags);
+public readonly record struct MpPlayerState(byte Player, float X, float Y, float Z, float Yaw, ushort Life, byte Flags,
+                                            MpChore Chore = default);
 
 /// <summary>A player's character card — the DS1 in-game player panel row
 /// (in_game_player_panel_characters.gas: Player / Character / Class / STR /

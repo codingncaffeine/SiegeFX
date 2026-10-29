@@ -133,4 +133,30 @@ public class MpJoinTests
         Pump(host, client);
         Assert.Equal((0xFE000001u, "krug_scout", 3f), spawn);
     }
+
+    [Fact]
+    public void ChoresRideThePoseFrames()
+    {
+        var (host, client, _) = Pair([]);
+        client.SendJoinRequest();
+        Pump(host, client);
+
+        var swing = new MpChore(Seq: 7, Clip: 3, Duration: 24);
+        client.BuildLocalPlayerState = () => new MpPlayerState(0, 1f, 0f, 2f, 0f, 30, 0, swing);
+        MpPlayerState? seenByHost = null;
+        host.ApplyPlayerStates = list => seenByHost = list[0];
+        host.BuildLocalPlayerState = () => new MpPlayerState(0, 0f, 0f, 0f, 0f, 30, 0, new MpChore(2, 5, 10));
+        MpPlayerState? seenByClient = null;
+        client.ApplyPlayerStates = list => seenByClient = list[0];
+        host.EnumerateActors = () => [new MpActorState(0x01C005CA, 1f, 2f, 3f, 12, new MpChore(9, 4, 20))];
+        MpActorState? mob = null;
+        client.ApplyDelta = (_, list) => mob = list[0];
+
+        Pump(host, client, dt: 0.1);
+        Pump(host, client, dt: 0.1);
+
+        Assert.Equal(swing, seenByHost?.Chore);
+        Assert.Equal(new MpChore(2, 5, 10), seenByClient?.Chore);
+        Assert.Equal(new MpChore(9, 4, 20), mob?.Chore);
+    }
 }

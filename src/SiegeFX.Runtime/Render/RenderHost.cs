@@ -2021,6 +2021,10 @@ public sealed class RenderHost : IDisposable
         // over the wire on a client. The sim skips its Brain; the transform is
         // slaved to NetTargetPos/Yaw exactly like a remote avatar.
         public bool IsNetworkOwned;
+        // Co-op: the owner's chore counter last seen for this network-driven
+        // actor (MpReplayChore); unset until the first frame names one.
+        public byte NetChoreSeq;
+        public bool NetChoreSeen;
 
         // Phase 26a — set once an NPC is recruited into the party (the player
         // is member 0 and also carries IsPlayer). Party members follow the
@@ -6337,6 +6341,11 @@ public sealed class RenderHost : IDisposable
     // the region rather than trying to carry a socket across the relaunch.
     private readonly string? _mpInRegionRole = Environment.GetEnvironmentVariable("SIEGEFX_MP_ROLE");
     private bool _mpInRegionDone;
+    // Co-op runs the session on the frame loop, and a vsynced swap blocks while
+    // the compositor shows nothing of the window (covered, minimized, another
+    // fullscreen app): the host's world froze for every player. Co-op paces
+    // with the frame cap instead.
+    private bool MpPacesWithoutVSync => _mpInRegionRole is not null;
     private double _mpStartCountdown;          // host: >0 = broadcasting GameStart before relaunch
     private MpRelaunch? _mpClientStartPending; // client: latched on GameStart, relaunched next frame
     private string? _mpJoinedHostAddress;      // client: the address we connected to (reused in-region)
@@ -7894,7 +7903,27 @@ public sealed class RenderHost : IDisposable
         byte flags = 0;
         if (p.IsMoving) flags |= (byte)SiegeFX.Core.Net.MpPlayerFlags.Moving;
         if (p.IsDead)   flags |= (byte)SiegeFX.Core.Net.MpPlayerFlags.Dead;
-        return new SiegeFX.Core.Net.MpPlayerState(0, t.X, t.Y, t.Z, yaw, life, flags);
+        return new SiegeFX.Core.Net.MpPlayerState(0, t.X, t.Y, t.Z, yaw, life, flags, MpChoreOf(p));
+    }
+
+    // Co-op: the swing/cast an actor last started, for the other machines to replay.
+    private static SiegeFX.Core.Net.MpChore MpChoreOf(ActorRenderState a)
+    {
+        var h = a.Actor.Host;
+        if (h.ChoreClip < 0 || h.ChoreClip > 254) return new SiegeFX.Core.Net.MpChore(h.ChoreSeq, 255, 0);
+        int steps = (int)MathF.Round(h.ChoreDuration / 0.05f);
+        return new SiegeFX.Core.Net.MpChore(h.ChoreSeq, (byte)h.ChoreClip, (byte)Math.Clamp(steps, 1, 255));
+    }
+
+    // Co-op: play the owner's new chore on its network-driven stand-in. The
+    // first frame only baselines the counter, so joining mid-swing replays nothing.
+    private static void MpReplayChore(ActorRenderState a, in SiegeFX.Core.Net.MpChore c)
+    {
+        if (!a.NetChoreSeen) { a.NetChoreSeen = true; a.NetChoreSeq = c.Seq; return; }
+        if (c.Seq == a.NetChoreSeq) return;
+        a.NetChoreSeq = c.Seq;
+        if (c.Clip == 255 || c.Duration == 0 || a.IsDead) return;
+        a.Actor.Host.OverrideAnimIndex(c.Clip, c.Duration * 0.05f);
     }
 
     // SC-MP-INGAME — host-authoritative world actors (enemies/props), keyed by
@@ -7909,11 +7938,14 @@ public sealed class RenderHost : IDisposable
             // props are already placed identically by the shared region load, and
             // players ride the separate player-pose channel. Dead mobs stay in the
             // set so their life==0 reaches a client that joined before they died.
-            if (a.IsPlayer || a.IsRemotePlayer || a.Brain is null) continue;
+            // A kill clears the Brain, so the dead are let through on IsDead or
+            // their life==0 would never leave the host.
+            if (a.IsPlayer || a.IsRemotePlayer || (a.Brain is null && !a.IsDead)) continue;
             var pos = a.CurrentTransform.Translation;
             list.Add(new SiegeFX.Core.Net.MpActorState(
                 a.Actor.Instance.Scid, pos.X, pos.Y, pos.Z,
-                (ushort)System.Math.Clamp((int)a.Actor.Combat.CurrentLife, 0, ushort.MaxValue)));
+                (ushort)System.Math.Clamp((int)a.Actor.Combat.CurrentLife, 0, ushort.MaxValue),
+                MpChoreOf(a)));
         }
         return list;
     }
@@ -7933,6 +7965,7 @@ public sealed class RenderHost : IDisposable
             avatar.IsMoving = (ps.Flags & (byte)SiegeFX.Core.Net.MpPlayerFlags.Moving) != 0;
             // Death/revive of a remote player drives its avatar's corpse chore.
             MpSetNetActorDead(avatar, (ps.Flags & (byte)SiegeFX.Core.Net.MpPlayerFlags.Dead) != 0, playDeathSfx: false);
+            MpReplayChore(avatar, ps.Chore);
         }
     }
 
@@ -8079,6 +8112,7 @@ public sealed class RenderHost : IDisposable
             a.IsMoving = moving;
             if (dead && !a.IsDead) SiegeFX.Core.Net.NetLog.Info($"world actor scid {st.Scid:x8} died (host)");
             MpSetNetActorDead(a, dead, playDeathSfx: true);
+            MpReplayChore(a, st.Chore);
         }
     }
 
@@ -8123,9 +8157,14 @@ public sealed class RenderHost : IDisposable
         ActorRenderState? best = null;
         foreach (var a in _actors)
             if (!a.IsPlayer && !a.IsRemotePlayer && a.Actor.Instance.Scid == scid) { best = a; break; }
-        if (best is null || best.IsDead || best.Actor.Combat.IsDead) return;
+        if (best is null || best.IsDead || best.Actor.Combat.IsDead)
+        {
+            SiegeFX.Core.Net.NetLog.Warn($"client hit on scid {scid:x8}: {(best is null ? "no such actor here" : "already dead")}");
+            return;
+        }
         var hitPos = AimPoint(best);
         float dealt = best.Actor.Combat.ApplyDamage(damage);
+        SiegeFX.Core.Net.NetLog.Info($"client hit on {best.Actor.Template.Name} {scid:x8}: -{dealt:F1}, life {best.Actor.Combat.CurrentLife:F1}");
         if (dealt > 0f) { PlayMeleeHit(hitPos, best); SpawnBloodHit(best); }
         if (best.Actor.Combat.ConsumeJustDied())
             HandleActorKilledByHit(best, dealt);
@@ -9827,7 +9866,7 @@ void main()
         {
             Title = title,
             Size = new Vector2D<int>(winW, winH),
-            VSync = live.VSync,
+            VSync = live.VSync && !MpPacesWithoutVSync,
             WindowState = winState,
             WindowBorder = winBorder,
             Samples = msaa > 0 ? msaa : null,
@@ -27482,13 +27521,14 @@ void main()
             float aniso = s.Anisotropy switch { "2x" => 2f, "4x" => 4f, "16x" => 16f, _ => 8f };
             GlTexture.SetFilterMode(mode, aniso);
         }
-        _window.VSync = s.VSync;
+        bool vsync = s.VSync && !MpPacesWithoutVSync;
+        _window.VSync = vsync;
         // ALPHA-PERF — with VSync ON the software frame limiter must stay
         // OFF: Silk's cap sleeps on the coarse Windows timer and fights the
         // swap-interval pacing, which reads as constant micro-hitching. The
         // cap only applies when vsync is off.
-        _window.FramesPerSecond = !s.VSync && double.TryParse(s.FpsCap, out var cap) && cap > 0
-            ? cap : 0.0;
+        _window.FramesPerSecond = !vsync && double.TryParse(s.FpsCap, out var cap) && cap > 0
+            ? cap : MpPacesWithoutVSync ? 60.0 : 0.0;
     }
 
     // SC-DISPLAY-MODE — last windowed (decorated) top-left, captured when

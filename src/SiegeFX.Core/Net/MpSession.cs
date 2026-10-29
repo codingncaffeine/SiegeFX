@@ -153,6 +153,7 @@ public sealed class MpSession : IDisposable
     {
         if (IsHost || targetScid == 0 || damage <= 0f) return;
         _t.Send(0, new MpWriter().U8((byte)MpMsg.ClientHit).U32(targetScid).F32(damage).Span);
+        NetLog.Info($"client hit -> host: scid {targetScid:x8} dmg {damage:F1}");
     }
 
     public void SendChat(string text)
@@ -332,13 +333,14 @@ public sealed class MpSession : IDisposable
                 var actors = EnumerateActors?.Invoke();
                 if (actors is { Count: > 0 } && _t.Peers.Count > 0)
                 {
-                    var w = new MpWriter(16 + actors.Count * 18);
+                    var w = new MpWriter(16 + actors.Count * 21);
                     w.U8((byte)MpMsg.StateDelta).U32(_tick).U16((ushort)Math.Min(actors.Count, ushort.MaxValue));
                     int n = Math.Min(actors.Count, ushort.MaxValue);
                     for (int i = 0; i < n; i++)
                     {
                         var a = actors[i];
-                        w.U32(a.Scid).F32(a.X).F32(a.Y).F32(a.Z).U16(a.Life);
+                        w.U32(a.Scid).F32(a.X).F32(a.Y).F32(a.Z).U16(a.Life)
+                         .U8(a.Chore.Seq).U8(a.Chore.Clip).U8(a.Chore.Duration);
                     }
                     Broadcast(w.ToArray());
                 }
@@ -359,13 +361,14 @@ public sealed class MpSession : IDisposable
 
     byte[] BuildPlayerDelta()
     {
-        var w = new MpWriter(8 + _players.Count * 20);
+        var w = new MpWriter(8 + _players.Count * 23);
         w.U8((byte)MpMsg.PlayerDelta).U32(_tick).U8((byte)Math.Min(_players.Count, byte.MaxValue));
         int n = 0;
         foreach (var s in _players.Values)
         {
             if (n++ >= byte.MaxValue) break;
-            w.U8(s.Player).F32(s.X).F32(s.Y).F32(s.Z).F32(s.Yaw).U16(s.Life).U8(s.Flags);
+            w.U8(s.Player).F32(s.X).F32(s.Y).F32(s.Z).F32(s.Yaw).U16(s.Life).U8(s.Flags)
+             .U8(s.Chore.Seq).U8(s.Chore.Clip).U8(s.Chore.Duration);
         }
         return w.ToArray();
     }
@@ -381,7 +384,8 @@ public sealed class MpSession : IDisposable
 
     void SendClientState(MpPlayerState s) =>
         _t.Send(0, new MpWriter().U8((byte)MpMsg.ClientState)
-            .F32(s.X).F32(s.Y).F32(s.Z).F32(s.Yaw).U16(s.Life).U8(s.Flags).Span);
+            .F32(s.X).F32(s.Y).F32(s.Z).F32(s.Yaw).U16(s.Life).U8(s.Flags)
+            .U8(s.Chore.Seq).U8(s.Chore.Clip).U8(s.Chore.Duration).Span);
 
     /// <summary>Host: broadcast the START signal so every client leaves staging,
     /// relaunches into the region and reconnects in-world.</summary>
@@ -475,8 +479,9 @@ public sealed class MpSession : IDisposable
             {
                 float x = r.F32(), y = r.F32(), z = r.F32(), yaw = r.F32();
                 ushort life = r.U16(); byte flags = r.U8();
+                var chore = new MpChore(r.U8(), r.U8(), r.U8());
                 if (r.Bad) { NetLog.Warn($"session: malformed ClientState from peer {peer} — dropped"); return; }
-                _players[peer] = new MpPlayerState((byte)peer, x, y, z, yaw, life, flags);
+                _players[peer] = new MpPlayerState((byte)peer, x, y, z, yaw, life, flags, chore);
                 break;
             }
             case MpMsg.Chat when IsHost:
@@ -613,7 +618,8 @@ public sealed class MpSession : IDisposable
                 int count = r.U16();
                 var list = new List<MpActorState>(count);
                 for (int i = 0; i < count && !r.Bad; i++)
-                    list.Add(new MpActorState(r.U32(), r.F32(), r.F32(), r.F32(), r.U16()));
+                    list.Add(new MpActorState(r.U32(), r.F32(), r.F32(), r.F32(), r.U16(),
+                                              new MpChore(r.U8(), r.U8(), r.U8())));
                 if (r.Bad) { NetLog.Warn("session: truncated StateDelta — dropped"); return; }
                 ApplyDelta?.Invoke(tick, list);
                 break;
@@ -629,7 +635,8 @@ public sealed class MpSession : IDisposable
                     byte pid = r.U8();
                     float x = r.F32(), y = r.F32(), z = r.F32(), yaw = r.F32();
                     ushort life = r.U16(); byte flags = r.U8();
-                    if (pid != LocalPlayerId) list.Add(new MpPlayerState(pid, x, y, z, yaw, life, flags));
+                    var chore = new MpChore(r.U8(), r.U8(), r.U8());
+                    if (pid != LocalPlayerId) list.Add(new MpPlayerState(pid, x, y, z, yaw, life, flags, chore));
                 }
                 if (r.Bad) { NetLog.Warn("session: truncated PlayerDelta — dropped"); return; }
                 if (list.Count > 0) ApplyPlayerStates?.Invoke(list);
