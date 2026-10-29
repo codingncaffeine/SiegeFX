@@ -330,6 +330,11 @@ public static class MoodStore
         string regionName)
     {
         var prefix = $"map_{mapName.ToLowerInvariant()}_{regionName.ToLowerInvariant()}_";
+        // multiplayer_world's moods (/world/global/moods/multiplayer_world/moods1.gas)
+        // are named after the full map folder: multiplayer_world_town_center_1.
+        if (!mapName.StartsWith("map_", StringComparison.OrdinalIgnoreCase)
+            && !moods.Keys.Any(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
+            prefix = $"{mapName.ToLowerInvariant()}_{regionName.ToLowerInvariant()}_";
         MoodSetting? bestWithBed = null;
         int bestWithBedRank = int.MaxValue;
         MoodSetting? bestAny = null;

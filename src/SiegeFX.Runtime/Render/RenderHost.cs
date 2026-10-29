@@ -22315,7 +22315,7 @@ void main()
         int added = 0;
         foreach (var rp in regionPaths)
         {
-            var objPrefix = rp.TrimEnd('/') + "/objects/";
+            var objPrefix = SiegeFX.Core.Assets.RegionObjects.ObjectsPrefix(mapReader, rp);
             foreach (var file in mapReader.ListFiles())
             {
                 if (!file.StartsWith(objPrefix, StringComparison.OrdinalIgnoreCase) ||
@@ -22365,7 +22365,7 @@ void main()
         int added = 0;
         foreach (var rp in regionPaths)
         {
-            var objPrefix = rp.TrimEnd('/') + "/objects/";
+            var objPrefix = SiegeFX.Core.Assets.RegionObjects.ObjectsPrefix(mapReader, rp);
             foreach (var file in mapReader.ListFiles())
             {
                 if (!file.StartsWith(objPrefix, StringComparison.OrdinalIgnoreCase) ||
@@ -22582,7 +22582,7 @@ void main()
         int added = 0;
         foreach (var rp in regionPaths)
         {
-            var objPrefix = rp.TrimEnd('/') + "/objects/";
+            var objPrefix = SiegeFX.Core.Assets.RegionObjects.ObjectsPrefix(mapReader, rp);
             foreach (var file in mapReader.ListFiles())
             {
                 if (!file.StartsWith(objPrefix, StringComparison.OrdinalIgnoreCase) ||
@@ -36795,13 +36795,16 @@ void main()
     {
         if (string.IsNullOrEmpty(regionPath)) return null;
         var norm = regionPath.Replace('\\', '/').TrimEnd('/');
-        const string token = "/maps/map_";
+        const string token = "/maps/";
         int idx = norm.IndexOf(token, StringComparison.OrdinalIgnoreCase);
         if (idx < 0) return null;
         int start = idx + token.Length;
         int end = norm.IndexOf('/', start);
         if (end < 0) return null;
-        return norm[start..end];
+        // map_world → "world"; multiplayer_world has no "map_" prefix and keeps
+        // its full folder name, which is how MoodStore knows its moods.
+        var folder = norm[start..end];
+        return folder.StartsWith("map_", StringComparison.OrdinalIgnoreCase) ? folder[4..] : folder;
     }
 
     /// <summary>Turn the internal map token (<c>DeriveMapName</c> → "world")
