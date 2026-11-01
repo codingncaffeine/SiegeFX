@@ -186,6 +186,9 @@ else if (args.Length >= 1 && args[0] == "--play-region")
     playLogic     = args[3];
     playObjects   = args[4];
     regionPath    = args[5];
+    // New and loaded games relaunch into this branch, so it takes the same
+    // translation tanks the menu did.
+    ConfigureOverlayTanks(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(playLogic))!);
 }
 else if (args.Length >= 1 && args[0] == "--sfx-filmstrip")
 {
@@ -240,6 +243,7 @@ else if (args.Length >= 1 && args[0] == "--frontend-shot")
         else if (args[i].StartsWith("--h=", StringComparison.Ordinal) && int.TryParse(args[i]["--h=".Length..], out var sh)) shotH = sh;
         else if (args[i].StartsWith("--t=", StringComparison.Ordinal) && float.TryParse(args[i]["--t=".Length..], System.Globalization.CultureInfo.InvariantCulture, out var st)) shotT = st;
     }
+    ConfigureOverlayTanks(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(args[1]))!);
     return SiegeFX.Runtime.Render.FrontendShotHost.Run(args[1], args[2], args[3], shotOut, shotW, shotH, shotT);
 }
 else if (args.Length >= 1 && args[0] == "--selftest-save")
@@ -302,6 +306,7 @@ else if (args.Length == 0)
     // user gets a friendly hint instead of a silent black window.
     bootMode = true;
     ds1Resources = ResolveDs1Resources();
+    if (ds1Resources is not null) ConfigureOverlayTanks(ds1Resources);
     // ALPHA-PACKAGING — tank byte-size integrity check (warn-only). Known-
     // good sizes are the GOG 1.11 set; Steam/disc editions may differ and
     // still work, but a truncated download or a modded tank is the #1
@@ -358,6 +363,22 @@ else
 // Resources folder), then each platform's store and launcher locations; see
 // SiegeFX.Core.IO.DsInstallLocator (shared with SiegeSmith).
 static IEnumerable<string> CandidateDs1Paths() => SiegeFX.Core.IO.DsInstallLocator.Candidates();
+
+// Language / patch / user tanks (fan translations) shadow the factory tanks,
+// as in DS1. SIEGEFX_NO_OVERLAYS=1 plays the install without them.
+static void ConfigureOverlayTanks(string resourcesDir)
+{
+    var overlays = SiegeFX.Core.Tank.TankOverlays.Find(resourcesDir);
+    if (overlays.Count == 0) return;
+    if (Environment.GetEnvironmentVariable("SIEGEFX_NO_OVERLAYS") == "1")
+    {
+        Console.WriteLine($"[data] {overlays.Count} overlay tank(s) ignored: SIEGEFX_NO_OVERLAYS=1");
+        return;
+    }
+    foreach (var (path, priority) in overlays)
+        Console.WriteLine($"[data] overlay tank ({priority}): {System.IO.Path.GetFileName(path)}");
+    SiegeFX.Core.Tank.TankOverlays.Configure(overlays.Select(o => o.Path));
+}
 
 static string? ResolveDs1Resources()
 {

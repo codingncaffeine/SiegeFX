@@ -15,8 +15,16 @@ public sealed class TankReader
     private readonly Dictionary<uint, int> _dirIndexByOffset = new();
     private TankFileEntry[] _files = Array.Empty<TankFileEntry>();
     private readonly Dictionary<string, Entry> _table = new(StringComparer.OrdinalIgnoreCase);
+    // Entries merged in from an overlay tank (see TankOverlays), keyed by
+    // reference to the reader that holds their bytes.
+    private readonly Dictionary<TankFileEntry, TankReader> _overlaySource = new(ReferenceEqualityComparer.Instance);
 
     private const int MaxDirDepth = 64;
+
+    // An overlay file new to this tank joins it only under a directory at least
+    // this deep that the tank already has ("/world/maps/map_world/"), so a
+    // map's conversations land in that map's tank and not in Logic.dsres.
+    private const int MinOverlayAnchorDepth = 3;
 
     private const char Sep = '/';
 
@@ -31,14 +39,22 @@ public sealed class TankReader
     /// visible at info time rather than discovered by extraction returning nothing.</summary>
     public int InvalidFileCount => _files.Count(f => f.IsInvalid);
 
-    public TankReader(TankFile tank)
+    public TankReader(TankFile tank) : this(tank, applyOverlays: true) { }
+
+    internal TankReader(TankFile tank, bool applyOverlays)
     {
         _tank = tank;
         ReadDirSet();
         ReadFileSet();
         BuildDirPaths();
         BuildFilePaths();
+        if (applyOverlays && tank.Header.Priority == TankPriority.Factory)
+            foreach (var overlay in TankOverlays.Active)
+                ApplyOverlay(overlay);
     }
+
+    /// <summary>Count of files this reader serves from an overlay tank.</summary>
+    public int OverlaidFileCount => _overlaySource.Count;
 
     public IEnumerable<string> ListFiles() =>
         _table.Where(kv => kv.Value.Type == EntryType.File).Select(kv => kv.Key);
@@ -67,6 +83,7 @@ public sealed class TankReader
 
     public byte[] ExtractEntry(TankFileEntry entry)
     {
+        if (_overlaySource.TryGetValue(entry, out var source)) return source.ExtractEntry(entry);
         if (entry.IsInvalid || entry.Size == 0) return Array.Empty<byte>();
 
         var header = _tank.Header;
@@ -261,6 +278,50 @@ public sealed class TankReader
             var dirPath = file.ParentOffset == 0 ? "" : BuildDirPath(FindDirIndex(file.ParentOffset));
             var full = dirPath + Sep + file.Name;
             _table[full] = new Entry(EntryType.File, null, file);
+        }
+    }
+
+    /// <summary>Shadows this tank's files with <paramref name="overlay"/>'s: a path
+    /// both hold now reads from the overlay, and an overlay file this tank lacks
+    /// joins it when it sits under one of this tank's own deep directories.</summary>
+    private void ApplyOverlay(TankReader overlay)
+    {
+        foreach (var (path, e) in overlay._table)
+        {
+            if (e.Type != EntryType.File) continue;
+            if (_table.TryGetValue(path, out var mine))
+            {
+                if (mine.Type != EntryType.File) continue;
+            }
+            else if (!HasAnchorDirectory(path)) continue;
+
+            // Owned by the overlay tank's reader, whichever tank it came from.
+            var source = overlay._overlaySource.TryGetValue(e.File!, out var s) ? s : overlay;
+            _table[path] = e;
+            _overlaySource[e.File!] = source;
+            AddMissingParentDirs(path);
+        }
+    }
+
+    private bool HasAnchorDirectory(string filePath)
+    {
+        var dir = filePath;
+        for (var cut = dir.LastIndexOf(Sep); cut > 0; cut = dir.LastIndexOf(Sep))
+        {
+            dir = dir[..cut];
+            if (dir.Count(c => c == Sep) < MinOverlayAnchorDepth) return false;
+            if (_table.TryGetValue(dir + Sep, out var d) && d.Type == EntryType.Dir) return true;
+        }
+        return false;
+    }
+
+    private void AddMissingParentDirs(string filePath)
+    {
+        var dir = filePath;
+        for (var cut = dir.LastIndexOf(Sep); cut > 0; cut = dir.LastIndexOf(Sep))
+        {
+            dir = dir[..cut];
+            if (!_table.TryAdd(dir + Sep, new Entry(EntryType.Dir, null, null))) return;
         }
     }
 

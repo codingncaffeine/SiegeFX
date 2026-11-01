@@ -38,6 +38,7 @@ public sealed class RawImage
 
     public static RawImage Load(byte[] data)
     {
+        if (PsdImage.IsPsd(data)) return PsdImage.Load(data);
         if (data.Length < HeaderSize)
             throw new InvalidDataException($"RAW too small: {data.Length} bytes");
 
