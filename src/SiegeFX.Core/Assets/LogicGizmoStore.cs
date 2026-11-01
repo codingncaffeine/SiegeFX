@@ -59,7 +59,7 @@ public static class LogicGizmoStore
     {
         var defs = new List<LogicGizmoDef>();
         var norm = regionPath.TrimEnd('/');
-        var objPrefix = norm + "/objects/";
+        var objPrefix = RegionObjects.ObjectsPrefix(tank, norm);
         foreach (var file in tank.ListFiles())
         {
             if (!file.StartsWith(objPrefix, StringComparison.OrdinalIgnoreCase)) continue;
