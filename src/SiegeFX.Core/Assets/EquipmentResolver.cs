@@ -113,14 +113,19 @@ public sealed class EquipmentResolver
     /// the template — picked-up items override / extend the template's authored
     /// loadout. Slots that fail to resolve (missing item template, no mesh on
     /// disk) are returned with <see cref="Strategy.None"/> so the caller can log
-    /// them without crashing the spawn path.</summary>
+    /// them without crashing the spawn path. <paramref name="bodyModelOverride"/>
+    /// names the body mesh actually drawn when it differs from the template's
+    /// <c>aspect.model</c>.</summary>
     public static List<EquipmentLayer> Resolve(
         TemplateStore templates, AssetResolver resolver, Template playerTemplate,
-        IReadOnlyDictionary<string, string>? liveSlots = null)
+        IReadOnlyDictionary<string, string>? liveSlots = null,
+        string? bodyModelOverride = null)
     {
         var layers = new List<EquipmentLayer>();
         var armorVersion = templates.GetAttribute(playerTemplate, "body", "armor_version");
-        var bodyModel = templates.GetAttribute(playerTemplate, "aspect", "model");
+        // The body actually drawn — an NPC in plate spawns on its armored
+        // pos_aN mesh, and texture + boot/gauntlet subtypes must follow it.
+        var bodyModel = bodyModelOverride ?? templates.GetAttribute(playerTemplate, "aspect", "model");
         var bodyType = ExtractBodyType(bodyModel); // e.g. m_c_gah_fb_pos_a1 → a1
         var weaponBone = templates.GetAttribute(playerTemplate, "body", "bone_translator", "weapon_bone");
         var shieldBone = templates.GetAttribute(playerTemplate, "body", "bone_translator", "shield_bone");
@@ -180,6 +185,28 @@ public sealed class EquipmentResolver
             && TemplateStore.FindChild(instance, "inventory") is { } inv)
             Add(TemplateStore.FindChild(inv, "equipment"));
         return slots;
+    }
+
+    /// <summary>DS1 body armor picks the body MESH as well as the texture: the
+    /// chest item's <c>defend.armor_type</c> (a1..a7) names the
+    /// <c>pos_aN</c> body it is drawn on — Legionnaire plate (<c>a3</c>) puts
+    /// the bulky <c>m_c_gah_fb_pos_a3</c> body under <c>b_c_pos_a3_014</c>,
+    /// where the a1 body would show a thin shirt. Returns the armored model
+    /// for <paramref name="bodyModel"/> (<c>m_c_gah_fb_pos_a1</c> →
+    /// <c>m_c_gah_fb_pos_a3</c>), or null when there is no chest armor, the
+    /// armor type is not a body type, it already matches, or the model does
+    /// not carry an aN suffix (monsters, dwarves' b1).</summary>
+    public static string? ArmoredBodyModel(
+        TemplateStore templates, string? bodyModel, IReadOnlyDictionary<string, string> slots)
+    {
+        var bodyType = ExtractBodyType(bodyModel);
+        if (bodyType is null || bodyModel is null) return null;
+        if (!slots.TryGetValue("es_chest", out var chestRef) || string.IsNullOrEmpty(chestRef)) return null;
+        if (!templates.TryGet(chestRef.Trim(), out var chest)) return null;
+        var armorType = templates.GetAttribute(chest, "defend", "armor_type")?.Trim();
+        if (ExtractBodyType("_" + armorType) is not { } wanted) return null;
+        if (string.Equals(wanted, bodyType, StringComparison.OrdinalIgnoreCase)) return null;
+        return bodyModel[..^bodyType.Length] + wanted;
     }
 
     private static EquipmentLayer ResolveSlot(

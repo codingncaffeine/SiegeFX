@@ -68,4 +68,22 @@ public class NpcArmorTests
         Assert.Equal("bd_un_pl_f_g_c_fun", slots["es_chest"]);
         Assert.Equal(3, slots.Count);
     }
+
+    [Fact]
+    public void PlateMovesTheGuardOntoTheArmoredBody()
+    {
+        var (store, guard) = Load();
+        var slots = EquipmentResolver.CollectActorSlots(store, guard, instance: null);
+        // Plate is armor_type a3: DS1 draws it on the bulky pos_a3 body...
+        Assert.Equal("m_c_gah_fb_pos_a3",
+            EquipmentResolver.ArmoredBodyModel(store, "m_c_gah_fb_pos_a1", slots));
+        // ...and the chest texture follows the body actually drawn.
+        var layers = EquipmentResolver.Resolve(store, new AssetResolver(), guard, slots, "m_c_gah_fb_pos_a3");
+        Assert.Equal("b_c_pos_a3_014", Assert.Single(layers, l => l.SlotName == "es_chest").OverrideBaseName);
+        // Already on that body, or no body-type suffix: nothing to swap.
+        Assert.Null(EquipmentResolver.ArmoredBodyModel(store, "m_c_gah_fb_pos_a3", slots));
+        Assert.Null(EquipmentResolver.ArmoredBodyModel(store, "m_c_gan_df_pos_b1", slots));
+        Assert.Null(EquipmentResolver.ArmoredBodyModel(store, "m_c_gah_fb_pos_a1",
+            new Dictionary<string, string> { ["es_head"] = "he_op_pl_eyes" }));
+    }
 }
