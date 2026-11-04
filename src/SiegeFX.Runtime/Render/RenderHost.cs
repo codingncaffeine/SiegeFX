@@ -17,7 +17,7 @@ namespace SiegeFX.Runtime.Render;
 /// Phase 3 just draws a reference grid so WASD + mouse-look can be verified;
 /// later phases will hang real scene objects off this.
 /// </summary>
-public sealed class RenderHost : IDisposable
+public sealed partial class RenderHost : IDisposable
 {
     private readonly IWindow _window;
     private readonly string? _meshPath;
@@ -496,6 +496,15 @@ public sealed class RenderHost : IDisposable
         public int CarInstanceIdx = -1;
         public Vector3 PrevCarPos;
         public readonly List<ActorRenderState> Riders = new();
+        // SC-ELEVATOR-INSTANT — the hub teleporter's second car and its
+        // eight dock poses (InstantElevatorPlan.DockIndex); null otherwise.
+        public Matrix4x4[]? InstantPoses;
+        public SiegeFX.Core.Assets.InstantRide Ride;
+        public int Phase;              // 0 = rising at the old location, 1 = sinking at the new one
+        public bool ActionFired;       // this phase's actioninfo already sent
+        public int Car2InstanceIdx = -1;
+        public Vector3 PrevCar2Pos;
+        public readonly List<ActorRenderState> Riders2 = new();
     }
     // Delayed fade tuples from movingN_actioninfo's optional 6th field
     // ("...,in,4.5" = fire 4.5s after departure).
@@ -3359,6 +3368,8 @@ public sealed class RenderHost : IDisposable
             // we_req_activate at the gizmo from both lever states).
             if (_elevatorsByScid.TryGetValue(toScid, out var elv))
                 StartElevatorRide(elv);
+            else if (_pendingInstantElevators.ContainsKey(toScid))
+                RequestInstantElevator(toScid, startRide: true);
             // SC-STAIRWELL — rotate the hidden crypt stairwell.
             if (_stairwellsByScid.TryGetValue(toScid, out var sw))
                 StartStairwellRide(sw);
@@ -13588,24 +13599,35 @@ void main()
 
         // Center's stitch helper drives the new neighbor list. No file =
         // standalone region (test fixtures) → nothing to extend with.
+        // SC-ELEVATOR-INSTANT — a not-yet-loaded stitchless region (the
+        // multiplayer_world new_hub, reached only by teleporter) still
+        // streams in on its own; it lands as an island (see
+        // _islandRegionOffsets).
+        bool streamLoneCenter = !isInitial && !_loadedRegions.ContainsKey(center);
         var centerStitchPath = center + "/editor/stitch_helper.gas";
+        RegionStitchHelper? centerStitches = null;
         if (!mapReader.TryGetFile(centerStitchPath, out _))
         {
-            if (isInitial)
-                Console.WriteLine("  neighbor preload: no stitch_helper.gas — standalone region");
-            return newlyLoaded;
+            if (!streamLoneCenter)
+            {
+                if (isInitial)
+                    Console.WriteLine("  neighbor preload: no stitch_helper.gas — standalone region");
+                return newlyLoaded;
+            }
         }
-        RegionStitchHelper centerStitches;
-        try { centerStitches = RegionStitchHelper.Load(mapReader.ExtractToMemory(centerStitchPath)); }
-        catch (Exception ex)
+        else
         {
-            Console.WriteLine($"  neighbor preload: stitch parse failed for {center} ({ex.Message}) — skipping");
-            return newlyLoaded;
-        }
-        if (centerStitches.ByDestination.Count == 0)
-        {
-            if (isInitial) Console.WriteLine("  neighbor preload: 0 destination region(s) declared");
-            return newlyLoaded;
+            try { centerStitches = RegionStitchHelper.Load(mapReader.ExtractToMemory(centerStitchPath)); }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  neighbor preload: stitch parse failed for {center} ({ex.Message}) — skipping");
+                return newlyLoaded;
+            }
+            if (centerStitches.ByDestination.Count == 0 && !streamLoneCenter)
+            {
+                if (isInitial) Console.WriteLine("  neighbor preload: 0 destination region(s) declared");
+                return newlyLoaded;
+            }
         }
 
         // Map leaf names ("fh_r2") to full tank paths.
@@ -13622,7 +13644,7 @@ void main()
         // not currently in _loadedRegions.
         var toLoad = new List<string>();
         if (!_loadedRegions.ContainsKey(center)) toLoad.Add(center);
-        foreach (var destLeaf in centerStitches.ByDestination.Keys)
+        foreach (var destLeaf in centerStitches?.ByDestination.Keys ?? Enumerable.Empty<string>())
         {
             if (!pathByLeaf.TryGetValue(destLeaf, out var np)) continue;
             if (np == center) continue;
@@ -13700,7 +13722,20 @@ void main()
         foreach (var kv in _loadedRegions) entries.Add(kv.Value);
         var rootHint = (_worldRootRegion != null && _loadedRegions.ContainsKey(_worldRootRegion))
             ? _worldRootRegion : center;
-        var world = WorldLayout.Build(entries, ResolveModel, rootHint);
+        var world = WorldLayout.Build(entries, ResolveModel, rootHint, _islandRegionOffsets);
+        // SC-ELEVATOR-INSTANT — a region streamed on its own that no stitch
+        // from the loaded world reaches (the new_hub teleporter island, or a
+        // far teleporter destination) is pinned as an island so it gets
+        // world transforms at all.
+        if (!isInitial && _loadedRegions.ContainsKey(center) && !world.RegionOffsets.ContainsKey(center))
+        {
+            var sorted = pathByLeaf.Values.OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList();
+            var offset = IslandRegionOffset(Math.Max(0, sorted.FindIndex(v => string.Equals(v, center, StringComparison.OrdinalIgnoreCase))));
+            _islandRegionOffsets[center] = offset;
+            Console.WriteLine($"  [island] '{LeafName(center)}' is not stitched to the loaded world — " +
+                              $"placed at ({offset.M41:F0},{offset.M42:F0},{offset.M43:F0})");
+            world = WorldLayout.Build(entries, ResolveModel, rootHint, _islandRegionOffsets);
+        }
         _worldLayout = world;
         // SC-SAVE-REGION (resolver) — a WORLD-WIDE position→region lookup
         // from the layout every streaming decision already trusts. The
@@ -15352,13 +15387,7 @@ void main()
                 if (!_elevatorsByScid.TryGetValue(es.Scid, out var el)) return false;
                 if (el.AtStop != es.AtStop)
                 {
-                    el.AtStop = es.AtStop;
-                    el.Moving = false;
-                    el.T = 0f;
-                    var pose = es.AtStop == 2 ? el.Stop2 : el.Stop1;
-                    el.PrevCarPos = pose.Translation;
-                    _elevatorNodeOverrides[el.Def.CarNodeGuid] = pose;
-                    UpdateElevatorCarInstance(el, pose);
+                    SnapElevatorToStop(el, es.AtStop);
                     structural = true;
                 }
                 return true;
@@ -16362,6 +16391,8 @@ void main()
                                   $"template={kv.Key}  expected_tex={v.texName ?? "(none)"}");
             }
         }
+        // SC-ELEVATOR-INSTANT — objects on a car node ride the car.
+        SyncAllCarNodeProps();
     }
 
     /// <summary>Phase 21c-3 — restore the single-white-sun fallback that
@@ -20658,6 +20689,13 @@ void main()
             int carDoor = stop == 1 ? d.CarDoor1Id : d.CarDoor2Id;
             Add(d.CarNodeGuid, new SiegeFX.Core.Assets.RegionGraph.DoorLink(carDoor, connect, connectDoor));
             Add(connect, new SiegeFX.Core.Assets.RegionGraph.DoorLink(connectDoor, d.CarNodeGuid, carDoor));
+            // SC-ELEVATOR-INSTANT — the second car docks at the other location.
+            if (d.Instant is { } inst)
+            {
+                var dock = inst.Dock(1, SiegeFX.Core.Assets.InstantElevatorPlan.CarLocation(1, stop), 1);
+                Add(inst.Car2NodeGuid, new SiegeFX.Core.Assets.RegionGraph.DoorLink(dock.CarDoorId, dock.ConnectGuid, dock.ConnectDoorId));
+                Add(dock.ConnectGuid, new SiegeFX.Core.Assets.RegionGraph.DoorLink(dock.ConnectDoorId, inst.Car2NodeGuid, dock.CarDoorId));
+            }
         }
         // SC-STAIRWELL — each segment welds to the shaft at its CURRENT
         // configuration socket (the authored nodes.gas link describes only
@@ -20713,6 +20751,14 @@ void main()
         foreach (var def in defs)
         {
             if (_elevatorsByScid.ContainsKey(def.Scid)) continue; // streamed twice
+            if (def.Instant is not null)
+            {
+                // SC-ELEVATOR-INSTANT — placed once both locations are
+                // streamed; until then parked (a press streams the far end).
+                if (TryPlaceInstantElevator(def, Resolve)) placed++;
+                else { _pendingInstantElevators[def.Scid] = def; skipped++; }
+                continue;
+            }
             if (!TryGetNodeMeshGuid(def.CarNodeGuid, out var carMesh) ||
                 !TryGetNodeMeshGuid(def.Connect1Guid, out var c1Mesh) ||
                 !TryGetNodeMeshGuid(def.Connect2Guid, out var c2Mesh))
@@ -20897,15 +20943,22 @@ void main()
     /// <summary>Write <paramref name="pose"/> into the car node's render
     /// instance (found by snode guid, index cached). AABB recomputed so
     /// culling follows the platform.</summary>
-    private void UpdateElevatorCarInstance(ElevatorRuntime el, Matrix4x4 pose)
+    private void UpdateElevatorCarInstance(ElevatorRuntime el, Matrix4x4 pose) =>
+        UpdateCarNodeInstance(el.Def.CarNodeGuid, ref el.CarInstanceIdx, pose);
+
+    /// <summary>Car-node render pose + the objects placed on that node (the
+    /// hub teleporter's button rides its car). Shared by both cars of an
+    /// instant elevator.</summary>
+    private void UpdateCarNodeInstance(uint carGuid, ref int instanceIdx, Matrix4x4 pose)
     {
-        int idx = el.CarInstanceIdx;
-        if (idx < 0 || idx >= _regionInstances.Count || _regionInstances[idx].SnodeGuid != el.Def.CarNodeGuid)
+        MoveCarNodeProps(carGuid, pose);
+        int idx = instanceIdx;
+        if (idx < 0 || idx >= _regionInstances.Count || _regionInstances[idx].SnodeGuid != carGuid)
         {
             idx = -1;
             for (int i = 0; i < _regionInstances.Count; i++)
-                if (_regionInstances[i].SnodeGuid == el.Def.CarNodeGuid) { idx = i; break; }
-            el.CarInstanceIdx = idx;
+                if (_regionInstances[i].SnodeGuid == carGuid) { idx = i; break; }
+            instanceIdx = idx;
         }
         if (idx < 0) return; // car mesh not streamed — the ride still runs data-side
         var inst = _regionInstances[idx];
@@ -20916,10 +20969,12 @@ void main()
     /// <summary>Riders = player/party members standing on the car when it
     /// departs — nav-triangle snode match first (exact), AABB fallback for
     /// anyone whose follower is mid-air/off-mesh.</summary>
-    private void CaptureElevatorRiders(ElevatorRuntime el)
+    private void CaptureElevatorRiders(ElevatorRuntime el) =>
+        CaptureCarRiders(el.Def.CarNodeGuid, el.CarInstanceIdx, el.Riders);
+
+    private void CaptureCarRiders(uint carGuid, int carInstanceIdx, List<ActorRenderState> riders)
     {
-        el.Riders.Clear();
-        var carGuid = el.Def.CarNodeGuid;
+        riders.Clear();
         bool OnCar(SiegeFX.Core.Nav.NavFollower? f, Vector3 pos)
         {
             if (f is not null && _navMesh is not null)
@@ -20929,7 +20984,7 @@ void main()
                     _navMesh.SourceSnodeGuid[tri] == carGuid)
                     return true;
             }
-            int idx = el.CarInstanceIdx;
+            int idx = carInstanceIdx;
             if (idx >= 0 && idx < _regionInstances.Count)
             {
                 var inst = _regionInstances[idx];
@@ -20942,14 +20997,14 @@ void main()
         }
         if (_player is not null && !_player.IsDead &&
             OnCar(_playerFollower, _player.CurrentTransform.Translation))
-            el.Riders.Add(_player);
+            riders.Add(_player);
         foreach (var m in _party)
         {
             if (m.PartyIndex == 0 || m.IsDead) continue;
             if (OnCar(m.Brain?.Wander?.Follower, m.CurrentTransform.Translation))
-                el.Riders.Add(m);
+                riders.Add(m);
         }
-        CarryRiders(el.Riders);
+        CarryRiders(riders);
     }
 
     private SiegeFX.Core.Nav.NavFollower? RiderFollower(ActorRenderState r) =>
@@ -21006,6 +21061,7 @@ void main()
     private void StartElevatorRide(ElevatorRuntime el)
     {
         if (el.Moving) return;
+        if (el.Def.Instant is not null) { StartInstantElevatorRide(el); return; }
         el.TargetStop = el.AtStop == 1 ? 2 : 1;
         el.Moving = true;
         el.T = 0f;
@@ -21998,6 +22054,7 @@ void main()
             }
         }
 
+        ProcessInstantElevatorRequests();
         TickAutoTraps(dt);
         TickShrines(dt);
         TickPendingOutFades(dt);
@@ -22017,6 +22074,7 @@ void main()
         foreach (var el in _elevators)
         {
             if (!el.Moving) continue;
+            if (el.Def.Instant is not null) { TickInstantElevator(el, dt); continue; }
             el.T += dt / MathF.Max(0.25f, el.Def.DurationSeconds);
             float k = Math.Clamp(el.T, 0f, 1f);
             k = k * k * (3f - 2f * k); // ease both ends — reads as a winched platform
@@ -22039,48 +22097,7 @@ void main()
                 var final = el.AtStop == 1 ? el.Stop1 : el.Stop2;
                 UpdateElevatorCarInstance(el, final);
                 _elevatorNodeOverrides[el.Def.CarNodeGuid] = final;
-                var heldOrder = ReleaseRiders(el.Riders);
-                // Re-bake nav so the car floor welds into the arrival stop and
-                // riders can walk off. Same swap pattern as region streaming.
-                var nav = RebuildNavMesh();
-                if (nav is not null)
-                {
-                    _navMesh = nav;
-                    MarkAllObstacles();
-                    RehomeAllFollowers(nav);
-                    if (_player is not null && _playerFollower is not null)
-                    {
-                        var pos = _player.CurrentTransform.Translation;
-                        var speed = _playerFollower.Speed;
-                        _playerFollower = new SiegeFX.Core.Nav.NavFollower(nav, pos, speed)
-                        {
-                            Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
-                            PartialPathFallback = true,
-                            DiagnosticLogging = true,
-                        };
-                    }
-                    // Party riders get a fresh follower on the new mesh at
-                    // their ridden position (their old follower still holds
-                    // the pre-ride mesh — see RebuildFollowerBrain remesh).
-                    foreach (var r in el.Riders)
-                    {
-                        if (ReferenceEquals(r, _player) || !r.IsPartyMember || r.IsDead) continue;
-                        var baseStats = r.Actor.Stats;
-                        var combatStats = InjectFollowerWeapon(r.Actor.Template, baseStats) ?? baseStats;
-                        RebuildFollowerBrain(r, combatStats, remesh: true);
-                    }
-                    // ALPHA-2 SHAFT RESCUE — anyone left standing where the
-                    // rebuilt mesh has no floor (the car departed under their
-                    // feet: its tris moved to the far stop, leaving an open
-                    // shaft) gets nudged to the nearest real floor. Without
-                    // this the follower's vertical re-bind gate correctly
-                    // refuses the shaft bottom 12u below — and the player
-                    // freezes over the hole with every click refused.
-                    RescueOffMeshAfterRebuild(nav);
-                }
-                el.Riders.Clear();
-                if (heldOrder is { } ho) _playerFollower?.SetTarget(ho);
-                Console.WriteLine($"[elevator] 0x{el.Def.Scid:X8} arrived at stop{el.AtStop}");
+                CompleteElevatorArrival(el, el.Riders);
             }
         }
 
@@ -43794,13 +43811,7 @@ void main()
         {
             if (!_elevatorsByScid.TryGetValue(es.Scid, out var el)) return false;
             if (el.AtStop == es.AtStop) return false;
-            el.AtStop = es.AtStop;
-            el.Moving = false;
-            el.T = 0f;
-            var pose = es.AtStop == 2 ? el.Stop2 : el.Stop1;
-            el.PrevCarPos = pose.Translation;
-            _elevatorNodeOverrides[el.Def.CarNodeGuid] = pose;
-            UpdateElevatorCarInstance(el, pose);
+            SnapElevatorToStop(el, es.AtStop);
             return true;
         }
 

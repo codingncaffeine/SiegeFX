@@ -84,7 +84,8 @@ public sealed class WorldLayout
     public static WorldLayout Build(
         IReadOnlyList<RegionEntry> regions,
         Func<uint, SnoModel?> resolveSno,
-        string? rootHint = null)
+        string? rootHint = null,
+        IReadOnlyDictionary<string, Matrix4x4>? islandOffsets = null)
     {
         if (regions.Count == 0)
             return new WorldLayout("", new Dictionary<string, Matrix4x4>(),
@@ -155,8 +156,31 @@ public sealed class WorldLayout
         var queue = new Queue<string>();
         queue.Enqueue(root);
 
-        while (queue.Count > 0)
+        // SC-ELEVATOR-INSTANT — islands: regions no stitch reaches (the
+        // multiplayer_world new_hub, whose only way in is the town
+        // teleporters) sit at the caller's pinned offset. DS1 has no world
+        // frame — an island is simply wherever its nodes are relative to the
+        // car docked in it — so any spot clear of the stitched world works;
+        // islands are seeded only after the root's whole stitched component
+        // is placed, so they never displace a region the root reaches.
+        var pendingIslands = new Queue<string>();
+        if (islandOffsets is not null)
+            foreach (var path in islandOffsets.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase))
+                if (entryByPath.ContainsKey(path)) pendingIslands.Enqueue(path);
+
+        while (queue.Count > 0 || pendingIslands.Count > 0)
         {
+            if (queue.Count == 0)
+            {
+                var island = pendingIslands.Dequeue();
+                if (regionOffsets.ContainsKey(island)) continue;
+                var islandOffset = islandOffsets![island];
+                regionOffsets[island] = islandOffset;
+                foreach (var (g, local) in entryByPath[island].Layout.Transforms)
+                    transforms[g] = local * islandOffset;
+                queue.Enqueue(island);
+                continue;
+            }
             var curRegionPath = queue.Dequeue();
             var curEntry = entryByPath[curRegionPath];
             var curOffset = regionOffsets[curRegionPath];

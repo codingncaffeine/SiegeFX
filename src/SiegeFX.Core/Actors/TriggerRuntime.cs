@@ -302,11 +302,18 @@ public sealed class TriggerRuntime
             // TriggerRow rarely exceeds 4 groups in shipped data; a small dict is fine.
             var firedGroups = new HashSet<int>();
             bool anySatisfied = false;
+            bool gated = RowHasMessageGate(row);
             for (int c = 0; c < row.Conditions.Count; c++)
             {
                 var cond = row.Conditions[c];
+                // A "wait_for_every_message" volume condition is no trigger
+                // of its own: it is checked when the row's message arrives.
+                if (gated && IsMessageGate(cond)) continue;
                 if (EvaluateCondition(trig, cond, ctx, ref state))
                 {
+                    if (gated && IsMessageCondition(cond) && !MessageGatesHold(trig, row, ctx, ref state))
+                        continue;   // message consumed with the gate shut — DS1 drops it
+
                     Bump(_conditionHits, cond.Verb);
                     firedGroups.Add(cond.Group);
                     anySatisfied = true;
@@ -386,6 +393,43 @@ public sealed class TriggerRuntime
             if (row.ResetDuration > 0f)
                 state.NextEligibleAt = _now + row.ResetDuration;
         }
+    }
+
+    static bool IsMessageCondition(TriggerCall cond) =>
+        cond.Verb.Equals("receive_world_message", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Boundary mode <c>wait_for_every_message</c> /
+    /// <c>wait_for_first_message</c> (the last argument of the volume verbs):
+    /// the condition gates the row's receive_world_message instead of firing
+    /// it. The multiplayer_world teleporter buttons ship exactly this —
+    /// receive_world_message("we_req_activate") + party_member_within_node(...,
+    /// "wait_for_every_message") = "the button was pressed AND someone is on
+    /// the platform" — and evaluated as two independent sources, stepping onto
+    /// the platform launched it with no press.</summary>
+    static bool IsMessageGate(TriggerCall cond)
+    {
+        if (IsMessageCondition(cond) || cond.Args.Count == 0) return false;
+        var mode = cond.Args[^1].Trim().Trim('"');
+        return mode.Equals("wait_for_every_message", StringComparison.OrdinalIgnoreCase)
+            || mode.Equals("wait_for_first_message", StringComparison.OrdinalIgnoreCase);
+    }
+
+    static bool RowHasMessageGate(TriggerRow row)
+    {
+        bool msg = false, gate = false;
+        foreach (var c in row.Conditions)
+        {
+            if (IsMessageCondition(c)) msg = true;
+            else if (IsMessageGate(c)) gate = true;
+        }
+        return msg && gate;
+    }
+
+    bool MessageGatesHold(TriggerInstance trig, TriggerRow row, TriggerContext ctx, ref TriggerRowState state)
+    {
+        foreach (var c in row.Conditions)
+            if (IsMessageGate(c) && !EvaluateCondition(trig, c, ctx, ref state)) return false;
+        return true;
     }
 
     void ScheduleAction(TriggerInstance trig, TriggerRow row, TriggerCall act, TriggerContext ctx)
