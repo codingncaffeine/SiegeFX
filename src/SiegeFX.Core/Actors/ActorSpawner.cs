@@ -295,17 +295,6 @@ public sealed class ActorSpawner
         // max_life / scale_multiplier) wins over the template chain.
         var stats = ActorStats.FromTemplate(_store, template, inst.Node);
         var actor = new Actor(inst, template, world, mesh, clips, skrit, host, stats, walkIdx, clipIndexByName);
-        // SC-IDLE-FIDGET — honor the template's authored [body] initial_chore
-        // as the idle fallback clip. DS1 starts actors in it; for flyers
-        // (phrak) and other static-default creatures that's chore_fidget —
-        // the hover/flap loop — while chore_default (clip 0) is a frozen
-        // stance pose. Without this, undirected actors idled on clip 0 and
-        // flyers hung motionless mid-air.
-        var initialChore = (_store.GetAttribute(template, "body", "initial_chore")
-                         ?? _store.GetAttribute(template, "mind", "initial_chore"))?.Trim();
-        if (!string.IsNullOrEmpty(initialChore)
-            && clipIndexByName.TryGetValue(initialChore!, out var idleIdx))
-            actor.IdleClipIndex = idleIdx;
         // SC-BURROWER — a startup_reveal monster (the skrubb) lies in its
         // chore_default pose, below ground, until it wakes.
         if ((_store.GetAttribute(template, "mind", "jat_startup") ?? "")
@@ -318,6 +307,26 @@ public sealed class ActorSpawner
         // attack-variant set + qffg pad + authored base duration for every
         // spawned combatant (clip cache makes the second pass cheap).
         RefreshMotionClips(actor, preferredStance ?? DeriveStanceFromEquipment(template));
+        // SC-IDLE-FIDGET — honor the template's authored [body] initial_chore
+        // as the idle clip. DS1 starts actors in it; for flyers (phrak) and
+        // other static-default creatures that's chore_fidget — the hover/flap
+        // loop — while chore_default (clip 0) is a frozen stance pose. With
+        // no initial_chore, a one-frame chore_default and a moving
+        // chore_fidget (the blacksmith's ds / hammering dsf) idle in the
+        // fidget too, as DS1's auto-fidget job does. Picked after the stance
+        // refresh so the test sees the clips the actor will actually play.
+        var autoFidgets = !string.Equals(
+            _store.GetAttribute(template, "mind", "actor_auto_fidgets")?.Trim(), "false",
+            StringComparison.OrdinalIgnoreCase);
+        var idleChore = ActorIdle.PickIdleChore(
+            (_store.GetAttribute(template, "body", "initial_chore")
+             ?? _store.GetAttribute(template, "mind", "initial_chore"))?.Trim(),
+            clips.Length > 0 ? clips[0] : null,
+            clipIndexByName.TryGetValue("chore_fidget", out var fidIdx) ? clips[fidIdx] : null,
+            autoFidgets);
+        if (!string.IsNullOrEmpty(idleChore)
+            && clipIndexByName.TryGetValue(idleChore!, out var idleIdx))
+            actor.IdleClipIndex = idleIdx;
         return actor;
     }
 
