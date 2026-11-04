@@ -423,6 +423,9 @@ public sealed class RenderHost : IDisposable
     private readonly List<StaticPropInstance> _chestProps = new();
     private readonly Dictionary<uint, StaticPropInstance> _chestsByScid = new();
     private StaticPropInstance? _pendingChestUse;
+    // SC-DOOR-USE-RANGE — a clicked door waits here until the acting
+    // character is inside its use range (walk-up-and-open, like chests).
+    private StaticPropInstance? _pendingDoorUse;
     private sealed class AutoTrapState
     {
         public uint Scid;
@@ -21962,6 +21965,21 @@ void main()
             }
         }
 
+        // SC-DOOR-USE-RANGE — pending door walk-up (same shape as chests).
+        if (_pendingDoorUse is { } door)
+        {
+            if (door.IsDestroyed || door.DoorTargetOpen) _pendingDoorUse = null;
+            else if (ActingCharacter() is { IsDead: false } doorActor &&
+                     DoorInUseRange(door, doorActor.CurrentTransform.Translation))
+            {
+                _pendingDoorUse = null;
+                var ap = doorActor.CurrentTransform.Translation;
+                var dp = door.World.Translation;
+                Console.WriteLine($"[door] 0x{door.Scid:X8} reached: actor {MathF.Sqrt((ap.X - dp.X) * (ap.X - dp.X) + (ap.Z - dp.Z) * (ap.Z - dp.Z)):F1}u from the hinge");
+                UseDoor(door);
+            }
+        }
+
         // ALPHA-2C — pending chest walk-up (same shape as levers).
         if (_pendingChestUse is { } chest)
         {
@@ -22612,14 +22630,14 @@ void main()
             Console.WriteLine($"  auto-traps: {added} armed ({_autoTraps.Count} total)");
     }
 
-    // SC-DOORS-OPEN — a left-click that lands on/near a door opens it (DS1
+    // SC-DOORS-OPEN — a left-click that lands on/near a door picks it (DS1
     // doors are click-to-use, not proximity). The click ray is resolved
     // against the navmesh, so a tall door's base sits at ~hit; the door's
     // World.Translation is its hinge (the asp origin), and the leaf reaches
     // ~1.6u from there, so a ~2u radius covers a click anywhere on the leaf.
-    private void OpenDoorNear(Vector3 worldPoint)
+    private StaticPropInstance? PickDoorNear(Vector3 worldPoint)
     {
-        if (_doorProps.Count == 0) return;
+        if (_doorProps.Count == 0) return null;
         StaticPropInstance? best = null;
         float bestD2 = 2.0f * 2.0f;
         foreach (var d in _doorProps)
@@ -22630,8 +22648,23 @@ void main()
             float dd = dx * dx + dz * dz;
             if (dd < bestD2) { bestD2 = dd; best = d; }
         }
-        if (best is null) return;
+        return best;
+    }
 
+    /// <summary>SC-DOOR-USE-RANGE — a click on a door queues a walk-up-and-
+    /// open: the acting character walks to the click and the door opens
+    /// only once they are inside its [aspect] use_range (TickElevators). A
+    /// click that misses every door clears any pending open.</summary>
+    private void RequestDoorUseNear(Vector3 worldPoint) => _pendingDoorUse = PickDoorNear(worldPoint);
+
+    private bool DoorInUseRange(StaticPropInstance door, Vector3 actorPos) =>
+        SiegeFX.Core.Geometry.UseRange.DoorInRange(actorPos, door.World, door.Mesh.Min, door.Mesh.Max, door.DoorUseRange);
+
+    /// <summary>Use a door right now (range already satisfied, or a use the
+    /// host has accepted).</summary>
+    private void UseDoor(StaticPropInstance best)
+    {
+        if (best.IsDestroyed || best.DoorTargetOpen) return;
         // ALPHA-2E — use_toggle doors are scripted gates: clicking shows the
         // authored stuck/locked line; only a quest message opens them.
         if (best.DoorUseToggle)
@@ -29996,10 +30029,10 @@ void main()
         // SC-NAV-PARTIAL-PATH — the whole-mesh fallback is for PLAYER orders
         // only (opt-in; ambient wanderers keep cheap fail-and-reroll).
         _playerFollower.PartialPathFallback = true;
-        // SC-DOORS-OPEN — clicking on/near a door opens it regardless of who
-        // is selected (retail: the first-selected character works doors; the
-        // ordered members walk to the click and pass through).
-        OpenDoorNear(hit);
+        // SC-DOORS-OPEN / SC-DOOR-USE-RANGE — clicking on/near a door queues
+        // a walk-up-and-open for the acting (first-selected) character
+        // below; it opens once they reach use range, never from afar.
+        _pendingDoorUse = null;
         // SC-FIRST-SELECTED (blindspot E3) — a member-only selection can
         // work levers/chests/usables too: the request latches queue the
         // same way, and their arrival checks test the ACTING character
@@ -30013,6 +30046,8 @@ void main()
             RequestLeverUseNear(near, dir, hit);
             // ALPHA-2C — same walk-up pattern for chests.
             RequestChestUseNear(hit);
+            // SC-DOOR-USE-RANGE — and for doors.
+            RequestDoorUseNear(hit);
             // ALPHA-2E — and for locked usables (Star Device).
             RequestLockedUseNear(hit);
             if (heroSelected)
@@ -42694,6 +42729,7 @@ void main()
         _chestProps.Clear();
         _chestsByScid.Clear();
         _pendingChestUse = null;
+        _pendingDoorUse = null;
         _autoTraps.Clear();
         // ALPHA-2D — shrines re-register with their regions.
         _shrinesByScid.Clear();
