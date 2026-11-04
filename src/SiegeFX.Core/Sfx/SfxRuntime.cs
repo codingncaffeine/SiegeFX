@@ -1278,11 +1278,21 @@ public sealed class SfxRuntime
 
     /// <summary>Phase 23d-2a — build the caster-frame world offset for
     /// `offset(x,y,z)`: forward = source→target flattened to XZ (a caster
-    /// faces its target during a cast), up = world Y, right = their cross.</summary>
-    static Vector3 CasterFrameOffset(in SfxContext ctx, Vector3 off)
+    /// faces its target during a cast), up = world Y, right = their cross.
+    /// SC-SFX-OWNER-FACING — with no separate target (source == target, an
+    /// actor's own trigger script) forward is the owner's facing
+    /// (<see cref="SfxContext.OwnerForward"/>). It used to be world +Z, so
+    /// the blacksmith's offset(0,0,.8) anvil sparks landed 0.8 m along +Z
+    /// whichever way he faced — behind him at the Elddim smithy.</summary>
+    public static Vector3 CasterFrameOffset(in SfxContext ctx, Vector3 off)
     {
         var fwd = ctx.TargetPos - ctx.SourcePos;
         fwd.Y = 0f;
+        if (fwd.LengthSquared() <= 0.0001f && ctx.OwnerForward is { } own)
+        {
+            fwd = own;
+            fwd.Y = 0f;
+        }
         fwd = fwd.LengthSquared() > 0.0001f ? Vector3.Normalize(fwd) : Vector3.UnitZ;
         var right = Vector3.Normalize(Vector3.Cross(Vector3.UnitY, fwd));
         return right * off.X + Vector3.UnitY * off.Y + fwd * off.Z;
