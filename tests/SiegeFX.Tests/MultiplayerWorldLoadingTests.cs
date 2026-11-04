@@ -5,42 +5,47 @@ namespace SiegeFX.Tests;
 
 public class MultiplayerWorldLoadingTests
 {
-    static TankReader Tank(params string[] files)
+    // Writes a throwaway tank holding the files, asks the engine for the region's objects prefix, then deletes it.
+    // The handle is closed before the delete: Windows refuses to delete a file that is still open.
+    static string ObjectsPrefix(string region, params string[] files)
     {
         var writer = new TankWriter { Priority = TankPriority.Factory };
         foreach (var f in files) writer.Add(f, "[a] { x = 1; }"u8.ToArray());
         var path = Path.Combine(Path.GetTempPath(), $"siegefx-mpworld-{Guid.NewGuid():N}.dsmap");
-        writer.Write(path, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-        var reader = new TankReader(TankFile.Open(path));
-        File.Delete(path);   // the open handle keeps the bytes readable
-        return reader;
+        try
+        {
+            writer.Write(path, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+            using var tank = TankFile.Open(path);
+            return RegionObjects.ObjectsPrefix(new TankReader(tank), region);
+        }
+        finally { File.Delete(path); }
     }
 
     [Fact]
     public void FlatObjectsWinWhereARegionHasThem()
     {
-        var tank = Tank("/world/maps/map_world/regions/fh_r1/objects/actor.gas",
-                        "/world/maps/map_world/regions/fh_r1/objects/regular/actor.gas");
         Assert.Equal("/world/maps/map_world/regions/fh_r1/objects/",
-            RegionObjects.ObjectsPrefix(tank, "/world/maps/map_world/regions/fh_r1"));
+            ObjectsPrefix("/world/maps/map_world/regions/fh_r1",
+                "/world/maps/map_world/regions/fh_r1/objects/actor.gas",
+                "/world/maps/map_world/regions/fh_r1/objects/regular/actor.gas"));
     }
 
     [Fact]
     public void MultiplayerWorldReadsTheRegularWorldLevel()
     {
-        var tank = Tank("/world/maps/multiplayer_world/regions/town_center/objects/regular/actor.gas",
-                        "/world/maps/multiplayer_world/regions/town_center/objects/veteran/actor.gas",
-                        "/world/maps/multiplayer_world/regions/town_center/objects/elite/actor.gas");
         Assert.Equal("/world/maps/multiplayer_world/regions/town_center/objects/regular/",
-            RegionObjects.ObjectsPrefix(tank, "/world/maps/multiplayer_world/regions/town_center/"));
+            ObjectsPrefix("/world/maps/multiplayer_world/regions/town_center/",
+                "/world/maps/multiplayer_world/regions/town_center/objects/regular/actor.gas",
+                "/world/maps/multiplayer_world/regions/town_center/objects/veteran/actor.gas",
+                "/world/maps/multiplayer_world/regions/town_center/objects/elite/actor.gas"));
     }
 
     [Fact]
     public void ARegionWithNoObjectsKeepsTheFlatPrefix()
     {
-        var tank = Tank("/world/maps/multiplayer_world/regions/empty/terrain_nodes/nodes.gas");
         Assert.Equal("/world/maps/multiplayer_world/regions/empty/objects/",
-            RegionObjects.ObjectsPrefix(tank, "/world/maps/multiplayer_world/regions/empty"));
+            ObjectsPrefix("/world/maps/multiplayer_world/regions/empty",
+                "/world/maps/multiplayer_world/regions/empty/terrain_nodes/nodes.gas"));
     }
 
     [Fact]
