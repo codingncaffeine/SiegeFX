@@ -15907,6 +15907,18 @@ void main()
                     var tex = ResolveAspTexture(asp);
                     var world = ComposePlacementWorld(asp, p.Placement);
 
+                    // SC-PROP-REST-POSE — a skinned prop whose rest clip
+                    // holds the root bone off the bind (the lever_glb_01-06
+                    // switch family: one unit down mesh -Z) is drawn by DS1
+                    // in that pose, and its placements are authored for it.
+                    // At bind, the MP teleporter button floated a unit above
+                    // the platform and wall switches stood a unit off the
+                    // wall. Applied before the scale: the MP towns' buttons
+                    // (template scale 2) sit on the platform only when the
+                    // root offset stays unscaled.
+                    if (RestPoseOffset(ts, template, asp) is { } restOffset)
+                        world = restOffset * world;
+
                     // Phase 17-SC-J — DS1 lets the placement override `aspect.scale_multiplier`
                     // (fh_r1's breakable farmhouse door bumps it to 1.5 so the destroyable
                     // variant reads visibly larger than the everyday wooden door using the
@@ -23809,6 +23821,51 @@ void main()
             }
         }
         return false;
+    }
+
+    // SC-PROP-REST-POSE — per (template, mesh) rest offset, and the rest
+    // clips by basename (null = not found / no offset).
+    private readonly Dictionary<(string Template, AspMesh Mesh), Matrix4x4?> _restPoseOffsetCache = new();
+    private readonly Dictionary<string, SiegeFX.Core.Assets.PrsAnimation?> _restClipCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>SC-PROP-REST-POSE — the mesh-space offset DS1's rest pose puts
+    /// on a static skinned prop (see <see cref="SiegeFX.Core.Assets.PropRestPose"/>),
+    /// or null. Rigid-root props keep their bone-0 correction from
+    /// <see cref="ComposePlacementWorld"/> and are left alone.</summary>
+    private Matrix4x4? RestPoseOffset(SiegeFX.Core.Assets.TemplateStore store,
+        SiegeFX.Core.Assets.Template template, AspMesh asp)
+    {
+        if (asp.BindPose.Length < 2 || IsRigidRootProp(asp) || _playResolver is null) return null;
+        var key = (template.Name, asp);
+        if (_restPoseOffsetCache.TryGetValue(key, out var cached)) return cached;
+        Matrix4x4? result = null;
+        try
+        {
+            if (SiegeFX.Core.Assets.PropRestPose.TryRestOffset(store, template, asp, LoadRestClip, out var off))
+            {
+                result = off;
+                Console.WriteLine($"  [rest-pose] {template.Name} drawn in its rest pose (root offset {off.Translation})");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  [rest-pose] {template.Name}: {ex.Message}");
+        }
+        _restPoseOffsetCache[key] = result;
+        return result;
+    }
+
+    private SiegeFX.Core.Assets.PrsAnimation? LoadRestClip(string basename)
+    {
+        if (_restClipCache.TryGetValue(basename, out var hit)) return hit;
+        SiegeFX.Core.Assets.PrsAnimation? clip = null;
+        if (_playResolver is not null && _playResolver.TryLoadByBasename(basename, out var bytes))
+        {
+            try { clip = SiegeFX.Core.Assets.PrsAnimation.Load(bytes); }
+            catch { clip = null; }
+        }
+        _restClipCache[basename] = clip;
+        return clip;
     }
 
     private Matrix4x4 ComposePlacementWorld(AspMesh asp, SiegeFX.Core.Assets.NodePlacement p)
