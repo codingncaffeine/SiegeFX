@@ -17,7 +17,7 @@ namespace SiegeFX.Runtime.Render;
 /// Phase 3 just draws a reference grid so WASD + mouse-look can be verified;
 /// later phases will hang real scene objects off this.
 /// </summary>
-public sealed class RenderHost : IDisposable
+public sealed partial class RenderHost : IDisposable
 {
     private readonly IWindow _window;
     private readonly string? _meshPath;
@@ -26881,6 +26881,7 @@ void main()
                     var clip = s.Actor.Clips[Math.Min(idx, s.Actor.Clips.Length - 1)];
                     if (clip.AnimLength > 0f)
                     {
+                        double animBefore = s.AnimTime;
                         if (isDead)
                         {
                             float endHold = clip.AnimLength - 0.01f;
@@ -26904,6 +26905,8 @@ void main()
                         {
                             s.AnimTime += dt;
                         }
+                        // SC-ANIM-SFX — SFX notes the clip just passed (RenderHost.AnimSfx.cs).
+                        if (!isDead) DispatchAnimSfxNotes(s, clip, animBefore, s.AnimTime);
                     }
                 }
             }

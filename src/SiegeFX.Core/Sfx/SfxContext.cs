@@ -77,6 +77,14 @@ public readonly record struct SfxContext(
     /// have a single anchor — both source and target collapse to it.</summary>
     public static SfxContext At(Vector3 origin) => new(origin, origin, origin);
 
+    /// <summary>SC-SFX-OWNER-FACING — the facing of the object the script
+    /// runs on when source and target are the same spot (an actor's own
+    /// [template_triggers] call_sfx_script). <c>offset(x,y,z)</c> is in that
+    /// object's frame: the blacksmith's hammer sparks author offset(0,0,.8),
+    /// 0.8 m in front of him, onto the anvil. Null = no owner facing; the
+    /// frame then falls back to world +Z.</summary>
+    public Vector3? OwnerForward { get; init; }
+
     /// <summary>Resolve a DS1 logical bone name to a caster-skeleton world
     /// position. Strips the leading <c>@</c> if present, calls the
     /// configured <see cref="Resolver"/>, and falls back to the per-bone

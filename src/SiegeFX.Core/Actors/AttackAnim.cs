@@ -93,6 +93,50 @@ public static class AnimNotes
         hits.Sort();
         return hits.ToArray();
     }
+
+    /// <summary>The SFX1..SFX4 note number (1-4) of <paramref name="token"/>,
+    /// or 0 when it is another note.</summary>
+    public static int SfxNumber(uint token) => token switch
+    {
+        0x31584653 => 1, // 'SFX1'
+        0x32584653 => 2, // 'SFX2'
+        0x33584653 => 3, // 'SFX3'
+        0x34584653 => 4, // 'SFX4'
+        _ => 0,
+    };
+
+    /// <summary>SC-ANIM-SFX — the SFX1..4 notes a clip passed while its
+    /// clock moved from <paramref name="before"/> to <paramref name="after"/>
+    /// seconds, in order, as note numbers (1-4). The clock is the unwrapped
+    /// play time: a looping idle keeps counting past the clip length, so a
+    /// note fires once per loop, every loop. The interval is (before, after],
+    /// plus a note at exactly 0 when the clip just started (before == 0).
+    /// DS1's chore skrits post WE_ANIM_SFX(n) to the actor for each of these
+    /// (select_fidget's ANIMEVENT_SFX_n tests).</summary>
+    public static void SfxCrossed(IReadOnlyList<PrsAnimation.NoteEvent> notes, float animLength,
+                                  double before, double after, List<int> into)
+    {
+        if (notes.Count == 0 || animLength <= 0f || after <= before) return;
+        long first = (long)Math.Floor(before / animLength);
+        long last = (long)Math.Floor(after / animLength);
+        // A clock that jumped many loops at once (a hitch) fires one loop's worth.
+        if (last - first > 1) first = last - 1;
+        List<(double At, int Sfx)>? hits = null;
+        for (long k = first; k <= last; k++)
+        {
+            foreach (var n in notes)
+            {
+                int sfx = SfxNumber(n.Token);
+                if (sfx == 0) continue;
+                double at = k * (double)animLength + Math.Clamp(n.Time, 0f, 1f) * animLength;
+                if ((at > before && at <= after) || (before == 0 && at == 0))
+                    (hits ??= new()).Add((at, sfx));
+            }
+        }
+        if (hits is null) return;
+        hits.Sort((a, b) => a.At.CompareTo(b.At));
+        foreach (var h in hits) into.Add(h.Sfx);
+    }
 }
 
 /// <summary>Phase 18 — one in-flight attack iteration, DS1's model: the clip
