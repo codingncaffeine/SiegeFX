@@ -152,6 +152,36 @@ public sealed class EquipmentResolver
         return layers;
     }
 
+    /// <summary>The <c>es_*</c> slots an NPC actually wears: the template chain's
+    /// <c>[inventory][equipment]</c>, overlaid by the map instance's own
+    /// <c>[inventory][equipment]</c> block (instance wins per slot). Used to
+    /// feed <see cref="Resolve"/> for non-player actors, whose worn armor
+    /// (Elddim's Legionnaire guards: plate chest, helm, boots, gauntlets) lives
+    /// only in these blocks — their <c>[aspect][textures]</c> carries just the
+    /// skin, so without this they render in the bare citizen body.</summary>
+    public static Dictionary<string, string> CollectActorSlots(
+        TemplateStore templates, Template template, GasNode? instance)
+    {
+        var slots = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        void Add(GasNode? equip)
+        {
+            if (equip is null) return;
+            foreach (var attr in equip.Attributes)
+            {
+                var name = attr.Name.Trim();
+                var value = attr.Value?.Trim();
+                if (!name.StartsWith("es_", StringComparison.OrdinalIgnoreCase)) continue;
+                if (string.IsNullOrEmpty(value)) continue;
+                slots[name] = value;
+            }
+        }
+        Add(templates.GetSection(template, "inventory", "equipment"));
+        if (instance is not null
+            && TemplateStore.FindChild(instance, "inventory") is { } inv)
+            Add(TemplateStore.FindChild(inv, "equipment"));
+        return slots;
+    }
+
     private static EquipmentLayer ResolveSlot(
         TemplateStore templates, AssetResolver resolver,
         string slotName, string itemRef,
