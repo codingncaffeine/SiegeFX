@@ -30492,7 +30492,12 @@ void main()
             $"=> model={heroOverride?.ModelName ?? "<template>"}");
 
         var diagsBefore = spawner.Diagnostics.Count;
-        var spawned = spawner.Spawn(new[] { inst }, preferredStance, overrides);
+        // SC-NPC-ARMOR — the hero keeps his picked body; worn chest armor is
+        // a live slot-1 texture swap on it (TryLoadPlayerEquipment).
+        spawner.DressArmoredBodies = false;
+        IReadOnlyList<SiegeFX.Core.Actors.Actor> spawned;
+        try { spawned = spawner.Spawn(new[] { inst }, preferredStance, overrides); }
+        finally { spawner.DressArmoredBodies = true; }
         if (spawned.Count == 0)
         {
             Console.WriteLine($"  player: '{playerTemplate}' did not spawn (spawner diagnostics follow)");
@@ -31380,8 +31385,11 @@ void main()
         s.ArmorLayers = null;
         if (s.IsPlayer) return;
         if (_templateStore is null || _gl is null || _playResolver is null || slots.Count == 0) return;
+        // The body mesh actually drawn (plate NPCs spawn on pos_a3), so the
+        // chest texture and boot/gauntlet subtypes match its UV layout.
+        var bodyModel = _actorSpawner?.ModelNameOf(s.Actor.Mesh);
         var layers = SiegeFX.Core.Assets.EquipmentResolver.Resolve(
-            _templateStore, _playResolver, s.Actor.Template, slots);
+            _templateStore, _playResolver, s.Actor.Template, slots, bodyModel);
         foreach (var layer in layers)
         {
             switch (layer.Strategy)
