@@ -198,6 +198,7 @@ public static class NetSelfTest
                 "in-region: GameStart delivered region + difficulty to the client");
 
             c2.Dispose(); // client drops — host must be told player 1 left
+            hs.Tick(0);   // (on its next tick: transports report leaves off-thread)
             Assert(hostSawLeave == 1, $"in-region: host fired OnPlayerLeft on disconnect (got {hostSawLeave})");
             hs.Dispose(); cs.Dispose(); h2.Dispose();
         }
@@ -230,6 +231,7 @@ public static class NetSelfTest
             hs.OnPlayerLeft = id => leftName = hostRoster?.FirstOrDefault(e => e.Player == id).Name;
             var before = hostRoster;
             c3.Dispose();
+            hs.Tick(0);   // leaves are handled on the next tick (transports report them off-thread)
             Assert(hostRoster is { Count: 1 } && before!.Count == 2 && hs.Roster.Count == 1 && leftName == "Joiner",
                 $"staging: a player who leaves drops out of the host's roster (left: '{leftName}')");
             hs.Dispose(); cs.Dispose(); h3.Dispose();
