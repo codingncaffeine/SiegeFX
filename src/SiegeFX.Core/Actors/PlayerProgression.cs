@@ -70,6 +70,20 @@ public sealed class PlayerProgression
     /// the debit/credit guards (those are for in-session txns, not load).</summary>
     public void RestoreGoldFromSave(long gold) => Gold = Math.Max(0, gold);
 
+    /// <summary>A level as the original shows it. The original counts levels
+    /// from 0 (a new hero is level 0 in every skill, and its saves write
+    /// <c>melee_level = 0</c> at 0 XP, 0.06 after one krug), while SiegeFX
+    /// counts from 1, the first row of the experience table. Every level the
+    /// player reads (character panel, class title, level-up messages) goes
+    /// through this; the attribute growth and XP math keep counting from 1.</summary>
+    public static int Shown(int level) => Math.Max(0, level - 1);
+
+    /// <summary>The character level as shown (see <see cref="Shown"/>).</summary>
+    public int ShownLevel => Shown(Level);
+
+    /// <summary>A skill's level as shown (see <see cref="Shown"/>).</summary>
+    public int ShownSkillLevel(SkillKind k) => Shown(SkillLevel(k));
+
     public long XpForCurrentLevel => _formulas.XpForLevel(Level);
     public long XpForNextLevel    => _formulas.XpForLevel(Level + 1);
     public long XpIntoCurrentLevel => TotalXp - XpForCurrentLevel;
