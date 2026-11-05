@@ -35,6 +35,9 @@ internal sealed class MpSessionScreen
     /// <summary>Connection status line; when non-empty it replaces the help
     /// strip text (hosting/connecting/connected/failed + diagnostics hint).</summary>
     public string Status = "";
+    /// <summary>Internet mode: what the empty game list says (searching,
+    /// still signing in, or no internet play in this copy).</summary>
+    public string InternetListNote = "Searching for internet games...";
 
     enum Focus { None, Name, Address }
     Focus _focus = Focus.None;
@@ -215,6 +218,34 @@ internal sealed class MpSessionScreen
             int tx = center ? s.X + (s.W - tw) / 2 : s.X;
             text.DrawString(vw, vh, msg, tx, s.Y + Math.Max(0, (s.H - 12 * fs) / 2), ink, fs);
         }
+        // Word-wrapped to the width; a word wider than the width stays whole.
+        List<string> Wrap(string msg, int maxW)
+        {
+            var lines = new List<string>();
+            string line = "";
+            foreach (var word in msg.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            {
+                string next = line.Length == 0 ? word : line + " " + word;
+                if (line.Length > 0 && text.MeasureWidth(next, fs) > maxW) { lines.Add(line); line = word; }
+                else line = next;
+            }
+            if (line.Length > 0) lines.Add(line);
+            return lines;
+        }
+        // Lines centered (or left-aligned) as a block in the rect's height.
+        void Paragraph((int X0, int Y0, int X1, int Y1) r, string msg, Vector4 ink, bool center, bool top = false)
+        {
+            var s = S(r);
+            int pad = 4 * fs, lineH = 14 * fs;
+            var lines = Wrap(msg, s.W - 2 * pad);
+            int y = top ? s.Y + 4 : s.Y + Math.Max(0, (s.H - (lines.Count * lineH - 2 * fs)) / 2);
+            foreach (var l in lines)
+            {
+                int tx = center ? s.X + (s.W - text.MeasureWidth(l, fs)) / 2 : s.X + pad;
+                text.DrawString(vw, vh, l, tx, y, ink, fs);
+                y += lineH;
+            }
+        }
 
         var inkTitle  = new Vector4(0.93f, 0.87f, 0.65f, 1f);
         var inkText   = new Vector4(0.88f, 0.84f, 0.72f, 1f);
@@ -246,8 +277,7 @@ internal sealed class MpSessionScreen
                     list.X + 4 * fs, list.Y + i * rowH + 2, inkText, fs);
             }
             if (LanGames.Count == 0)
-                text.DrawString(vw, vh, "Searching for internet games...",
-                    list.X + 4 * fs, list.Y + 4, inkFaint, fs);
+                Paragraph(RList, InternetListNote, inkFaint, center: false, top: true);
         }
         else
         {
@@ -283,8 +313,8 @@ internal sealed class MpSessionScreen
         Box(RHelp);
         string help = Status.Length > 0 ? Status
             : ScreenMode == Mode.Internet
-            ? "Pick a game from the list (or paste a host id) and click CONNECT, or click HOST GAME to start your own."
+            ? "Pick a game from the list (or type a host's IP address) and click CONNECT, or click HOST GAME to start your own."
             : "Games hosted on your local network appear in the list. Click one, then JOIN GAME.";
-        Label(RHelp, help, Status.Length > 0 ? inkText : inkFaint, center: true);
+        Paragraph(RHelp, help, Status.Length > 0 ? inkText : inkFaint, center: true);
     }
 }

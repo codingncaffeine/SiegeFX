@@ -24,6 +24,22 @@ public static class MpProviderFactory
     public static IReadOnlyCollection<string> Available =>
         new[] { "lan" }.Concat(_builders.Keys).ToArray();
 
+    /// <summary>True when <paramref name="providerId"/> is in this build and
+    /// configured (LAN always is). A registered provider can still be
+    /// unusable for now, e.g. EOS before its login completes.</summary>
+    public static bool IsRegistered(string providerId)
+        => string.Equals(providerId, "lan", StringComparison.OrdinalIgnoreCase) || _builders.ContainsKey(providerId);
+
+    /// <summary>The provider's pair when it is usable right now, else null;
+    /// never falls back to LAN. For screens that must tell the player which
+    /// service they are on rather than quietly changing it.</summary>
+    public static (ILobbyService Lobby, ISessionTransport Transport)? TryCreate(string providerId)
+    {
+        if (string.Equals(providerId, "lan", StringComparison.OrdinalIgnoreCase))
+            return (new LanLobbyService(), new UdpTransport());
+        return _builders.TryGetValue(providerId, out var build) ? build() : null;
+    }
+
     /// <summary>Build the provider named by <paramref name="providerId"/>.
     /// Falls back to LAN when the requested provider is unknown or reports
     /// itself unavailable — MP never hard-fails on a missing vendor.</summary>

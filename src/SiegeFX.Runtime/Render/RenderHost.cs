@@ -5447,6 +5447,16 @@ public sealed class RenderHost : IDisposable
     // snapshot stay live in every build.
     private static readonly bool DevHotkeys =
         Environment.GetEnvironmentVariable("SIEGEFX_DEV") == "1";
+    // Test hook: SIEGEFX_DEV_SCREEN=internet|network walks from the main menu
+    // to that multiplayer screen through the same actions a click takes, so a
+    // headless run can watch the game lists (scratch recipes, never players).
+    private string? _devScreen = Environment.GetEnvironmentVariable("SIEGEFX_DEV_SCREEN")?.Trim().ToLowerInvariant() switch
+    {
+        "internet" => "internet",
+        "network" => "network",
+        _ => null,
+    };
+    private bool _devScreenMenuOpened;
     private bool _camTracking = true;
     private bool _altComboFired;
     // SC-FREE-LOOK — authored camera_free_look hold state (default D).
@@ -6334,7 +6344,18 @@ public sealed class RenderHost : IDisposable
     // SC-MP-EOS P8 — the host-authoritative session driver + staging screen.
     private SiegeFX.Core.Net.MpSession? _mpNetSession;
     private readonly Hud.MpStagingScreen _mpStaging = new();
-    private double _mpLanScanAt;
+    // Both game lists refresh every 2.5 s on the monotonic clock: the play
+    // clock stands still on the menus, and a list timed by it searched once.
+    private const double MpListRefreshSeconds = 2.5;
+    // A search whose answer never comes is abandoned after this long so the
+    // list keeps refreshing.
+    private const double MpListSearchGiveUpSeconds = 20.0;
+    private readonly SiegeFX.Core.Net.MpRefreshTimer _mpLanScan = new(MpListRefreshSeconds);
+    private double _mpLanScanStartedAt;
+    // The provider the current session (host or join) runs on: the screen's
+    // provider, or direct UDP for an IP typed on the Internet screen. The
+    // relaunch into the region carries it.
+    private string _mpSessionProvider = "lan";
     // SC-MP-INGAME — in-region session lifecycle. A --play-region process
     // relaunched from staging carries its role/host/provider/port/name in env
     // vars (set by LaunchRegionViaRelaunch), and re-establishes the session in
@@ -6364,8 +6385,12 @@ public sealed class RenderHost : IDisposable
     // are marshalled back off-thread. _mpHostInvite is our own PUID, shown on
     // the staging screen as the id a friend pastes to join.
     private SiegeFX.Core.Net.ILobbyService? _mpBrowseLobby;
-    private double _mpEosScanAt;
+    private readonly SiegeFX.Core.Net.MpRefreshTimer _mpEosScan = new(MpListRefreshSeconds);
+    private double _mpEosScanStartedAt;
     private bool _mpEosScanBusy;
+    // The screen state FlushMpSession saw last frame: opening a game list
+    // searches at once.
+    private Hud.FrontendScene.ScreenState _mpPrevSessionState = Hud.FrontendScene.ScreenState.Multiplayer;
     private volatile List<(string Row, string Addr)>? _mpEosScanResult;
     private volatile string? _mpHostInvite;
     // The Internet and Network browsers share LanGames/LanGameAddresses; track
@@ -6398,11 +6423,38 @@ public sealed class RenderHost : IDisposable
     /// back to the LAN address until it arrives.</summary>
     private string MpHostInviteAddress()
     {
-        if (string.Equals(_mpProviderId, "eos", StringComparison.OrdinalIgnoreCase)
+        if (string.Equals(_mpSessionProvider, "eos", StringComparison.OrdinalIgnoreCase)
             && _mpHostInvite is { Length: > 0 } puid)
             return puid;
         return _mpLocalIp ??= LocalIpBestEffort();
     }
+
+    /// <summary>Where internet play stands in this copy of the game: not in
+    /// it (a build without the EOS module or its credentials — every build
+    /// from source), signing in, or ready.</summary>
+    private enum MpInternetState { NotInBuild, SigningIn, SignInFailed, Ready }
+
+    private System.Reflection.PropertyInfo? _eosLoggedInProp, _eosLoginFailedProp;
+
+    private MpInternetState MpInternet()
+    {
+        if (!SiegeFX.Core.Net.MpProviderFactory.IsRegistered("eos") || _eosPlatform is null)
+            return MpInternetState.NotInBuild;
+        _eosLoggedInProp ??= _eosPlatform.GetType().GetProperty("LoggedIn");
+        _eosLoginFailedProp ??= _eosPlatform.GetType().GetProperty("LoginFailed");
+        if (_eosLoggedInProp?.GetValue(_eosPlatform) is true) return MpInternetState.Ready;
+        return _eosLoginFailedProp?.GetValue(_eosPlatform) is true ? MpInternetState.SignInFailed : MpInternetState.SigningIn;
+    }
+
+    /// <summary>A failed sign-in is tried again each time the Internet screen opens.</summary>
+    private void MpRetryInternetSignIn()
+    {
+        if (MpInternet() == MpInternetState.SignInFailed)
+            _eosPlatform?.GetType().GetMethod("RetryLogin")?.Invoke(_eosPlatform, null);
+    }
+
+    private const string MpNoInternetPlay =
+        "This copy of SiegeFX has no internet play (it was built without the Epic module; the release downloads have it).";
 
     // SC-MP-INGAME — stand up the session inside a live region. Called once the
     // world is up in a --play-region process that carries SIEGEFX_MP_ROLE. The
@@ -8306,7 +8358,7 @@ public sealed class RenderHost : IDisposable
                 if (_mpClientStartPending is not null) return;
                 _mpStaging.Status = "Host started the game — loading region...";
                 SiegeFX.Core.Net.NetLog.Info($"staging: GameStart received — relaunching as client to host '{_mpJoinedHostAddress}'");
-                _mpClientStartPending = new MpRelaunch("client", _mpProviderId, _mpJoinedHostAddress ?? "", 0, _mpSession.PlayerName);
+                _mpClientStartPending = new MpRelaunch("client", _mpSessionProvider, _mpJoinedHostAddress ?? "", 0, _mpSession.PlayerName);
             };
         }
         // Host serves the world snapshot + authoritative actor poses to
@@ -8426,10 +8478,15 @@ public sealed class RenderHost : IDisposable
         Console.WriteLine($"[mp] provider = {_mpProviderId} (available: {string.Join(',', SiegeFX.Core.Net.MpProviderFactory.Available)})");
     }
 
-    private void MpStartHost()
+    /// <param name="provider">"eos" (listed on the internet game list) or
+    /// "lan" (the local list, and direct joins by IP).</param>
+    /// <param name="hostingNote">replaces the status line once hosting, when
+    /// the player must know something about how friends reach this game.</param>
+    private void MpStartHost(string provider, string? hostingNote = null)
     {
         MpTearDownSession();
-        var (lobby, rawTransport) = SiegeFX.Core.Net.MpProviderFactory.Create(_mpProviderId);
+        _mpSessionProvider = provider;
+        var (lobby, rawTransport) = SiegeFX.Core.Net.MpProviderFactory.Create(provider);
         var transport = MpSecure(rawTransport);
         _mpLobby = lobby; _mpTransport = transport;
         transport.PeerConnected += id =>
@@ -8437,14 +8494,15 @@ public sealed class RenderHost : IDisposable
         transport.PeerDisconnected += id =>
             _mpSession.Status = $"Player {id} left ({_mpTransport?.Peers.Count ?? 0} in session).";
         int port = SiegeFX.Core.Net.UdpTransport.DefaultGamePort;
-        SiegeFX.Core.Net.MpDiag.WriteSession("host", _mpProviderId, transport.ProviderId,
+        SiegeFX.Core.Net.MpDiag.WriteSession("host", provider, transport.ProviderId,
             _mpLocalIp ??= LocalIpBestEffort(), port,
             SiegeFX.Core.Net.LanLobbyService.BeaconPort, MpIsEncrypted(transport));
         _ = transport.ListenAsync(port, default).ContinueWith(t =>
         {
             if (t.Result)
             {
-                _mpSession.Status = $"HOSTING '{_mpSession.PlayerName}'s Game' ({transport.ProviderId}) — waiting for players...";
+                _mpSession.Status = hostingNote
+                    ?? $"HOSTING '{_mpSession.PlayerName}'s Game' ({transport.ProviderId}) — waiting for players...";
                 _ = lobby.CreateAsync($"{_mpSession.PlayerName}'s Game",
                     new Dictionary<string, string>
                     {
@@ -8470,20 +8528,24 @@ public sealed class RenderHost : IDisposable
             else
             {
                 _mpSession.Status = $"HOST FAILED ({transport.ProviderId}) — port in use / not logged in? See session log [net] lines.";
+                _mpSessionFailed = true;
             }
         }, TaskScheduler.Default);
     }
 
-    private void MpStartConnect(string address)
+    /// <param name="provider">"eos" for an internet-game host id, "lan" for
+    /// an address reached directly (see MpAddress.ProviderFor).</param>
+    private void MpStartConnect(string address, string provider)
     {
         MpTearDownSession();
+        _mpSessionProvider = provider;
         _mpJoinedHostAddress = address; // reused when we relaunch into the region
-        var (lobby, rawTransport) = SiegeFX.Core.Net.MpProviderFactory.Create(_mpProviderId);
+        var (lobby, rawTransport) = SiegeFX.Core.Net.MpProviderFactory.Create(provider);
         var transport = MpSecure(rawTransport);
         _mpLobby = lobby; _mpTransport = transport;
         transport.PeerDisconnected += _ =>
             _mpSession.Status = "Disconnected from host (timeout). See session log [net] lines.";
-        SiegeFX.Core.Net.MpDiag.WriteSession("client", _mpProviderId, transport.ProviderId,
+        SiegeFX.Core.Net.MpDiag.WriteSession("client", provider, transport.ProviderId,
             address, SiegeFX.Core.Net.UdpTransport.DefaultGamePort,
             SiegeFX.Core.Net.LanLobbyService.BeaconPort, MpIsEncrypted(transport));
         _mpSession.Status = $"Connecting to {address} ({transport.ProviderId})...";
@@ -8495,13 +8557,17 @@ public sealed class RenderHost : IDisposable
                 _mpPendingStagingClient = true;
             }
             else
+            {
                 _mpSession.Status = $"CONNECT FAILED to {address} — host down, wrong address, or port blocked. See session log [net] lines.";
+                _mpSessionFailed = true;
+            }
         }, TaskScheduler.Default);
     }
     // SC-MP-EOS P8 — cross-thread staging-entry latches (ContinueWith runs
     // off the render thread; enter staging on the next Flush tick).
     private volatile bool _mpPendingStaging;
     private volatile bool _mpPendingStagingClient;
+    private volatile bool _mpSessionFailed;  // host listen / join failed: drop the session next frame
     private double _frameDtSeconds = 1.0 / 60.0;
 
     /// <summary>SC-MP-EOS P8 — drain staging-screen actions.</summary>
@@ -8553,7 +8619,7 @@ public sealed class RenderHost : IDisposable
             _mpStartCountdown -= _frameDtSeconds;
             if (_mpStartCountdown <= 0 && _ds1ResourcesDir is not null)
             {
-                var ctx = new MpRelaunch("host", _mpProviderId, "",
+                var ctx = new MpRelaunch("host", _mpSessionProvider, "",
                     SiegeFX.Core.Net.UdpTransport.DefaultGamePort, _mpSession.PlayerName);
                 MpTearDownSession();
                 LaunchRegionViaRelaunch(_ds1ResourcesDir, ctx);
@@ -25566,6 +25632,11 @@ void main()
         // The menu only takes input while no sub-screen / dialog is on top.
         _mainMenu.IsActive = !_aboutOpen && !_optionsMenu.IsOpen && !_creator.IsOpen;
         var act = _mainMenu.ConsumeAction();
+        if (act == MainMenuPanel.Action.None && _devScreen is not null && !_devScreenMenuOpened)
+        {
+            _devScreenMenuOpened = true;
+            act = MainMenuPanel.Action.Multiplayer;
+        }
         // Phase 24-POLISH-C — play the click cue on every consumed action
         // including stubs, so the user gets audible feedback for the press
         // even when the slot is "splinter pending" no-op.
@@ -25796,6 +25867,12 @@ void main()
         _mpMenu.IsActive = state == Hud.FrontendScene.ScreenState.Multiplayer && _bootMode;
         if (state != Hud.FrontendScene.ScreenState.Multiplayer) return;
         var act = _mpMenu.ConsumeAction();
+        if (act == MultiplayerMenuPanel.Action.None && _devScreen is { } dev)
+        {
+            _devScreen = null;
+            act = dev == "network" ? MultiplayerMenuPanel.Action.Network : MultiplayerMenuPanel.Action.Internet;
+            Console.WriteLine($"[dev] SIEGEFX_DEV_SCREEN: opening the {dev} screen");
+        }
         if (act != MultiplayerMenuPanel.Action.None) _audio?.Play(SfxFrontendBigButton);
         switch (act)
         {
@@ -25853,6 +25930,13 @@ void main()
             _mpLanScanResult = null; _mpEosScanResult = null;
             _mpLastListScreen = st;
         }
+        // Opening a game list searches at once, then every 2.5 s.
+        if (st != _mpPrevSessionState)
+        {
+            if (st == Hud.FrontendScene.ScreenState.MpNetwork) _mpLanScan.DueNow();
+            if (st == Hud.FrontendScene.ScreenState.MpInternet) { _mpEosScan.DueNow(); MpRetryInternetSignIn(); }
+            _mpPrevSessionState = st;
+        }
         bool active = _bootMode
             && (st == Hud.FrontendScene.ScreenState.MpInternet
              || st == Hud.FrontendScene.ScreenState.MpNetwork);
@@ -25879,6 +25963,16 @@ void main()
         }
         _mpNetSession?.Tick(_frameDtSeconds);
         FlushMpStaging(st);
+        // A host or join that failed drops its half-made session here on the
+        // render thread (EOS is single-threaded), keeping the failure on the
+        // status line, so the list refreshes again and the next try is clean.
+        if (_mpSessionFailed)
+        {
+            _mpSessionFailed = false;
+            var failure = _mpSession.Status;
+            MpTearDownSession();
+            _mpSession.Status = failure;
+        }
 
         bool wasActive = _mpSession.IsActive;
         _mpSession.IsActive = active;
@@ -25911,10 +26005,13 @@ void main()
                 }
                 if (_mpSession.SelectedGame >= _mpSession.LanGames.Count) _mpSession.SelectedGame = -1;
             }
-            if (!_mpLanScanBusy && _playSeconds >= _mpLanScanAt)
+            double now = SiegeFX.Core.Net.MpRefreshTimer.MonotonicSeconds();
+            if (_mpLanScanBusy && now - _mpLanScanStartedAt > MpListSearchGiveUpSeconds)
+                _mpLanScanBusy = false;
+            if (!_mpLanScanBusy && _mpLanScan.Due())
             {
                 _mpLanScanBusy = true;
-                _mpLanScanAt = _playSeconds + 2.5;
+                _mpLanScanStartedAt = now;
                 _ = Task.Run(async () =>
                 {
                     try
@@ -25938,8 +26035,17 @@ void main()
         // thread and its Find callback fires under _eosTick (also render thread);
         // only the immutable result rows are marshalled back off-thread. Gated on
         // the eos provider and "not yet hosting/connecting" (_mpLobby is null).
+        var internet = MpInternet();
+        if (st == Hud.FrontendScene.ScreenState.MpInternet)
+            _mpSession.InternetListNote = internet switch
+            {
+                MpInternetState.NotInBuild => "This copy of SiegeFX has no internet game list. Type a host's IP address above to join.",
+                MpInternetState.SigningIn => "Signing in to the internet game service...",
+                MpInternetState.SignInFailed => "Could not sign in to the internet game service (see the session log). It tries again each time this screen opens.",
+                _ => "Searching for internet games...",
+            };
         if (st == Hud.FrontendScene.ScreenState.MpInternet && _mpLobby is null
-            && string.Equals(_mpProviderId, "eos", StringComparison.OrdinalIgnoreCase))
+            && internet == MpInternetState.Ready)
         {
             if (_mpEosScanResult is { } escan)
             {
@@ -25953,25 +26059,25 @@ void main()
                 }
                 if (_mpSession.SelectedGame >= _mpSession.LanGames.Count) _mpSession.SelectedGame = -1;
             }
-            if (!_mpEosScanBusy && _playSeconds >= _mpEosScanAt)
+            double now = SiegeFX.Core.Net.MpRefreshTimer.MonotonicSeconds();
+            if (_mpEosScanBusy && now - _mpEosScanStartedAt > MpListSearchGiveUpSeconds)
             {
-                _mpEosScanAt = _playSeconds + 2.5;
-                // (Re)acquire the browse lobby on the scan cadence — never every
-                // frame — so the pre-login LAN fallback isn't churned. Create()
-                // hands back a "lan" pair until device-id login completes; we
-                // only keep it if it's really EOS.
-                if (_mpBrowseLobby is null)
+                SiegeFX.Core.Net.NetLog.Warn($"eos: a game-list search had no answer after {MpListSearchGiveUpSeconds:0} s; searching again");
+                _mpEosScanBusy = false;
+            }
+            if (!_mpEosScanBusy && _mpEosScan.Due())
+            {
+                // The browse lobby is acquired once signed in (MpInternet says
+                // Ready); browsing needs the lobby service only.
+                if (_mpBrowseLobby is null && SiegeFX.Core.Net.MpProviderFactory.TryCreate("eos") is var (lobby, transport))
                 {
-                    var (lobby, transport) = SiegeFX.Core.Net.MpProviderFactory.Create("eos");
-                    transport.Dispose(); // browsing needs the lobby service only
-                    if (string.Equals(lobby.ProviderId, "eos", StringComparison.OrdinalIgnoreCase))
-                        _mpBrowseLobby = lobby;
-                    else
-                        lobby.Dispose(); // still logging in (or EOS unconfigured)
+                    transport.Dispose();
+                    _mpBrowseLobby = lobby;
                 }
                 if (_mpBrowseLobby is { } browse)
                 {
                     _mpEosScanBusy = true;
+                    _mpEosScanStartedAt = now;
                     _ = browse.ListAsync(default).ContinueWith(t =>
                     {
                         try
@@ -26015,7 +26121,23 @@ void main()
                 var addr = _mpSession.AddressEntry.Trim();
                 if (addr.Length == 0)
                 {
-                    _mpSession.Status = "Enter a host address first (ip or ip:port).";
+                    _mpSession.Status = _mpSession.ScreenMode == Hud.MpSessionScreen.Mode.Internet
+                        ? "Pick a game from the list, or type a host's IP address (ip or ip:port)."
+                        : "Enter a host address first (ip or ip:port).";
+                    break;
+                }
+                // A listed game's id goes through the internet game service;
+                // an IP or host name is dialed directly (UDP 47778 unless a
+                // port is given), whichever screen it was typed on.
+                string via = SiegeFX.Core.Net.MpAddress.ProviderFor(addr);
+                if (via == "eos" && internet != MpInternetState.Ready)
+                {
+                    _mpSession.Status = internet switch
+                    {
+                        MpInternetState.SigningIn => "Still signing in to the internet game service. Try CONNECT again in a moment.",
+                        MpInternetState.SignInFailed => "Not signed in to the internet game service (see the session log). Reopen this screen to try again.",
+                        _ => MpNoInternetPlay,
+                    };
                     break;
                 }
                 if (!_mpSession.RecentAddresses.Contains(addr))
@@ -26025,7 +26147,7 @@ void main()
                         _mpSession.RecentAddresses.RemoveAt(_mpSession.RecentAddresses.Count - 1);
                     SaveMpSessionPrefs();
                 }
-                MpStartConnect(addr);
+                MpStartConnect(addr, via);
                 break;
             case Hud.MpSessionScreen.Action.Remove:
                 // The Internet screen's list now shows live EOS games rather than
@@ -26036,13 +26158,25 @@ void main()
                 break;
             case Hud.MpSessionScreen.Action.Host:
                 if (!HasName()) break;
-                MpStartHost();
+                if (_mpSession.ScreenMode != Hud.MpSessionScreen.Mode.Internet)
+                    MpStartHost("lan");
+                else if (internet == MpInternetState.Ready)
+                    MpStartHost("eos");
+                else if (internet == MpInternetState.SigningIn)
+                    // Hosting now would quietly host on the local network,
+                    // where no one outside it can see the game.
+                    _mpSession.Status = "Still signing in to the internet game service. Try HOST GAME again in a moment.";
+                else if (internet == MpInternetState.SignInFailed)
+                    _mpSession.Status = "Not signed in to the internet game service (see the session log). Reopen this screen to try again.";
+                else
+                    MpStartHost("lan", "HOSTING by IP address only: this copy of SiegeFX has no internet game list."
+                        + " Friends join with your public IP; forward UDP 47778 to this computer.");
                 break;
             case Hud.MpSessionScreen.Action.Join:
                 if (!HasName()) break;
                 if (_mpSession.SelectedGame >= 0
                     && _mpSession.SelectedGame < _mpSession.LanGameAddresses.Count)
-                    MpStartConnect(_mpSession.LanGameAddresses[_mpSession.SelectedGame]);
+                    MpStartConnect(_mpSession.LanGameAddresses[_mpSession.SelectedGame], "lan");
                 else
                     _mpSession.Status = "Select a game in the list first.";
                 break;
