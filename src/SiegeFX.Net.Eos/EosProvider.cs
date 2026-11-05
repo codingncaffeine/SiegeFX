@@ -19,6 +19,9 @@ public sealed class EosLobbyService : ILobbyService
     readonly LobbyInterface _lobby;
     readonly ProductUserId _local;
     string? _createdLobbyId;
+    // The list refreshes every few seconds; a search is logged when what it
+    // found changes, and every failure is.
+    string? _lastSearchLog;
 
     public string ProviderId => "eos";
 
@@ -61,15 +64,27 @@ public sealed class EosLobbyService : ILobbyService
     void ApplyAttributes(string lobbyId, IReadOnlyDictionary<string, string> attrs)
     {
         var modOpts = new UpdateLobbyModificationOptions { LocalUserId = _local, LobbyId = lobbyId };
-        if (_lobby.UpdateLobbyModification(ref modOpts, out var mod) != Result.Success || mod == null) return;
+        var modResult = _lobby.UpdateLobbyModification(ref modOpts, out var mod);
+        if (modResult != Result.Success || mod == null)
+        {
+            // Without its attributes the lobby has no host id, and searchers
+            // skip it: the game would be hosted but never listed.
+            NetLog.Error($"eos: UpdateLobbyModification {modResult} — the lobby will not be listed");
+            return;
+        }
         foreach (var (k, v) in attrs)
         {
             var data = new AttributeData { Key = k, Value = new AttributeDataValue { AsUtf8 = v } };
             var addOpts = new LobbyModificationAddAttributeOptions { Attribute = data, Visibility = LobbyAttributeVisibility.Public };
-            mod.AddAttribute(ref addOpts);
+            var addResult = mod.AddAttribute(ref addOpts);
+            if (addResult != Result.Success) NetLog.Warn($"eos: lobby attribute '{k}' {addResult}");
         }
         var updOpts = new UpdateLobbyOptions { LobbyModificationHandle = mod };
-        _lobby.UpdateLobby(ref updOpts, null, (ref UpdateLobbyCallbackInfo _) => { });
+        _lobby.UpdateLobby(ref updOpts, null, (ref UpdateLobbyCallbackInfo info) =>
+        {
+            if (info.ResultCode == Result.Success) NetLog.Info("eos: lobby listed (host id + game details published)");
+            else NetLog.Error($"eos: UpdateLobby {info.ResultCode} — the lobby will not be listed");
+        });
         mod.Release();
     }
 
@@ -90,6 +105,7 @@ public sealed class EosLobbyService : ILobbyService
         search.Find(ref findOpts, null, (ref LobbySearchFindCallbackInfo info) =>
         {
             var results = new List<LobbyInfo>();
+            int skipped = 0;
             if (info.ResultCode == Result.Success)
             {
                 var countOpts = new LobbySearchGetSearchResultCountOptions();
@@ -112,11 +128,15 @@ public sealed class EosLobbyService : ILobbyService
                     { var val = ReadAttr(k); if (val.Length > 0) attrs[k] = val; }
                     if (hostPuid.Length > 0)
                         results.Add(new LobbyInfo(hostPuid, name.Length > 0 ? name : "SiegeFX Game", hostPuid, attrs));
+                    else skipped++; // created, its attributes not published (yet)
                     details.Release();
                 }
-                NetLog.Info($"eos: search found {results.Count} lobby(ies)");
+                string line = skipped > 0
+                    ? $"eos: search found {results.Count} lobby(ies) ({skipped} without a host id, skipped)"
+                    : $"eos: search found {results.Count} lobby(ies)";
+                if (line != _lastSearchLog) { NetLog.Info(line); _lastSearchLog = line; }
             }
-            else NetLog.Warn($"eos: LobbySearch.Find {info.ResultCode}");
+            else { NetLog.Warn($"eos: LobbySearch.Find {info.ResultCode}"); _lastSearchLog = null; }
             search.Release();
             tcs.TrySetResult(results);
         });

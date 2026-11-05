@@ -17,6 +17,11 @@ public sealed class EosPlatform : IDisposable
     public PlatformInterface? Platform { get; private set; }
     public ProductUserId? LocalUser { get; private set; }
     public bool LoggedIn => LocalUser != null;
+    /// <summary>The last login attempt failed (no retry runs on its own; the
+    /// Internet screen calls <see cref="RetryLogin"/> when it opens).</summary>
+    public bool LoginFailed { get; private set; }
+    bool _loginRunning;
+    string _playerName = "";
     /// <summary>What the login told Epic about this player and machine. Epic does
     /// not hand the name back to a client for a device-id login (Connect reports
     /// no external account), so the EOS self-test checks these instead.</summary>
@@ -111,15 +116,19 @@ public sealed class EosPlatform : IDisposable
     /// the hero's) — never the computer's name or the login name.</summary>
     public void LoginDeviceId(string playerName, Action<bool> done)
     {
+        _playerName = playerName;
         var connect = Platform?.GetConnectInterface();
-        if (connect == null) { done(false); return; }
+        if (connect == null) { LoginFailed = true; done(false); return; }
+        _loginRunning = true;
+        LoginFailed = false;
+        void Finish(bool ok) { _loginRunning = false; LoginFailed = !ok; done(ok); }
         SentDeviceModel = DeviceModel();
         var createOpts = new CreateDeviceIdOptions { DeviceModel = SentDeviceModel };
         connect.CreateDeviceId(ref createOpts, null, (ref CreateDeviceIdCallbackInfo ci) =>
         {
             // Success or "already exists" both mean we can log in.
             if (ci.ResultCode != Result.Success && ci.ResultCode != Result.DuplicateNotAllowed)
-            { NetLog.Error($"EOS CreateDeviceId: {ci.ResultCode}"); done(false); return; }
+            { NetLog.Error($"EOS CreateDeviceId: {ci.ResultCode}"); Finish(false); return; }
             SentDisplayName = DisplayNameFor(playerName);
             var loginOpts = new LoginOptions
             {
@@ -132,11 +141,20 @@ public sealed class EosPlatform : IDisposable
                 {
                     LocalUser = li.LocalUserId;
                     NetLog.Info("EOS device-id login ok (anonymous, no Epic account)");
-                    done(true);
+                    Finish(true);
                 }
-                else { NetLog.Error($"EOS Connect.Login: {li.ResultCode}"); done(false); }
+                else { NetLog.Error($"EOS Connect.Login: {li.ResultCode}"); Finish(false); }
             });
         });
+    }
+
+    /// <summary>Log in again after a failed attempt, as the same player; no-op
+    /// while logged in or while an attempt is running.</summary>
+    public void RetryLogin()
+    {
+        if (LoggedIn || _loginRunning || !LoginFailed) return;
+        NetLog.Info("EOS: signing in again");
+        LoginDeviceId(_playerName, ok => { if (!ok) NetLog.Warn("eos: device-id login failed again"); });
     }
 
     /// <summary>"Linux X64", "Windows X64": what a new device id records as its model.</summary>
