@@ -22,6 +22,25 @@
 # Exit 0 only when every step passes. Work folder: scratch/smoke in the repo,
 # or $SMOKE_WORK.
 set -uo pipefail
+# Silent by construction, not by setting: on a machine with a sound device or
+# an audio server the whole run re-executes where neither exists (bwrap hides
+# /dev/snd and puts /dev/null over the PipeWire and PulseAudio sockets); a
+# machine with neither (a CI runner) is silent as it is. OpenAL's null driver
+# is selected too. The "silence" step below checks what the run can see.
+if [ -z "${SIEGEFX_SMOKE_WALLED:-}" ]; then
+    rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+    wall=(bwrap --dev-bind / / --tmpfs /dev/snd --die-with-parent)
+    audible=false
+    [ -n "$(find /dev/snd -mindepth 1 2> /dev/null | head -1)" ] && audible=true
+    for sock in "$rt/pipewire-0" "$rt/pipewire-0-manager" "$rt/pulse/native"; do
+        [ -S "$sock" ] && { wall+=(--ro-bind /dev/null "$sock"); audible=true; }
+    done
+    if $audible; then
+        command -v bwrap > /dev/null || { echo "smoke-test: bwrap is needed to keep the run silent" >&2; exit 2; }
+        SIEGEFX_SMOKE_WALLED=$rt exec "${wall[@]}" "$0" "$@"
+    fi
+    export SIEGEFX_SMOKE_WALLED=$rt
+fi
 repo=$(cd "$(dirname "$0")/.." && pwd)
 target=""; ds1=""; expect=""; eos=false
 for arg in "$@"; do
@@ -80,6 +99,18 @@ genv=(HOME="$work/home" PATH=/usr/bin:/bin LANG=C.UTF-8 TMPDIR="$work/tmp"
 [ -n "$ds1" ] && genv+=(SIEGEFX_DS1="$ds1")
 newest_log() { ls -t "$work/home/.local/share/SiegeFX/logs"/session-*.log 2> /dev/null | head -1; }
 
+# The control for the wall: what this run can see of the sound system.
+silence() {
+    local n s=0 f
+    n=$(find /dev/snd -mindepth 1 2> /dev/null | wc -l)
+    for f in "$SIEGEFX_SMOKE_WALLED/pipewire-0" "$SIEGEFX_SMOKE_WALLED/pipewire-0-manager" "$SIEGEFX_SMOKE_WALLED/pulse/native"; do
+        [ -S "$f" ] && s=$((s + 1))
+    done
+    echo "sound devices $n, audio sockets $s"
+    [ "$n" -eq 0 ] && [ "$s" -eq 0 ]
+}
+step silence silence
+sed 's/^/        /' "$work/silence.log"
 for t in save dialogue net; do
     step "selftest-$t" env -i "${genv[@]}" timeout 120 "$exe" "--selftest-$t"
 done

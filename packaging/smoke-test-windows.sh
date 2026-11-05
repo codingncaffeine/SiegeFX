@@ -33,6 +33,17 @@ unzip -q "$zip" -d "$work/app"
 winpath() { printf 'Z:%s' "$1" | tr '/' '\\'; }
 ds1_win=$(winpath "$DS1_GAME_DIR")
 
+# Silent by construction, not by setting: the game runs where no sound device
+# and no audio server exists (bwrap hides /dev/snd and puts /dev/null over the
+# PipeWire and PulseAudio sockets); Wine's audio drivers are switched off too.
+# Only the game is walled in: the nested compositor runs as usual.
+command -v bwrap > /dev/null || { echo "smoke-test-windows: bwrap is needed to keep the run silent" >&2; exit 2; }
+rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+quiet="bwrap --dev-bind / / --tmpfs /dev/snd --die-with-parent"
+for sock in "$rt/pipewire-0" "$rt/pipewire-0-manager" "$rt/pulse/native"; do
+    [ -S "$sock" ] && quiet+=" --ro-bind /dev/null $(printf %q "$sock")"
+done
+
 {
     printf '#!/usr/bin/env bash\n'
     printf 'export XDG_CONFIG_HOME=%q XDG_DATA_HOME=%q XDG_CACHE_HOME=%q\n' \
@@ -40,7 +51,11 @@ ds1_win=$(winpath "$DS1_GAME_DIR")
     printf 'export WINEPREFIX=%q GAMEID=0\n' "$pfx"
     printf 'export WINEDLLOVERRIDES="winepulse.drv,winealsa.drv,wineoss.drv=d" SIEGEFX_DS1=%q\n' "$ds1_win"
     printf 'cd %q\n' "$work/app"
-    printf 'umu-run SiegeFX.exe --noVideo > %q 2>&1 &\n' "$work/umu.log"
+    # The control: what the walled-in game can see of the sound system.
+    printf '%s sh -c %q %q > %q 2>&1\n' "$quiet" \
+        'n=$(ls /dev/snd | wc -l); s=0; for f in "$0"/pipewire-0 "$0"/pipewire-0-manager "$0"/pulse/native; do [ -S "$f" ] && s=$((s+1)); done; echo "sound devices $n, audio sockets $s"' \
+        "$rt" "$work/silence.txt"
+    printf '%s umu-run SiegeFX.exe --noVideo > %q 2>&1 &\n' "$quiet" "$work/umu.log"
     # A new prefix is created on the first launch; time the run from when the
     # program itself is up.
     printf 'for _ in $(seq 240); do pgrep -x SiegeFX.exe > /dev/null && break; sleep 1; done\n'
@@ -49,13 +64,15 @@ ds1_win=$(winpath "$DS1_GAME_DIR")
     printf 'if pgrep -x SiegeFX.exe > /dev/null; then echo running > %q; else echo absent > %q; fi\n' \
         "$work/result" "$work/result"
     printf 'pkill -x SiegeFX.exe 2> /dev/null; sleep 3; pkill -9 -x SiegeFX.exe 2> /dev/null\n'
-    printf 'SIEGEFX_EOS_CACHE=%q timeout 180 umu-run SiegeFX.exe --selftest-eos > %q 2>&1\nexit 0\n' \
-        "$(winpath "$repo/scratch/eos-test-identity-win")" "$work/eos.txt"
+    printf 'SIEGEFX_EOS_CACHE=%q timeout 180 %s umu-run SiegeFX.exe --selftest-eos > %q 2>&1\nexit 0\n' \
+        "$(winpath "$repo/scratch/eos-test-identity-win")" "$quiet" "$work/eos.txt"
 } > "$work/session.sh"
 chmod +x "$work/session.sh"
 "$repo/tools/ds1/nested.sh" "$work" $((secs + 300)) "$work/session.sh"
 
 failed=0
+silence=$(cat "$work/silence.txt" 2> /dev/null || echo "no control ran")
+if [ "$silence" = "sound devices 0, audio sockets 0" ]; then echo "PASS  silent ($silence)"; else echo "FAIL  not silent ($silence)"; failed=1; fi
 result=$(cat "$work/result" 2> /dev/null || echo none)
 if [ "$result" = running ]; then echo "PASS  running after ${secs}s"; else echo "FAIL  not running after ${secs}s ($result)"; failed=1; fi
 # Logs are cleared per run: the menu run wrote the oldest, the EOS run the next.
