@@ -20285,16 +20285,14 @@ void main()
     /// Audit fold (run a3b8709caef6f3494):
     ///   - was inlined inside LoadStaticProps; only saw the
     ///     newly-loaded region's props, missed previously-loaded.
-    ///   - World-radius math now uses true world-space corner
-    ///     positions of the local AABB rather than naive column
-    ///     length, so rotated placements + non-Y rotations get the
-    ///     correct effective radius.</summary>
+    ///   - footprints come from the placed bounding box
+    ///     (SiegeFX.Core.Nav.PropFootprint), so rotated, scaled and
+    ///     stood-up (root bind pose) props block where they stand.</summary>
     // SC-PATHING-LOS — tall does_block_path props double as SIGHT occluders
     // for standoff brains: XZ circle + world top Y, tested against an
     // eye-height sight line. Props under ~2.2u world height (fences, crates)
     // never occlude — archers shoot over them like retail.
     private readonly List<(Vector2 C, float R, float TopY)> _sightOccluders = new();
-    private const float SightOccluderMinHeight = 2.2f;
 
     private void MarkAllObstacles()
     {
@@ -20307,9 +20305,6 @@ void main()
         _sightOccluders.Clear();
         int obstacles = 0;
         int triangles = 0;
-        // CA2014 — hoist the 4-corner stackalloc above the loop so a
-        // huge prop count doesn't grow the stack frame linearly.
-        Span<Vector3> corners = stackalloc Vector3[4];
         foreach (var prop in _staticProps)
         {
             if (prop.IsDestroyed) continue;
@@ -20336,109 +20331,16 @@ void main()
                 var blockTrim = (blockAttr ?? "").Trim().Trim('"').ToLowerInvariant();
                 if (blockTrim != "true" && blockTrim != "1") continue;
             }
-            // World-space XZ radius: transform the local AABB's 4
-            // XZ corners (Y collapsed) by the placement matrix,
-            // then take the max distance from the translation
-            // origin. Handles arbitrary rotation + non-uniform
-            // scale correctly (the previous M11+M13 length shortcut
-            // dropped M12/M32 and silently under-blocked tilted
-            // placements).
-            var minL = prop.Mesh.Min;
-            var maxL = prop.Mesh.Max;
-            float midY = (minL.Y + maxL.Y) * 0.5f;
-            corners[0] = new(minL.X, midY, minL.Z);
-            corners[1] = new(maxL.X, midY, minL.Z);
-            corners[2] = new(maxL.X, midY, maxL.Z);
-            corners[3] = new(minL.X, midY, maxL.Z);
-            var origin = prop.World.Translation;
-            float maxR2 = 0f;
-            foreach (var corner in corners)
-            {
-                var wc = Vector3.Transform(corner, prop.World);
-                float dx = wc.X - origin.X;
-                float dz = wc.Z - origin.Z;
-                float r2 = dx * dx + dz * dz;
-                if (r2 > maxR2) maxR2 = r2;
-            }
-            float radius = MathF.Sqrt(maxR2);
-            if (radius < 0.5f) continue;
-            // SC-PATHING — elongated props (fence sections, walls, carts)
-            // block as a CAPSULE of small discs along their world long axis
-            // instead of one bounding disc: a 6u fence with a 3u disc would
-            // over-block the walkable grass beside it and turn "walk around
-            // the fence" into a huge detour.
-            var wcA = Vector3.Transform(corners[0], prop.World);
-            var wcB = Vector3.Transform(corners[1], prop.World);
-            var wcD = Vector3.Transform(corners[3], prop.World);
-            float sideAB = new Vector2(wcB.X - wcA.X, wcB.Z - wcA.Z).Length(); // local X extent
-            float sideAD = new Vector2(wcD.X - wcA.X, wcD.Z - wcA.Z).Length(); // local Z extent
-            float longLen = MathF.Max(sideAB, sideAD);
-            float shortLen = MathF.Max(0.4f, MathF.Min(sideAB, sideAD));
-            // SC-PATHING-LOS — world height decides sight occlusion. Center
-            // column transform is exact for yaw-only placements (the norm);
-            // tilted props approximate fine at this granularity.
-            var wBase = Vector3.Transform(
-                new Vector3((minL.X + maxL.X) * 0.5f, minL.Y, (minL.Z + maxL.Z) * 0.5f), prop.World);
-            var wTop = Vector3.Transform(
-                new Vector3((minL.X + maxL.X) * 0.5f, maxL.Y, (minL.Z + maxL.Z) * 0.5f), prop.World);
-            float propTopY = MathF.Max(wBase.Y, wTop.Y);
-            // SC-NAV-OBSTACLE-YGATE — the prop's world vertical band. Gates
-            // MarkObstacle so a ground-floor does_block_path prop can't
-            // blanket-block the basement stacked beneath it in the same snode
-            // (that severed the stair descent and stranded the cellar on its
-            // own nav component). Center-column Y is exact for the yaw-only
-            // norm; min/max guards a flipped placement.
-            float propBaseY = MathF.Min(wBase.Y, wTop.Y);
-            bool occludesSight = MathF.Abs(wTop.Y - wBase.Y) >= SightOccluderMinHeight;
+            // SC-NAV-FOOTPRINT — the prop's footprint and height band as it
+            // stands in the world (shared with the nav tools, so a replay
+            // blocks exactly what the game blocks). The old local-X × local-Z
+            // footprint was wrong for every prop stood up by its root bind
+            // pose (authored Z-up): its "footprint" spanned the prop's height.
+            var footprint = SiegeFX.Core.Nav.PropFootprint.FromBounds(prop.Mesh.Min, prop.Mesh.Max, prop.World);
             // SC-NAV-BLAME — every triangle this prop blocks remembers who
-            // sealed it, so a "no corridor" failure can name the culprit.
-            string blameTag = $"{prop.Template}#0x{prop.Scid:X8}";
-            int marked = 0;
-            if (longLen > shortLen * 2.2f && longLen > 2f)
-            {
-                var axis = sideAB >= sideAD
-                    ? Vector3.Normalize(new Vector3(wcB.X - wcA.X, 0f, wcB.Z - wcA.Z))
-                    : Vector3.Normalize(new Vector3(wcD.X - wcA.X, 0f, wcD.Z - wcA.Z));
-                float halfLong = longLen * 0.5f;
-                float discR = MathF.Max(0.45f, shortLen * 0.5f);
-                int discs = Math.Max(2, (int)MathF.Ceiling(longLen / (discR * 1.4f)));
-                for (int di = 0; di < discs; di++)
-                {
-                    float along = -halfLong + longLen * (di / (float)(discs - 1));
-                    var c = origin + axis * along;
-                    marked += _navMesh.MarkObstacle(c.X, c.Z, discR, propBaseY, propTopY, blameTag);
-                    if (occludesSight)
-                        _sightOccluders.Add((new Vector2(c.X, c.Z), discR, propTopY));
-                }
-            }
-            else if (shortLen > 2.4f)
-            {
-                // SC-PATHING-FOOTPRINT — big squat props (wagons, stalls,
-                // boulders, crypt furniture) block their OBB rectangle as a
-                // grid of small discs. One bounding disc overshoots the
-                // corners by up to 40% and sealed rooms/pens — the parity
-                // roam soak froze 35 spawns inside such footprints.
-                var axU = Vector3.Normalize(new Vector3(wcB.X - wcA.X, 0f, wcB.Z - wcA.Z));
-                var axV = Vector3.Normalize(new Vector3(wcD.X - wcA.X, 0f, wcD.Z - wcA.Z));
-                const float gridR = 0.8f;
-                int nu = Math.Max(2, (int)MathF.Ceiling(sideAB / (gridR * 1.4f)) + 1);
-                int nv = Math.Max(2, (int)MathF.Ceiling(sideAD / (gridR * 1.4f)) + 1);
-                for (int iu = 0; iu < nu; iu++)
-                for (int iv = 0; iv < nv; iv++)
-                {
-                    var c = wcA + axU * (sideAB * iu / (nu - 1))
-                                + axV * (sideAD * iv / (nv - 1));
-                    marked += _navMesh.MarkObstacle(c.X, c.Z, gridR, propBaseY, propTopY, blameTag);
-                    if (occludesSight)
-                        _sightOccluders.Add((new Vector2(c.X, c.Z), gridR, propTopY));
-                }
-            }
-            else
-            {
-                marked = _navMesh.MarkObstacle(origin.X, origin.Z, radius, propBaseY, propTopY, blameTag);
-                if (occludesSight)
-                    _sightOccluders.Add((new Vector2(origin.X, origin.Z), radius, propTopY));
-            }
+            // sealed it (and where), so a "no corridor" failure can name it.
+            int marked = SiegeFX.Core.Nav.PropObstacle.Mark(_navMesh, footprint,
+                $"{prop.Template}#0x{prop.Scid:X8}", _sightOccluders);
             if (marked > 0)
             {
                 obstacles++;
@@ -23928,19 +23830,6 @@ void main()
         return m;
     }
 
-    /// <summary>Phase 21c — bone-0's world bind pose for a static prop, used to
-    /// rotate Z-up authoring space into the engine's Y-up convention. Returns
-    /// identity for unrigged meshes (no BindPose entries) AND for genuinely
-    /// multi-bone skinned meshes (V2.5+ props whose geometry ships in
-    /// world-bind space across several bones).
-    ///
-    /// SC-PROP-ATTACH-BONE — the gate was originally "exactly 1 bone", but many
-    /// rigid props ship EXTRA attach bones (a wall torch carries an AP_light
-    /// socket for its flame) while all their geometry still binds bone 0. Those
-    /// tripped the old count gate, got no root correction, and rendered in raw
-    /// Z-up — the torch cantilevering off the wall. The correct test is whether
-    /// any GEOMETRY binds past bone 0: attach bones carry no verts, so a rigid
-    /// prop reads max-geometry-bone 0 regardless of how many sockets it has.</summary>
     /// <summary>World transform of an item placed in a region
     /// (inventory.gas), composed like <see cref="ComposePlacementWorld"/>
     /// but rooted at bone 0's bind pose whenever all the geometry hangs on
@@ -23959,7 +23848,7 @@ void main()
     private Matrix4x4 ComposeItemPlacementWorld(AspMesh asp, SiegeFX.Core.Assets.NodePlacement p)
     {
         var root = Matrix4x4.Identity;
-        if (asp.BindPose.Length > 0 && MaxGeometryBone(asp) == 0)
+        if (asp.BindPose.Length > 0 && PropBindPose.MaxGeometryBone(asp) == 0)
         {
             bool gripped = asp.BoneNames.Count > 1 && asp.BindPose.Length > 1
                 && string.Equals(asp.BoneNames[0], "grip", StringComparison.OrdinalIgnoreCase)
@@ -23974,62 +23863,10 @@ void main()
         return local * nodeWorld;
     }
 
-    private static Matrix4x4 ComputeRootBindPose(AspMesh asp)
-    {
-        if (asp.BindPose.Length == 0) return Matrix4x4.Identity;
-        if (!IsRigidRootProp(asp)) return Matrix4x4.Identity;
-        var bp = asp.BindPose[0];
-        return Matrix4x4.CreateFromQuaternion(bp.Rotation) *
-               Matrix4x4.CreateTranslation(bp.Translation);
-    }
-
-    /// <summary>A prop is "rigid-root" — safe to apply bone-0's bind
-    /// correction to — when ALL geometry binds bone 0 AND every additional
-    /// bone is an attach socket (AP_light for a torch/candlestand flame,
-    /// AP_* generally), not a real animation bone.
-    ///
-    /// SC-PROP-ATTACH-BONE — verified by a tank-wide asp sweep: of the
-    /// multi-bone props that bind all geometry to bone 0, two shapes exist —
-    /// light props (candlestands, torches) whose extra bones are AP_light
-    /// sockets and DO need the Z-up->Y-up correction, and hinged props
-    /// (grates) whose extra bone is a real pivot (Bone04) and currently
-    /// render right WITHOUT it. Gating on attach-socket names fixes the
-    /// former and leaves the latter (and every skinned mesh) untouched, so
-    /// this can't flip a prop that already sits correctly.</summary>
-    private static bool IsRigidRootProp(AspMesh asp)
-    {
-        if (MaxGeometryBone(asp) != 0) return false;
-        for (int i = 1; i < asp.BoneNames.Count; i++)
-        {
-            var n = asp.BoneNames[i];
-            if (string.IsNullOrEmpty(n) ||
-                !n.StartsWith("ap_", StringComparison.OrdinalIgnoreCase))
-                return false;
-        }
-        return true;
-    }
-
-    /// <summary>Highest bone index that any vertex is actually weighted to
-    /// (its highest-weight/primary bone). Unrigged geometry is implicitly on
-    /// the root, so returns 0. Attach bones (AP_light, AP_*) carry no geometry
-    /// and never raise this, so a rigid prop with sockets still reads 0.</summary>
-    private static int MaxGeometryBone(AspMesh asp)
-    {
-        if (!asp.HasSkin) return 0;
-        int max = 0;
-        for (int c = 0; c < asp.SkinWeights.Length; c++)
-        {
-            var w = asp.SkinWeights[c];
-            uint b = asp.SkinBones[c];
-            int primary = 0; float pw = -1f;
-            if (w.X > pw) { primary = (int)( b        & 0xFF); pw = w.X; }
-            if (w.Y > pw) { primary = (int)((b >>  8) & 0xFF); pw = w.Y; }
-            if (w.Z > pw) { primary = (int)((b >> 16) & 0xFF); pw = w.Z; }
-            if (w.W > pw) { primary = (int)((b >> 24) & 0xFF); pw = w.W; }
-            if (primary > max) max = primary;
-        }
-        return max;
-    }
+    // Root bind pose and rigid-root test: SiegeFX.Core.Assets.PropBindPose,
+    // shared with the tools so their obstacle footprints match the game's.
+    private static Matrix4x4 ComputeRootBindPose(AspMesh asp) => PropBindPose.Root(asp);
+    private static bool IsRigidRootProp(AspMesh asp) => PropBindPose.IsRigidRoot(asp);
 
     /// <summary>Phase 21a-3 — rebuild the nav mesh against the current unified
     /// region scope (player + all preloaded neighbors). Called both at the
