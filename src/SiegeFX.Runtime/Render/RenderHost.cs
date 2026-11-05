@@ -2754,7 +2754,7 @@ public sealed class RenderHost : IDisposable
         // same authored sentence as the hero's.
         if (newSkill > oldSkill)
         {
-            AddGameMessage($"{who} has advanced to level {newSkill} in " +
+            AddGameMessage($"{who} has advanced to level {SiegeFX.Core.Actors.PlayerProgression.Shown(newSkill)} in " +
                            $"{SkillDisplayName(skill)} skill by {SkillLevelUpVerb(skill)}!");
             // SC-SKILLUP-HEAL — manual: skill-up instantly restores HP.
             if (member is { IsDead: false })
@@ -23985,7 +23985,7 @@ void main()
                               $"{SkillDisplayName(skill)} {newSkill}");
         if (newSkill > oldSkill)
         {
-            AddGameMessage($"{who} has advanced to level {newSkill} in " +
+            AddGameMessage($"{who} has advanced to level {SiegeFX.Core.Actors.PlayerProgression.Shown(newSkill)} in " +
                            $"{SkillDisplayName(skill)} skill by {SkillLevelUpVerb(skill)}!");
             if (member is { IsDead: false })
                 member.Actor.Combat.Heal(member.Actor.Stats.MaxLife);
@@ -39198,7 +39198,7 @@ void main()
             // Nature Magic spells!") on the top message strip; replaces the
             // invented yellow banner.
             string heroName = _player is not null ? ResolveMemberName(_player) : "You";
-            AddGameMessage($"{heroName} has advanced to level {newSkillLevel} in " +
+            AddGameMessage($"{heroName} has advanced to level {SiegeFX.Core.Actors.PlayerProgression.Shown(newSkillLevel)} in " +
                            $"{SkillDisplayName(skill)} skill by {SkillLevelUpVerb(skill)}!");
             // SC-LEVELUP-BOOK — the skill's own spinning tome above the hero
             // + the skill's own authored jingle (falls back to the shared
