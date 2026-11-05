@@ -86,8 +86,14 @@ public sealed class ActorCombatState
     /// <summary>Applies a post-mitigation damage value. Returns the actual amount
     /// subtracted from CurrentLife — clamped to the remaining life so the accounting
     /// in callers (xp attribution, overkill stats) stays honest.</summary>
+    /// <summary>Takes no damage at all (the dev console's god mode). Refilling
+    /// life each update wasn't enough: a hit, or several in one frame, bigger
+    /// than the remaining life killed the hero before the refill ran.</summary>
+    public bool Invulnerable { get; set; }
+
     public float ApplyDamage(float damage)
     {
+        if (Invulnerable) return 0f;
         // SC-DOWNED — hits on an unconscious body accumulate trauma instead
         // of draining (already-zero) life. No life removed → no XP credit.
         if (Downed && CurrentLife <= 0f)
