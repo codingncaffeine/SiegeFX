@@ -13,14 +13,18 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Platforms>x64</Platforms>
-    <PlatformTarget>x64</PlatformTarget>
-    <!-- Which native EOS library the module binds: Windows64 (the default,
-         the Windows release) or Linux (the Linux tarball). It follows the
-         artifact, not the machine that builds it: publish.sh builds both. -->
+    <!-- Any processor: one module per operating system serves every machine
+         that system ships for (Linux x64 and ARM64, Apple Silicon); EosNative
+         loads the native library for the processor it runs on. -->
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <!-- Which operating system's EOS bindings the module compiles: Windows64
+         (the default, the Windows release), Linux (both Linux tarballs) or Mac
+         (the macOS tarball). It follows the artifact, not the machine that
+         builds it: publish.sh builds all three. -->
     <EosPlatform Condition="'$(EosPlatform)' == ''">Windows64</EosPlatform>
     <DefineConstants Condition="'$(EosPlatform)' == 'Linux'">EOS_PLATFORM_LINUX;$(DefineConstants)</DefineConstants>
-    <DefineConstants Condition="'$(EosPlatform)' != 'Linux'">EOS_PLATFORM_WINDOWS_64;$(DefineConstants)</DefineConstants>
+    <DefineConstants Condition="'$(EosPlatform)' == 'Mac'">EOS_PLATFORM_OSX;$(DefineConstants)</DefineConstants>
+    <DefineConstants Condition="'$(EosPlatform)' != 'Linux' and '$(EosPlatform)' != 'Mac'">EOS_PLATFORM_WINDOWS_64;$(DefineConstants)</DefineConstants>
     <!-- Preferred: the SDK unpacked beside the projects (survives Downloads
          cleanups — the v0.4.0 release found the old copy deleted); the
          original Downloads location stays as the fallback. -->
@@ -47,13 +51,21 @@
 
   <!-- Native runtime alongside the managed assembly. -->
   <ItemGroup>
-    <None Include="$(EosSdkRoot)\Bin\EOSSDK-Win64-Shipping.dll" Condition="'$(EosPlatform)' != 'Linux' and Exists('$(EosSdkRoot)\Bin\EOSSDK-Win64-Shipping.dll')">
+    <None Include="$(EosSdkRoot)\Bin\EOSSDK-Win64-Shipping.dll" Condition="'$(EosPlatform)' == 'Windows64' and Exists('$(EosSdkRoot)\Bin\EOSSDK-Win64-Shipping.dll')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>EOSSDK-Win64-Shipping.dll</Link>
     </None>
     <None Include="$(EosSdkRoot)\Bin\libEOSSDK-Linux-Shipping.so" Condition="'$(EosPlatform)' == 'Linux' and Exists('$(EosSdkRoot)\Bin\libEOSSDK-Linux-Shipping.so')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <Link>libEOSSDK-Linux-Shipping.so</Link>
+    </None>
+    <None Include="$(EosSdkRoot)\Bin\libEOSSDK-LinuxArm64-Shipping.so" Condition="'$(EosPlatform)' == 'Linux' and Exists('$(EosSdkRoot)\Bin\libEOSSDK-LinuxArm64-Shipping.so')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>libEOSSDK-LinuxArm64-Shipping.so</Link>
+    </None>
+    <None Include="$(EosSdkRoot)\Bin\libEOSSDK-Mac-Shipping.dylib" Condition="'$(EosPlatform)' == 'Mac' and Exists('$(EosSdkRoot)\Bin\libEOSSDK-Mac-Shipping.dylib')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>libEOSSDK-Mac-Shipping.dylib</Link>
     </None>
   </ItemGroup>
 

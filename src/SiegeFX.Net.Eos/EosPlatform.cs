@@ -76,6 +76,7 @@ public sealed class EosPlatform : IDisposable
     {
         try
         {
+            EosNative.Install();
             if (!_initialized)
             {
                 var initOpts = new InitializeOptions { ProductName = "SiegeFX", ProductVersion = "1.0" };
