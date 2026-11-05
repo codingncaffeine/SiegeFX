@@ -199,7 +199,7 @@ jobs:
         run: |
           tar -xzf publish/SiegeFX-dev-osx-arm64.tar.gz
           app=SiegeFX-dev-osx-arm64
-          ls -1 "$app" | grep -v '\.dll$'
+          find "$app" -maxdepth 1 -type f ! -name '*.dll' | sort
           failed=0
           for t in save dialogue net; do
             echo "::group::selftest-$t"
