@@ -6,13 +6,13 @@ name: CI
 #   build    the whole solution on Linux (x64 and ARM), on macOS (Apple
 #            Silicon) and on Windows with warnings as errors, the data-free
 #            unit tests and the game's own self-tests (save round trip,
-#            dialogue tree, host and client over loopback); on macOS also
-#            from a self-contained osx-arm64 build, as a Mac player would
-#            run it;
+#            dialogue tree, host and client over loopback);
 #   package  the release artifacts (publish.sh), the x64 Linux tarball
 #            launched as shipped (packaging/smoke-test.sh), artifacts kept
 #            for a week;
 #   linux-arm64-tarball  the ARM Linux tarball launched as shipped, on ARM;
+#   macos-tarball  the macOS tarball (built on Linux) launched as shipped, on
+#            an Apple Silicon Mac;
 #   windows-zip  the self-tests again, from the Windows zip as shipped.
 # The checks that need a Dungeon Siege install (the parity ledger, the effect
 # traces, the menu rendered from the tarball) run locally: tools/receipts.sh
@@ -116,32 +116,6 @@ jobs:
           done
           exit $failed
 
-      # The game as a Mac player gets it: self-contained for Apple Silicon,
-      # with the bundled GLFW and OpenAL Soft libraries in place of a system
-      # copy. There is no Mac release artifact yet; this keeps the build that
-      # one would ship running.
-      - name: Self-tests from a self-contained osx-arm64 build
-        if: runner.os == 'macOS'
-        timeout-minutes: 15
-        env:
-          ALSOFT_DRIVERS: "null"
-        run: |
-          dotnet publish src/SiegeFX.Runtime -c Release -f net10.0 -r osx-arm64 --self-contained -o app --nologo
-          failed=0
-          for t in save dialogue net; do
-            echo "::group::selftest-$t"
-            perl -e 'alarm shift; exec @ARGV' 180 app/SiegeFX "--selftest-$t" || { echo "::error::selftest-$t failed"; failed=1; }
-            echo "::endgroup::"
-          done
-          # The build line of the newest session log names the runtime (the
-          # names are timestamps, so the glob's last match is the newest).
-          logs=("$HOME/Library/Application Support/SiegeFX/logs"/session-*.log)
-          log=${logs[${#logs[@]} - 1]}
-          line=$(grep -m1 '^\[log\] SiegeFX ' "$log") || true
-          echo "$line"
-          [[ "$line" == *"(osx-arm64)" ]] || { echo "::error::the session log does not name the osx-arm64 runtime"; failed=1; }
-          exit $failed
-
       - name: Keep the hang dumps
         if: failure()
         uses: actions/upload-artifact@v7
@@ -203,6 +177,42 @@ jobs:
 
       - name: Launch the tarball as shipped
         run: packaging/smoke-test.sh publish/SiegeFX-dev-linux-arm64.tar.gz
+
+  # The macOS tarball as players get it, launched on an Apple Silicon Mac: it
+  # is built on Linux above, so this is the first time a Mac runs it (and its
+  # code signatures meet the real kernel). The build line of the newest
+  # session log names the runtime (log names are timestamps, so the glob's
+  # last match is the newest).
+  macos-tarball:
+    needs: package
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: siegefx-${{ github.sha }}
+          path: publish
+
+      - name: Self-tests from the shipped tarball
+        env:
+          ALSOFT_DRIVERS: "null"
+        run: |
+          tar -xzf publish/SiegeFX-dev-osx-arm64.tar.gz
+          app=SiegeFX-dev-osx-arm64
+          ls -1 "$app" | grep -v '\.dll$'
+          failed=0
+          for t in save dialogue net; do
+            echo "::group::selftest-$t"
+            # macOS has no timeout(1); perl's alarm outlives the exec.
+            perl -e 'alarm shift; exec @ARGV' 180 "$app/SiegeFX" "--selftest-$t" || { echo "::error::selftest-$t failed"; failed=1; }
+            echo "::endgroup::"
+          done
+          logs=("$HOME/Library/Application Support/SiegeFX/logs"/session-*.log)
+          log=${logs[${#logs[@]} - 1]}
+          line=$(grep -m1 '^\[log\] SiegeFX ' "$log") || true
+          echo "$line"
+          [[ "$line" == *"(osx-arm64)" ]] || { echo "::error::the session log does not name the osx-arm64 runtime"; failed=1; }
+          exit $failed
 
   # The Windows zip as players get it: one self-contained, self-extracting
   # SiegeFX.exe. A packaging break (a native left out of the bundle, a module

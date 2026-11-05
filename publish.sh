@@ -8,25 +8,36 @@
 #   publish/SiegeFX-<version>-linux-x64.tar.gz        the game for Linux, one
 #                                                     folder: run ./SiegeFX
 #   publish/SiegeFX-<version>-linux-arm64.tar.gz      the same for 64-bit ARM
-#                                                     Linux, LAN and direct IP
+#                                                     Linux
+#   publish/SiegeFX-<version>-osx-arm64.tar.gz        the game for Apple
+#                                                     Silicon Macs: run ./SiegeFX
 #   publish/SiegeFX-<version>-win-x64.zip             the game for Windows,
 #                                                     SiegeFX.exe as one file
 #   publish/SiegeSmith-v<csproj Version>-win-x64.zip  the modding studio
 #
 # <version> (e.g. v0.5.0) names the SiegeFX artifacts and is the version the
 # build reports in its session log; the default, "dev", keeps the version in
-# the csproj. The x64 games bundle the optional EOS module (internet play), each
-# with its own native library, when an EOS SDK is unpacked at $EOS_SDK_ROOT
-# (default: EOS/SDK beside the repo folder), with the game's eos_config.txt
-# from $EOS_CONFIG (default: the save folder); without the SDK they are LAN and
-# direct-IP builds. DOTNET picks the dotnet executable (default: dotnet on PATH).
+# the csproj. Every game artifact bundles the optional EOS module (internet
+# play), built for its operating system, with the native library for its
+# processor, when an EOS SDK is unpacked at $EOS_SDK_ROOT (default: EOS/SDK
+# beside the repo folder), with the game's eos_config.txt from $EOS_CONFIG
+# (default: the save folder); without the SDK they are LAN and direct-IP builds.
+# DOTNET picks the dotnet executable (default: dotnet on PATH); PUBLISH_OUT the
+# output folder (default: publish/ in the repo), emptied first, so it must be
+# new or one this script made. The macOS tarball is built here like the rest;
+# nothing here can run it, so every Mach-O file in it has its code signature
+# checked (tools/check-macos-signatures.py, python3).
 set -euo pipefail
 repo=$(cd "$(dirname "$0")" && pwd)
 dotnet=${DOTNET:-dotnet}
 ver=${1:-dev}
-out="$repo/publish"
+out=${PUBLISH_OUT:-$repo/publish}
 stamp=()
 [ "$ver" != dev ] && stamp=(-p:Version="${ver#v}")
+if [ -e "$out" ] && [ "$out" != "$repo/publish" ] && [ ! -f "$out/.siegefx-publish" ]; then
+    echo "publish: $out exists and is not a folder publish.sh made; pick a new PUBLISH_OUT" >&2
+    exit 1
+fi
 
 # Every artifact starts from clean build trees, so nothing stale is published.
 rm -rf "$out"
@@ -34,6 +45,7 @@ for p in SiegeFX.Runtime SiegeFX.Core SiegeFX.Audio SiegeFX.Net.Eos SiegeSmith; 
     rm -rf "$repo/src/$p/bin" "$repo/src/$p/obj"
 done
 mkdir -p "$out"
+: > "$out/.siegefx-publish"
 
 echo "=== EOS module (optional; a LAN and direct-IP build without it) ==="
 eos_sdk=${EOS_SDK_ROOT:-$(dirname "$repo")/EOS/SDK}
@@ -47,7 +59,7 @@ eos_build() {   # eos_build <EosPlatform> <output folder>
 }
 if [ ! -d "$eos_sdk/Source" ]; then
     echo "  no EOS SDK at $eos_sdk - shipping LAN/direct-IP only."
-elif ! eos_build Windows64 "$out/eos-win" || ! eos_build Linux "$out/eos-linux"; then
+elif ! eos_build Windows64 "$out/eos-win" || ! eos_build Linux "$out/eos-linux" || ! eos_build Mac "$out/eos-mac"; then
     echo "  EOS module build failed (see $out/eos-build.log) - shipping LAN/direct-IP only."
 else
     eos=true
@@ -59,8 +71,8 @@ bundle_eos() {  # bundle_eos <artifact folder> <module build> <native library>
     if [ -f "$creds" ]; then cp "$creds" "$1/eos_config.txt" && echo "  + eos_config.txt (the game's credentials)"; fi
 }
 
-# The Linux tarball for one runtime: linux-x64 or linux-arm64. The EOS module
-# is built for x64 only, so the ARM tarball plays on the LAN and by direct IP.
+# The Linux tarball for one runtime: linux-x64 or linux-arm64. One EOS module
+# serves both; each carries Epic's native library for its processor.
 linux_tarball() {   # linux_tarball <rid>
     local rid=$1
     echo
@@ -71,7 +83,10 @@ linux_tarball() {   # linux_tarball <rid>
         -p:DebugType=embedded "${stamp[@]}" -o "$stage" --nologo
     cp "$repo/packaging/README.txt" "$stage/README.txt"
     cp "$repo/LICENSE" "$repo/THIRD-PARTY-NOTICES.txt" "$stage/"
-    if [ "$rid" = linux-x64 ]; then bundle_eos "$stage" "$out/eos-linux" libEOSSDK-Linux-Shipping.so; fi
+    case $rid in
+        linux-x64) bundle_eos "$stage" "$out/eos-linux" libEOSSDK-Linux-Shipping.so ;;
+        linux-arm64) bundle_eos "$stage" "$out/eos-linux" libEOSSDK-LinuxArm64-Shipping.so ;;
+    esac
     # The desktop entry and the icons, laid out as under /usr/share so a package
     # or a per-user install copies them as they are. The icons are the PNG frames
     # of the Windows icon, copied out byte for byte.
@@ -99,6 +114,19 @@ linux_tarball() {   # linux_tarball <rid>
 }
 linux_tarball linux-x64
 linux_tarball linux-arm64
+
+echo
+echo "=== SiegeFX for macOS (self-contained osx-arm64) ==="
+mac="SiegeFX-$ver-osx-arm64"
+mac_stage="$out/$mac"
+"$dotnet" publish "$repo/src/SiegeFX.Runtime" -c Release -f net10.0 -r osx-arm64 --self-contained \
+    -p:DebugType=embedded "${stamp[@]}" -o "$mac_stage" --nologo
+cp "$repo/packaging/README-macOS.txt" "$mac_stage/README.txt"
+cp "$repo/LICENSE" "$repo/THIRD-PARTY-NOTICES.txt" "$mac_stage/"
+# Epic's Mac library is universal (Intel and Apple Silicon), shipped as it is.
+bundle_eos "$mac_stage" "$out/eos-mac" libEOSSDK-Mac-Shipping.dylib
+python3 "$repo/tools/check-macos-signatures.py" "$mac_stage"
+tar -C "$out" --sort=name --owner=0 --group=0 --numeric-owner -czf "$out/$mac.tar.gz" "$mac"
 
 echo
 echo "=== SiegeFX for Windows (single file, self-contained win-x64) ==="

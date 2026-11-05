@@ -35,6 +35,12 @@ or start it with the path in SIEGEFX_DS1:
 A Windows install copied over from a PC (or from a GOG/Steam download)
 works as it is.
 
+Multiplayer
+-----------
+Multiplayer > Internet lists the games other players host, on any
+system (Windows, Linux or Mac), and HOST GAME lists yours; nobody needs
+an IP address. Multiplayer > Network finds games on your own network.
+
 Where your data lives
 ---------------------
 Saves, settings, screenshots and session logs:
