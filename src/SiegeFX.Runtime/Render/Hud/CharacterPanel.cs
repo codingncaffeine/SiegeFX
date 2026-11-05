@@ -108,10 +108,10 @@ public sealed class CharacterPanel
             nameR.x + (nameR.w - nameW) / 2,
             nameR.y + (nameR.h - 8) / 2, headInk);
 
-        int meleeLv  = progression?.SkillLevel(SiegeFX.Core.Assets.SkillKind.Melee)       ?? 0;
-        int rangedLv = progression?.SkillLevel(SiegeFX.Core.Assets.SkillKind.Ranged)      ?? 0;
-        int natureLv = progression?.SkillLevel(SiegeFX.Core.Assets.SkillKind.NatureMagic) ?? 0;
-        int combatLv = progression?.SkillLevel(SiegeFX.Core.Assets.SkillKind.CombatMagic) ?? 0;
+        int meleeLv  = progression?.ShownSkillLevel(SiegeFX.Core.Assets.SkillKind.Melee)       ?? 0;
+        int rangedLv = progression?.ShownSkillLevel(SiegeFX.Core.Assets.SkillKind.Ranged)      ?? 0;
+        int natureLv = progression?.ShownSkillLevel(SiegeFX.Core.Assets.SkillKind.NatureMagic) ?? 0;
+        int combatLv = progression?.ShownSkillLevel(SiegeFX.Core.Assets.SkillKind.CombatMagic) ?? 0;
         string classStr = SiegeFX.Core.Assets.ClassTitleResolver.Resolve(
             startingClassTitle, meleeLv, rangedLv, natureLv, combatLv);
         var classR = R(91, 23, 249, 36);
@@ -187,7 +187,7 @@ public sealed class CharacterPanel
 
         // INFORAIL-LEVEL — gas:978 text_level rect 201,117,250,130.
         var levelR = R(201, 117, 250, 130);
-        int overallLv = progression?.Level ?? 0;
+        int overallLv = progression?.ShownLevel ?? 0;
         string levelStr = $"Level {overallLv}";
         int lvW = text.MeasureWidth(levelStr);
         text.DrawString(viewportW, viewportH, levelStr,
@@ -407,10 +407,10 @@ public sealed class CharacterPanel
         // PlayerProgression; each skill row reads its own pool's level
         // and progress fraction. Falls back to the global level + 0
         // fraction when progression isn't bound (creator preview path).
-        int meleeLv  = progression?.SkillLevel(SiegeFX.Core.Assets.SkillKind.Melee)       ?? 1;
-        int rangedLv = progression?.SkillLevel(SiegeFX.Core.Assets.SkillKind.Ranged)      ?? 1;
-        int natureLv = progression?.SkillLevel(SiegeFX.Core.Assets.SkillKind.NatureMagic) ?? 1;
-        int combatLv = progression?.SkillLevel(SiegeFX.Core.Assets.SkillKind.CombatMagic) ?? 1;
+        int meleeLv  = progression?.ShownSkillLevel(SiegeFX.Core.Assets.SkillKind.Melee)       ?? 0;
+        int rangedLv = progression?.ShownSkillLevel(SiegeFX.Core.Assets.SkillKind.Ranged)      ?? 0;
+        int natureLv = progression?.ShownSkillLevel(SiegeFX.Core.Assets.SkillKind.NatureMagic) ?? 0;
+        int combatLv = progression?.ShownSkillLevel(SiegeFX.Core.Assets.SkillKind.CombatMagic) ?? 0;
         float meleeFrac  = progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Melee)       ?? 0f;
         float rangedFrac = progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.Ranged)      ?? 0f;
         float natureFrac = progression?.SkillProgressFraction(SiegeFX.Core.Assets.SkillKind.NatureMagic) ?? 0f;
