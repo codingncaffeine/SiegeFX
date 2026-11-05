@@ -96,6 +96,48 @@ public sealed class NavMesh
 
     public bool IsBlocked(int tri) => Blocked is not null && tri >= 0 && tri < Blocked.Length && Blocked[tri];
 
+    /// <summary>Every triangle whose XZ bounds may overlap the box, each once,
+    /// from the lookup grid: the obstacle stamps used to test all ~50k
+    /// triangles for each of ~100 props, re-run on every break (a krug
+    /// smashing a barrel), a ~200ms hitch each time.</summary>
+    private List<int> TrianglesNear(float minX, float minZ, float maxX, float maxZ)
+    {
+        _nearBuf.Clear();
+        if (TriangleCount == 0) return _nearBuf;
+        if (_nearStamp.Length != TriangleCount) { _nearStamp = new int[TriangleCount]; _nearEpoch = 0; }
+        if (++_nearEpoch == int.MaxValue) { Array.Clear(_nearStamp); _nearEpoch = 1; }
+        int cx0 = Math.Clamp((int)MathF.Floor((minX - _gridMinX) / GridCellSize), 0, _gridCellsX - 1);
+        int cx1 = Math.Clamp((int)MathF.Floor((maxX - _gridMinX) / GridCellSize), 0, _gridCellsX - 1);
+        int cz0 = Math.Clamp((int)MathF.Floor((minZ - _gridMinZ) / GridCellSize), 0, _gridCellsZ - 1);
+        int cz1 = Math.Clamp((int)MathF.Floor((maxZ - _gridMinZ) / GridCellSize), 0, _gridCellsZ - 1);
+        for (int cz = cz0; cz <= cz1; cz++)
+        for (int cx = cx0; cx <= cx1; cx++)
+        {
+            var bucket = _grid[cz * _gridCellsX + cx];
+            if (bucket is null) continue;
+            foreach (int t in bucket)
+            {
+                if (_nearStamp[t] == _nearEpoch) continue;
+                _nearStamp[t] = _nearEpoch;
+                _nearBuf.Add(t);
+            }
+        }
+        return _nearBuf;
+    }
+    private readonly List<int> _nearBuf = new();
+    private int[] _nearStamp = Array.Empty<int>();
+    private int _nearEpoch;
+
+    /// <summary>Blocks one triangle outright, blamed on <paramref name="tag"/>
+    /// (restoring a dumped area's blocked set in a replay).</summary>
+    public void BlockTriangle(int tri, string? tag)
+    {
+        Blocked ??= new bool[TriangleCount];
+        BlockedTag ??= new string?[TriangleCount];
+        Blocked[tri] = true;
+        BlockedTag[tri] = tag;
+    }
+
     /// <summary>SC-DOORS-BLOCK — reset every obstacle mark so the map can be
     /// re-stamped from live state (door opened, prop destroyed). Cheap:
     /// one Array.Clear; the caller re-marks everything that still blocks.</summary>
@@ -206,6 +248,21 @@ public sealed class NavMesh
     /// prop's world top so a floor tri right at the top edge still counts.</summary>
     private const float ObstacleAboveTopTol = 0.5f;
 
+    /// <summary>How far above its base a prop blocks: the ground it stands on,
+    /// with room for slope under the footprint. Up to its top (+0.5) the old
+    /// band let a 1.4u cart beside a farmhouse block the house floor and
+    /// stair raised a meter above it on the far side of the wall.</summary>
+    private const float ObstacleAboveBaseTol = 0.9f;
+
+    /// <summary>Top of the vertical band a rectangle obstacle blocks: 0.9u
+    /// above its base, and never above its own top (+0.5). Disc obstacles
+    /// (long fences, big wagons) keep the top-based band: their single
+    /// center base would leave a hillside fence's uphill end unblocked.</summary>
+    private static float ObstacleBandTop(float baseY, float topY) =>
+        float.IsFinite(baseY)
+            ? MathF.Min(topY + ObstacleAboveTopTol, baseY + ObstacleAboveBaseTol)
+            : topY + ObstacleAboveTopTol;
+
     /// <summary>SC-NAV-OBSTACLE-YGATE — Y-aware obstacle marking. Same XZ
     /// footprint test as the 3-arg overload, but a triangle is only blocked
     /// when its centroid Y falls within
@@ -234,7 +291,7 @@ public sealed class NavMesh
         float loY = baseY - ObstacleBelowFloorTol;
         float hiY = topY + ObstacleAboveTopTol;
         int marked = 0;
-        for (int t = 0; t < TriangleCount; t++)
+        foreach (int t in TrianglesNear(worldX - radius, worldZ - radius, worldX + radius, worldZ + radius))
         {
             if (Blocked[t]) continue;
             // Y-gate first — cheapest reject, and the whole point of this
@@ -287,6 +344,116 @@ public sealed class NavMesh
         }
         return marked;
     }
+
+    /// <summary>SC-NAV-OBSTACLE-RECT — block a prop's own oriented footprint
+    /// rectangle instead of the disc around it. The rectangle starts at
+    /// <paramref name="corner"/> and spans <paramref name="lenU"/> along
+    /// <paramref name="axisU"/> and <paramref name="lenV"/> along
+    /// <paramref name="axisV"/> (unit XZ axes, at right angles), grown by
+    /// <see cref="ObstacleRectMargin"/> on every side. Same rules as the disc
+    /// overload otherwise: the vertical band gate, centroid containment for
+    /// any triangle, an edge crossing only for small ones. A bed's bounding
+    /// disc reached a third of a meter past its foot onto the stair top
+    /// beside it and sealed a farmhouse's upper floor. The margin applies
+    /// to centroid containment only; an edge crossing seals a small
+    /// triangle only when <see cref="ObstacleRectEdgeDepth"/> of the edge
+    /// lies inside the exact footprint.</summary>
+    public int MarkObstacleRect(Vector3 corner, Vector3 axisU, float lenU, Vector3 axisV, float lenV,
+                                float baseY, float topY, string? tag)
+    {
+        Blocked ??= new bool[TriangleCount];
+        BlockedTag ??= new string?[TriangleCount];
+        if (lenU <= 0f || lenV <= 0f) return 0;
+        float m = ObstacleRectMargin;
+        float u0 = -m, u1 = lenU + m, v0 = -m, v1 = lenV + m;
+        float loY = baseY - ObstacleBelowFloorTol;
+        float hiY = ObstacleBandTop(baseY, topY);
+        // Local footprint coordinates of a world point.
+        (float U, float V) Local(Vector3 p)
+        {
+            float dx = p.X - corner.X, dz = p.Z - corner.Z;
+            return (dx * axisU.X + dz * axisU.Z, dx * axisV.X + dz * axisV.Z);
+        }
+        bool Inside((float U, float V) q) => q.U >= u0 && q.U <= u1 && q.V >= v0 && q.V <= v1;
+        // Liang-Barsky: does the segment p->q cross the rectangle?
+        // The edge test uses the exact footprint and needs a real crossing:
+        // at least ObstacleRectEdgeDepth of the edge inside it. The margin
+        // is for bodies standing on a tile, and slivers merely grazing a
+        // bed's or cart's corner at a farmhouse stair foot (the stair's only
+        // link to the floor) sealed the stair.
+        float InsideLength((float U, float V) p, (float U, float V) q)
+        {
+            const float u0 = 0f, v0 = 0f;
+            float u1 = lenU, v1 = lenV;
+            float t0 = 0f, t1 = 1f, du = q.U - p.U, dv = q.V - p.V;
+            bool Clip(float den, float num)
+            {
+                if (MathF.Abs(den) < 1e-9f) return num >= 0f;
+                float r = num / den;
+                if (den < 0f) { if (r > t1) return false; if (r > t0) t0 = r; }
+                else { if (r < t0) return false; if (r < t1) t1 = r; }
+                return true;
+            }
+            if (!(Clip(-du, p.U - u0) && Clip(du, u1 - p.U) && Clip(-dv, p.V - v0) && Clip(dv, v1 - p.V)))
+                return 0f;
+            return MathF.Max(0f, t1 - t0) * MathF.Sqrt(du * du + dv * dv);
+        }
+        string size = $"{lenU:F2}x{lenV:F2}";
+        int marked = 0;
+        // The footprint's XZ box (with its margin) bounds every triangle the
+        // centroid or edge tests below can hit.
+        var cU = axisU * lenU; var cV = axisV * lenV;
+        float bx0 = corner.X + MathF.Min(0f, cU.X) + MathF.Min(0f, cV.X) - m;
+        float bx1 = corner.X + MathF.Max(0f, cU.X) + MathF.Max(0f, cV.X) + m;
+        float bz0 = corner.Z + MathF.Min(0f, cU.Z) + MathF.Min(0f, cV.Z) - m;
+        float bz1 = corner.Z + MathF.Max(0f, cU.Z) + MathF.Max(0f, cV.Z) + m;
+        foreach (int t in TrianglesNear(bx0, bz0, bx1, bz1))
+        {
+            if (Blocked[t]) continue;
+            float cy = Centroids[t].Y;
+            if (cy < loY || cy > hiY) continue;
+            if (Inside(Local(Centroids[t])))
+            {
+                Blocked[t] = true;
+                BlockedTag[t] = $"{tag}|rect {size} centroid";
+                marked++;
+                continue;
+            }
+            var a = Vertices[Indices[3 * t + 0]];
+            var b = Vertices[Indices[3 * t + 1]];
+            var c = Vertices[Indices[3 * t + 2]];
+            var la = Local(a); var lb = Local(b); var lc = Local(c);
+            float depth = MathF.Max(InsideLength(la, lb), MathF.Max(InsideLength(lb, lc), InsideLength(lc, la)));
+            if (depth < ObstacleRectEdgeDepth) continue;
+            // ...and only a triangle that lies mostly in it: its center within
+            // ObstacleRectEdgeReach of the footprint. A sliver merely clipping
+            // a corner (the farmhouse stair foot) stays walkable.
+            var cc = Local(Centroids[t]);
+            float ou = MathF.Max(0f, MathF.Max(-cc.U, cc.U - lenU));
+            float ov = MathF.Max(0f, MathF.Max(-cc.V, cc.V - lenV));
+            if (ou * ou + ov * ov > ObstacleRectEdgeReach * ObstacleRectEdgeReach) continue;
+            float abx = b.X - a.X, abz = b.Z - a.Z;
+            float acx = c.X - a.X, acz = c.Z - a.Z;
+            float areaXZ = MathF.Abs(abx * acz - abz * acx) * 0.5f;
+            if (areaXZ > EdgeSealMaxAreaXZ) continue;
+            Blocked[t] = true;
+            BlockedTag[t] = $"{tag}|rect {size} edge a={areaXZ:F2} in={depth:F2}";
+            marked++;
+        }
+        return marked;
+    }
+
+    /// <summary>How far past its own footprint a rectangle obstacle blocks
+    /// (see <see cref="MarkObstacleRect"/>): a little clearance for bodies.</summary>
+    public const float ObstacleRectMargin = 0.1f;
+
+    /// <summary>How much of a small triangle's edge must lie inside a
+    /// rectangle obstacle's footprint for the edge test to seal it.</summary>
+    public const float ObstacleRectEdgeDepth = 0.4f;
+
+    /// <summary>How far outside a rectangle obstacle's footprint a small
+    /// triangle's center may lie and still be sealed by an edge crossing.</summary>
+    public const float ObstacleRectEdgeReach = 0.3f;
 
     /// <summary>SC-NAV-EDGE-SEAL-AREA — largest XZ triangle area (m²) the
     /// edge-clip test may fully seal. Calibrated from live blame data
@@ -592,72 +759,7 @@ public sealed class NavMesh
         // adjacencies for boundary-edge pairs that share an XZ footprint and a wadeable Y.
         int seamEdges = StitchLandWaterSeams(triCount, indices, neighbors, vertsArr, kindsArr);
 
-        var centroids = new Vector3[triCount];
-        float gMinX = float.PositiveInfinity, gMinZ = float.PositiveInfinity;
-        float gMaxX = float.NegativeInfinity, gMaxZ = float.NegativeInfinity;
-        for (int t = 0; t < triCount; t++)
-        {
-            var p0 = vertsArr[indices[3 * t + 0]];
-            var p1 = vertsArr[indices[3 * t + 1]];
-            var p2 = vertsArr[indices[3 * t + 2]];
-            centroids[t] = (p0 + p1 + p2) / 3f;
-            float minX = MathF.Min(p0.X, MathF.Min(p1.X, p2.X));
-            float maxX = MathF.Max(p0.X, MathF.Max(p1.X, p2.X));
-            float minZ = MathF.Min(p0.Z, MathF.Min(p1.Z, p2.Z));
-            float maxZ = MathF.Max(p0.Z, MathF.Max(p1.Z, p2.Z));
-            if (minX < gMinX) gMinX = minX;
-            if (minZ < gMinZ) gMinZ = minZ;
-            if (maxX > gMaxX) gMaxX = maxX;
-            if (maxZ > gMaxZ) gMaxZ = maxZ;
-        }
-
-        // Build the XZ uniform grid. Empty mesh → 1x1 grid with one null cell.
-        int cellsX, cellsZ;
-        float originX, originZ;
-        int[]?[] grid;
-        if (triCount == 0)
-        {
-            cellsX = cellsZ = 1;
-            originX = originZ = 0f;
-            grid = new int[]?[1];
-        }
-        else
-        {
-            originX = gMinX;
-            originZ = gMinZ;
-            cellsX = Math.Max(1, (int)MathF.Ceiling((gMaxX - gMinX) / GridCellSize) + 1);
-            cellsZ = Math.Max(1, (int)MathF.Ceiling((gMaxZ - gMinZ) / GridCellSize) + 1);
-            // First pass counts per-cell; second pass fills. Temporary List<int> arena
-            // keeps the final int[] buckets tight (no List<int> overhead per cell).
-            var buckets = new List<int>?[cellsX * cellsZ];
-            for (int t = 0; t < triCount; t++)
-            {
-                var p0 = vertsArr[indices[3 * t + 0]];
-                var p1 = vertsArr[indices[3 * t + 1]];
-                var p2 = vertsArr[indices[3 * t + 2]];
-                float minX = MathF.Min(p0.X, MathF.Min(p1.X, p2.X));
-                float maxX = MathF.Max(p0.X, MathF.Max(p1.X, p2.X));
-                float minZ = MathF.Min(p0.Z, MathF.Min(p1.Z, p2.Z));
-                float maxZ = MathF.Max(p0.Z, MathF.Max(p1.Z, p2.Z));
-                int cx0 = (int)MathF.Floor((minX - originX) / GridCellSize);
-                int cx1 = (int)MathF.Floor((maxX - originX) / GridCellSize);
-                int cz0 = (int)MathF.Floor((minZ - originZ) / GridCellSize);
-                int cz1 = (int)MathF.Floor((maxZ - originZ) / GridCellSize);
-                cx0 = Math.Clamp(cx0, 0, cellsX - 1);
-                cx1 = Math.Clamp(cx1, 0, cellsX - 1);
-                cz0 = Math.Clamp(cz0, 0, cellsZ - 1);
-                cz1 = Math.Clamp(cz1, 0, cellsZ - 1);
-                for (int cz = cz0; cz <= cz1; cz++)
-                for (int cx = cx0; cx <= cx1; cx++)
-                {
-                    int cell = cz * cellsX + cx;
-                    (buckets[cell] ??= new List<int>()).Add(t);
-                }
-            }
-            grid = new int[]?[buckets.Length];
-            for (int i = 0; i < buckets.Length; i++)
-                grid[i] = buckets[i]?.ToArray();
-        }
+        var (centroids, originX, originZ, cellsX, cellsZ, grid) = BuildCentroidsAndGrid(vertsArr, indices, triCount);
 
         return new NavMesh(
             vertsArr,
@@ -682,6 +784,71 @@ public sealed class NavMesh
             cellsX,
             cellsZ,
             grid);
+    }
+
+    /// <summary>Per-triangle centroids and the XZ uniform lookup grid (an
+    /// empty mesh gets a 1×1 grid with one null cell).</summary>
+    private static (Vector3[] Centroids, float OriginX, float OriginZ, int CellsX, int CellsZ, int[]?[] Grid)
+        BuildCentroidsAndGrid(Vector3[] vertsArr, int[] indices, int triCount)
+    {
+        var centroids = new Vector3[triCount];
+        float gMinX = float.PositiveInfinity, gMinZ = float.PositiveInfinity;
+        float gMaxX = float.NegativeInfinity, gMaxZ = float.NegativeInfinity;
+        for (int t = 0; t < triCount; t++)
+        {
+            var p0 = vertsArr[indices[3 * t + 0]];
+            var p1 = vertsArr[indices[3 * t + 1]];
+            var p2 = vertsArr[indices[3 * t + 2]];
+            centroids[t] = (p0 + p1 + p2) / 3f;
+            gMinX = MathF.Min(gMinX, MathF.Min(p0.X, MathF.Min(p1.X, p2.X)));
+            gMaxX = MathF.Max(gMaxX, MathF.Max(p0.X, MathF.Max(p1.X, p2.X)));
+            gMinZ = MathF.Min(gMinZ, MathF.Min(p0.Z, MathF.Min(p1.Z, p2.Z)));
+            gMaxZ = MathF.Max(gMaxZ, MathF.Max(p0.Z, MathF.Max(p1.Z, p2.Z)));
+        }
+        if (triCount == 0) return (centroids, 0f, 0f, 1, 1, new int[]?[1]);
+        float originX = gMinX, originZ = gMinZ;
+        int cellsX = Math.Max(1, (int)MathF.Ceiling((gMaxX - gMinX) / GridCellSize) + 1);
+        int cellsZ = Math.Max(1, (int)MathF.Ceiling((gMaxZ - gMinZ) / GridCellSize) + 1);
+        // First pass collects per-cell lists; the final int[] buckets stay
+        // tight (no List<int> overhead per cell).
+        var buckets = new List<int>?[cellsX * cellsZ];
+        for (int t = 0; t < triCount; t++)
+        {
+            var p0 = vertsArr[indices[3 * t + 0]];
+            var p1 = vertsArr[indices[3 * t + 1]];
+            var p2 = vertsArr[indices[3 * t + 2]];
+            int cx0 = Math.Clamp((int)MathF.Floor((MathF.Min(p0.X, MathF.Min(p1.X, p2.X)) - originX) / GridCellSize), 0, cellsX - 1);
+            int cx1 = Math.Clamp((int)MathF.Floor((MathF.Max(p0.X, MathF.Max(p1.X, p2.X)) - originX) / GridCellSize), 0, cellsX - 1);
+            int cz0 = Math.Clamp((int)MathF.Floor((MathF.Min(p0.Z, MathF.Min(p1.Z, p2.Z)) - originZ) / GridCellSize), 0, cellsZ - 1);
+            int cz1 = Math.Clamp((int)MathF.Floor((MathF.Max(p0.Z, MathF.Max(p1.Z, p2.Z)) - originZ) / GridCellSize), 0, cellsZ - 1);
+            for (int cz = cz0; cz <= cz1; cz++)
+            for (int cx = cx0; cx <= cx1; cx++)
+                (buckets[cz * cellsX + cx] ??= new List<int>()).Add(t);
+        }
+        var grid = new int[]?[buckets.Length];
+        for (int i = 0; i < buckets.Length; i++)
+            grid[i] = buckets[i]?.ToArray();
+        return (centroids, originX, originZ, cellsX, cellsZ, grid);
+    }
+
+    /// <summary>A nav mesh from explicit triangles: three indices into
+    /// <paramref name="vertices"/> per triangle, and per triangle the
+    /// neighbour across the edge opposite each vertex (-1 for none), as
+    /// <see cref="Neighbors"/> holds them. For tests and the nav tools'
+    /// replays of a dumped area; all floor, one source node.</summary>
+    public static NavMesh FromTriangles(Vector3[] vertices, int[] indices, int[] neighbors,
+                                        Dictionary<int, int[]>? extraLinks = null, uint[]? snodeGuids = null)
+    {
+        int triCount = indices.Length / 3;
+        if (neighbors.Length != indices.Length)
+            throw new ArgumentException("one neighbour per triangle edge", nameof(neighbors));
+        var (centroids, originX, originZ, cellsX, cellsZ, grid) = BuildCentroidsAndGrid(vertices, indices, triCount);
+        var kinds = new SnoModel.FloorKind[triCount];
+        Array.Fill(kinds, SnoModel.FloorKind.Floor);
+        return new NavMesh(vertices, indices, neighbors, kinds, centroids,
+            new int[triCount], new int[triCount], snodeGuids ?? new uint[triCount], 1,
+            0, 0, 0, 0, extraLinks is { Count: > 0 } ? extraLinks : null, 0,
+            originX, originZ, cellsX, cellsZ, grid);
     }
 
     /// <summary>SC-NAV-CROSS-SNO-STITCH — door-anchored cross-SNO nav
