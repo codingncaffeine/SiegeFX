@@ -178,6 +178,17 @@ public sealed class ActorSpawner
             return null;
         }
 
+        // SC-NPC-ARMOR — worn body armor selects the pos_aN body mesh (plate =
+        // a3). Only for plain spawns: hero/avatar picks carry their own model.
+        if (DressArmoredBodies && overrides is null
+            && SiegeFX.Core.Assets.EquipmentResolver.ArmoredBodyModel(_store, modelName,
+                SiegeFX.Core.Assets.EquipmentResolver.CollectActorSlots(_store, template, inst.Node)) is { } armored
+            && GetOrLoadMesh(armored) is { } armoredMesh)
+        {
+            modelName = armored;
+            mesh = armoredMesh;
+        }
+
         // chore_default is every actor's idle. Its {prefix, stance list, suffix} triple
         // composes one PRS clip; the skrit lives alongside under `skrit = NAME`.
         var chorePrefix = _store.GetAttribute(template, "body", "chore_dictionary", "chore_prefix");
@@ -295,17 +306,6 @@ public sealed class ActorSpawner
         // max_life / scale_multiplier) wins over the template chain.
         var stats = ActorStats.FromTemplate(_store, template, inst.Node);
         var actor = new Actor(inst, template, world, mesh, clips, skrit, host, stats, walkIdx, clipIndexByName);
-        // SC-IDLE-FIDGET — honor the template's authored [body] initial_chore
-        // as the idle fallback clip. DS1 starts actors in it; for flyers
-        // (phrak) and other static-default creatures that's chore_fidget —
-        // the hover/flap loop — while chore_default (clip 0) is a frozen
-        // stance pose. Without this, undirected actors idled on clip 0 and
-        // flyers hung motionless mid-air.
-        var initialChore = (_store.GetAttribute(template, "body", "initial_chore")
-                         ?? _store.GetAttribute(template, "mind", "initial_chore"))?.Trim();
-        if (!string.IsNullOrEmpty(initialChore)
-            && clipIndexByName.TryGetValue(initialChore!, out var idleIdx))
-            actor.IdleClipIndex = idleIdx;
         // SC-BURROWER — a startup_reveal monster (the skrubb) lies in its
         // chore_default pose, below ground, until it wakes.
         if ((_store.GetAttribute(template, "mind", "jat_startup") ?? "")
@@ -318,6 +318,26 @@ public sealed class ActorSpawner
         // attack-variant set + qffg pad + authored base duration for every
         // spawned combatant (clip cache makes the second pass cheap).
         RefreshMotionClips(actor, preferredStance ?? DeriveStanceFromEquipment(template));
+        // SC-IDLE-FIDGET — honor the template's authored [body] initial_chore
+        // as the idle clip. DS1 starts actors in it; for flyers (phrak) and
+        // other static-default creatures that's chore_fidget — the hover/flap
+        // loop — while chore_default (clip 0) is a frozen stance pose. With
+        // no initial_chore, a one-frame chore_default and a moving
+        // chore_fidget (the blacksmith's ds / hammering dsf) idle in the
+        // fidget too, as DS1's auto-fidget job does. Picked after the stance
+        // refresh so the test sees the clips the actor will actually play.
+        var autoFidgets = !string.Equals(
+            _store.GetAttribute(template, "mind", "actor_auto_fidgets")?.Trim(), "false",
+            StringComparison.OrdinalIgnoreCase);
+        var idleChore = ActorIdle.PickIdleChore(
+            (_store.GetAttribute(template, "body", "initial_chore")
+             ?? _store.GetAttribute(template, "mind", "initial_chore"))?.Trim(),
+            clips.Length > 0 ? clips[0] : null,
+            clipIndexByName.TryGetValue("chore_fidget", out var fidIdx) ? clips[fidIdx] : null,
+            autoFidgets);
+        if (!string.IsNullOrEmpty(idleChore)
+            && clipIndexByName.TryGetValue(idleChore!, out var idleIdx))
+            actor.IdleClipIndex = idleIdx;
         return actor;
     }
 
@@ -351,6 +371,21 @@ public sealed class ActorSpawner
         if (_layout is null) return local;
         if (!_layout.TryGetTransform(p.NodeGuid, out var nodeWorld)) return local;
         return local * nodeWorld;
+    }
+
+    /// <summary>SC-NPC-ARMOR — when true (default), a plain spawn whose worn
+    /// chest armor names another body type (plate = a3) spawns on that pos_aN
+    /// body mesh, as DS1 does. The host turns it off around the hero spawn,
+    /// whose armor is a live texture swap on a fixed body.</summary>
+    public bool DressArmoredBodies { get; set; } = true;
+
+    /// <summary>The model name a spawned actor's <see cref="Actor.Mesh"/> was
+    /// loaded from (meshes are cached per name), or null.</summary>
+    public string? ModelNameOf(AspMesh mesh)
+    {
+        foreach (var (name, m) in _meshCache)
+            if (ReferenceEquals(m, mesh)) return name;
+        return null;
     }
 
     AspMesh? GetOrLoadMesh(string modelName)

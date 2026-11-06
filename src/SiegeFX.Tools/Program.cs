@@ -560,6 +560,8 @@ static int CmdPrsInfo(string[] a)
     Console.WriteLine($"Length      : {prs.AnimLength:F4} s");
     Console.WriteLine($"Root travel : ({prs.RootTravel.X:F2}, {prs.RootTravel.Y:F2}, {prs.RootTravel.Z:F2})");
     Console.WriteLine($"Notes       : {prs.Notes.Count}");
+    foreach (var n in prs.Notes)
+        Console.WriteLine($"  t={n.Time:F3}  '{System.Text.Encoding.ASCII.GetString(BitConverter.GetBytes(n.Token))}' (0x{n.Token:X8})");
     Console.WriteLine($"Tracers     : {prs.TracerCount}");
 
     int bonesKeyed = 0, totalRot = 0, totalPos = 0;
@@ -8879,6 +8881,14 @@ static int CmdRegionSpawn(string[] a)
     }
     Console.WriteLine($"  bus posted         : {spawner.MessageBus.PostedCount}");
     Console.WriteLine($"  bus delivered      : {delivered}   (undelivered: {spawner.MessageBus.UndeliveredCount})");
+    // SC-IDLE-FIDGET — actors that idle in something other than chore_default.
+    var nonDefaultIdle = actors
+        .Where(x => x.IdleClipIndex != 0)
+        .GroupBy(x => (x.Template.Name,
+            Chore: x.ClipIndexByName.FirstOrDefault(kv => kv.Value == x.IdleClipIndex).Key ?? $"#{x.IdleClipIndex}"))
+        .Select(g => $"{g.Key.Name}→{g.Key.Chore}×{g.Count()}")
+        .ToList();
+    Console.WriteLine($"  non-default idle   : {(nonDefaultIdle.Count == 0 ? "none" : string.Join(", ", nonDefaultIdle))}");
 
     Console.WriteLine();
     Console.WriteLine("sample actors (first 5):");

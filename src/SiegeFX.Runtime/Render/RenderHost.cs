@@ -17,7 +17,7 @@ namespace SiegeFX.Runtime.Render;
 /// Phase 3 just draws a reference grid so WASD + mouse-look can be verified;
 /// later phases will hang real scene objects off this.
 /// </summary>
-public sealed class RenderHost : IDisposable
+public sealed partial class RenderHost : IDisposable
 {
     private readonly IWindow _window;
     private readonly string? _meshPath;
@@ -1644,6 +1644,13 @@ public sealed class RenderHost : IDisposable
     // TrySpawnPlayer; rebuilt on every equipment change.
     private readonly List<EquippedLayer> _equippedLayers = new();
     private string? _chestTexOverrideName;
+    // SC-NPC-ARMOR — NPC worn armor. Chest = slot-1 texture override keyed by
+    // actor (weak, so despawned actors drop out); layered meshes are cached per
+    // (mesh, texture) and shared by every NPC wearing the same piece.
+    private readonly System.Runtime.CompilerServices.ConditionalWeakTable<SiegeFX.Core.Actors.Actor, string>
+        _npcChestTex = new();
+    private readonly Dictionary<(string Mesh, string? Tex), EquippedLayer?> _npcArmorLayerCache = new();
+    private readonly HashSet<string> _npcChestLogged = new(StringComparer.OrdinalIgnoreCase);
     // 21d-2a-viii — character creator picks resolved at spawn. Skin = body
     // subset 0 (face/hair/arms); pants = body subset 1 (clothing strip). Both
     // are nulled out for NPCs and for player templates without a matching env
@@ -2077,6 +2084,11 @@ public sealed class RenderHost : IDisposable
         public int ShieldBoneIdx = -1;
         public string? WieldedWeaponRef;
         public bool WeaponDroppedOnDeath;
+        // SC-NPC-ARMOR — worn helm/boots/gauntlets, skinned to the body's
+        // skeleton and posed with the body's clip each frame. Entries are
+        // SHARED via _npcArmorLayerCache (never disposed per-actor). Chest
+        // armor is a body slot-1 texture swap kept in _npcChestTex.
+        public List<EquippedLayer>? ArmorLayers;
         // SC-ALIGNMENT — actor_evil in the specializes chain = a valid
         // player attack target. DS1 never lets you attack good/neutral
         // NPCs (Norick, guards, kings) — no attack cursor, no swing.
@@ -15714,6 +15726,14 @@ void main()
                     $"player slot {textureIndex}: no picker -> texset fallback");
             }
         }
+        // SC-NPC-ARMOR — an NPC's worn chest armor replaces the clothing strip
+        // (Legionnaire plate instead of the citizen shirt), same rule as the
+        // player's override above. A missing .raw falls through to the texset.
+        if (textureIndex == 1 && _npcChestTex.TryGetValue(actor, out var npcChest))
+        {
+            var ct = LoadEquipmentTexture("__chest__", npcChest);
+            if (ct is not null) return ct;
+        }
         var key = (actor.Template, actor.Mesh, textureIndex);
         if (_actorTextureCache.TryGetValue(key, out var cached)) return cached;
         string? baseName = null;
@@ -25526,6 +25546,7 @@ void main()
                     var clip = s.Actor.Clips[Math.Min(idx, s.Actor.Clips.Length - 1)];
                     if (clip.AnimLength > 0f)
                     {
+                        double animBefore = s.AnimTime;
                         if (isDead)
                         {
                             float endHold = clip.AnimLength - 0.01f;
@@ -25549,6 +25570,8 @@ void main()
                         {
                             s.AnimTime += dt;
                         }
+                        // SC-ANIM-SFX — SFX notes the clip just passed (RenderHost.AnimSfx.cs).
+                        if (!isDead) DispatchAnimSfxNotes(s, clip, animBefore, s.AnimTime);
                     }
                 }
             }
@@ -28963,7 +28986,12 @@ void main()
             $"=> model={heroOverride?.ModelName ?? "<template>"}");
 
         var diagsBefore = spawner.Diagnostics.Count;
-        var spawned = spawner.Spawn(new[] { inst }, preferredStance, overrides);
+        // SC-NPC-ARMOR — the hero keeps his picked body; worn chest armor is
+        // a live slot-1 texture swap on it (TryLoadPlayerEquipment).
+        spawner.DressArmoredBodies = false;
+        IReadOnlyList<SiegeFX.Core.Actors.Actor> spawned;
+        try { spawned = spawner.Spawn(new[] { inst }, preferredStance, overrides); }
+        finally { spawner.DressArmoredBodies = true; }
         if (spawned.Count == 0)
         {
             Console.WriteLine($"  player: '{playerTemplate}' did not spawn (spawner diagnostics follow)");
@@ -29722,6 +29750,8 @@ void main()
         var tpl = s.Actor.Template;
         var inst = s.Actor.Instance.Node;
 
+        ResolveNpcWornArmor(s, SiegeFX.Core.Assets.EquipmentResolver.CollectActorSlots(store, tpl, inst));
+
         string? FromInstanceEquipment(string slot)
         {
             if (SiegeFX.Core.Assets.TemplateStore.FindChild(inst, "inventory") is not { } inv) return null;
@@ -29836,6 +29866,84 @@ void main()
         }
     }
 
+    /// <summary>SC-NPC-ARMOR — give a non-player actor the worn armor its
+    /// <c>es_*</c> slots author, through the same <see cref="SiegeFX.Core.Assets.EquipmentResolver"/>
+    /// rules as the player: es_chest swaps body slot 1 to <c>b_c_pos_*</c>,
+    /// helm/boots/gauntlets layer skinned meshes. Weapons and shields stay
+    /// with <see cref="ResolveNpcEquippedGear"/>. Without this Elddim's
+    /// Legionnaire guards (whose [aspect][textures] author only the skin)
+    /// rendered in the bare citizen body.</summary>
+    private void ResolveNpcWornArmor(ActorRenderState s, IReadOnlyDictionary<string, string> slots)
+    {
+        _npcChestTex.Remove(s.Actor);
+        s.ArmorLayers = null;
+        if (s.IsPlayer) return;
+        if (_templateStore is null || _gl is null || _playResolver is null || slots.Count == 0) return;
+        // The body mesh actually drawn (plate NPCs spawn on pos_a3), so the
+        // chest texture and boot/gauntlet subtypes match its UV layout.
+        var bodyModel = _actorSpawner?.ModelNameOf(s.Actor.Mesh);
+        var layers = SiegeFX.Core.Assets.EquipmentResolver.Resolve(
+            _templateStore, _playResolver, s.Actor.Template, slots, bodyModel);
+        foreach (var layer in layers)
+        {
+            switch (layer.Strategy)
+            {
+                case SiegeFX.Core.Assets.EquipmentResolver.Strategy.ChestTexture
+                    when !string.IsNullOrEmpty(layer.OverrideBaseName):
+                    _npcChestTex.AddOrUpdate(s.Actor, layer.OverrideBaseName!);
+                    if (_npcChestLogged.Add(layer.OverrideBaseName!))
+                        Console.WriteLine($"  npc-armor: {s.Actor.Template.Name} chest '{layer.ItemRef}' -> slot-1 '{layer.OverrideBaseName}'");
+                    break;
+                case SiegeFX.Core.Assets.EquipmentResolver.Strategy.SkinnedLayer
+                    when !string.IsNullOrEmpty(layer.MeshBaseName):
+                    if (GetNpcArmorLayer(layer) is { } el)
+                        (s.ArmorLayers ??= new List<EquippedLayer>()).Add(el);
+                    break;
+            }
+        }
+    }
+
+    /// <summary>SC-NPC-ARMOR — load (once) the skinned mesh + texture for a
+    /// worn armor piece; shared by every NPC wearing it. Null = mesh missing
+    /// or unskinned (logged once).</summary>
+    private EquippedLayer? GetNpcArmorLayer(SiegeFX.Core.Assets.EquipmentResolver.EquipmentLayer layer)
+    {
+        var meshName = layer.MeshBaseName!;
+        var key = (meshName, layer.TextureBaseName);
+        if (_npcArmorLayerCache.TryGetValue(key, out var hit)) return hit;
+        EquippedLayer? built = null;
+        try
+        {
+            if (_gl is not null && _playResolver is not null
+                && _playResolver.TryLoadModel(meshName, out var aspBytes))
+            {
+                var asp = SiegeFX.Core.Assets.AspMesh.Load(aspBytes);
+                if (asp.HasSkin && asp.BoneCount > 0 && asp.BoneCount <= SkinnedMesh.MaxBones)
+                {
+                    var texName = layer.TextureBaseName;
+                    if (string.IsNullOrEmpty(texName) && asp.TextureNames.Count > 0)
+                        texName = asp.TextureNames[0];
+                    built = new EquippedLayer
+                    {
+                        Asp = asp, Mesh = new SkinnedMesh(_gl, asp),
+                        Texture = LoadEquipmentTexture(meshName, texName),
+                        SlotName = layer.SlotName, ItemRef = layer.ItemRef,
+                        MeshBaseName = meshName,
+                    };
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  npc-armor: '{meshName}.asp' load failed: {ex.Message}");
+        }
+        Console.WriteLine(built is null
+            ? $"  npc-armor: '{layer.SlotName}' = '{layer.ItemRef}' mesh '{meshName}' unavailable"
+            : $"  npc-armor: '{layer.SlotName}' = '{layer.ItemRef}' mesh '{meshName}' tex '{layer.TextureBaseName}' ({(built.Texture is null ? "MISS" : "OK")})");
+        _npcArmorLayerCache[key] = built;
+        return built;
+    }
+
     /// <summary>SC-ALIGNMENT / SC-SELECTABLE — resolve the authored
     /// interaction flags once at spawn: hostile-to-player = actor_evil in
     /// the specializes chain (DS1 SP never lets you attack good NPCs), and
@@ -29903,6 +30011,11 @@ void main()
     {
         if (_templateStore is null) return;
         var dict = GetEquipmentDict(partyIndex);
+        // SC-NPC-ARMOR — worn armor follows the paperdoll too.
+        var worn = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (slot, itemRef) in dict)
+            if (!string.IsNullOrWhiteSpace(itemRef)) worn[slot] = ResolveItemRef(itemRef);
+        ResolveNpcWornArmor(s, worn);
         s.WeaponMesh = null; s.WeaponTexture = null; s.WeaponBoneIdx = -1; s.WieldedWeaponRef = null;
         s.ShieldMesh = null; s.ShieldTexture = null; s.ShieldBoneIdx = -1;
         int FindBone(string name)
@@ -39805,6 +39918,8 @@ void main()
                 var clips = s.Actor.Clips;
                 int boneCount = s.Actor.Mesh.BoneCount;
                 ReadOnlySpan<Matrix4x4> skin;
+                SiegeFX.Core.Assets.PrsAnimation? drawClip = null;
+                float drawT = 0f;
                 if (clips.Length == 0)
                 {
                     // No parsable PRS for this actor (shipped 0x0202 clips we don't support
@@ -39851,6 +39966,8 @@ void main()
                         _skinScratch = new Matrix4x4[Math.Max(boneCount, 64)];
                     AnimationRuntime.ComputeSkinMatrices(s.Actor.Mesh, clip, t, _skinScratch);
                     skin = _skinScratch.AsSpan(0, boneCount);
+                    drawClip = clip;
+                    drawT = t;
                 }
                 // SC-ACTOR-SCALE — apply the creature's authored [aspect] scale_base
                 // (× scale_multiplier) to the visual model only. Most mobs are 1.0
@@ -39902,6 +40019,31 @@ void main()
                     }
                     if (_subsetTintActive)
                         _skinShader.SetInt("uSubsetTintActive", 0);
+                }
+                // SC-NPC-ARMOR — worn helm/boots/gauntlets share the body's
+                // skeleton: re-skin each layer against the body's clip + time
+                // (same uModel) and draw it over the body.
+                if (s.ArmorLayers is { Count: > 0 } armor)
+                {
+                    if (_skinLayer2Active) { ResetAnimatedTextureBinding(_skinShader); _skinLayer2Active = false; }
+                    foreach (var layer in armor)
+                    {
+                        int lb = layer.Asp.BoneCount;
+                        if (lb == 0 || lb > SkinnedMesh.MaxBones) continue;
+                        if (_skinScratch.Length < lb) _skinScratch = new Matrix4x4[Math.Max(lb, 64)];
+                        if (drawClip is not null)
+                            AnimationRuntime.ComputeSkinMatrices(layer.Asp, drawClip, drawT, _skinScratch);
+                        else
+                            for (int i = 0; i < lb; i++) _skinScratch[i] = Matrix4x4.Identity;
+                        _skinShader.SetMatrix4Array("uBones[0]", _skinScratch.AsSpan(0, lb));
+                        if (layer.Texture is not null)
+                        {
+                            layer.Texture.Bind(TextureUnit.Texture0);
+                            _skinShader.SetInt("uHasTexture", 1);
+                        }
+                        else _skinShader.SetInt("uHasTexture", 0);
+                        layer.Mesh.Draw();
+                    }
                 }
             }
             // SC-ACTOR-TSD — never let a lava-spirit layer-2 binding leak into the
@@ -42809,6 +42951,8 @@ void main()
         // Phase 21d-2a-vii — layered equipment GL resources.
         foreach (var l in _equippedLayers) l.Mesh.Dispose();
         _equippedLayers.Clear();
+        foreach (var l in _npcArmorLayerCache.Values) l?.Mesh.Dispose();
+        _npcArmorLayerCache.Clear();
         var disposedEquipTex = new HashSet<GlTexture>(ReferenceEqualityComparer.Instance);
         foreach (var tex in _equipTexCache.Values)
             if (tex is not null && disposedEquipTex.Add(tex)) tex.Dispose();
