@@ -385,7 +385,7 @@ public sealed class MpSession : IDisposable
             _statsTimer += dt;
             if (_statsTimer >= StatsInterval)
             {
-                NetLog.Info($"stats {_statsTimer:0} s: {Stats.Report(_statsTimer)}");
+                NetLog.Info($"stats {_statsTimer:0} s{(IsHost ? $", update {_tick}" : $", newest update {_world.Newest}")}: {Stats.Report(_statsTimer)}");
                 _statsTimer = 0;
             }
         }

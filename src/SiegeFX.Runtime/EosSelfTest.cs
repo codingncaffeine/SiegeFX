@@ -254,8 +254,11 @@ public static class EosSelfTest
     /// at the host's height), so the host's mobs see and chase it, and logs
     /// every 10 s what the world updates brought: updates used a second, the
     /// download, how many actors it follows and how many of them walk, and how
-    /// much later than the steady 15 a second the updates arrive (growth = a
-    /// backlog). Exits 0 when it joined and updates kept coming.</summary>
+    /// long the gaps between updates were (a stall shows as a long gap; the
+    /// host's own rate is a little under 15 a second, so arrival times are not
+    /// compared with a fixed rate here), and the newest update with the wall
+    /// time, for comparing with the host's log on one machine
+    /// (scratch drift.py). Exits 0 when it joined and updates kept coming.</summary>
     public static int RunLoadPeer(string hostId, string cfg, double seconds, int index)
     {
         string name = $"Load peer {index}";
@@ -278,14 +281,14 @@ public static class EosSelfTest
                     return new MpPlayerState(0, h.X + (float)(radius * Math.Cos(a)), h.Y, h.Z + (float)(radius * Math.Sin(a)),
                         (float)(a + Math.PI), 200, (byte)MpPlayerFlags.Moving);
                 };
-                double t0 = -1; uint tick0 = 0;
-                var lateness = new List<double>();
+                double lastAt = -1;
+                var gaps = new List<double>();
                 long updates = 0;
-                me.OnWorldUpdate = tick =>
+                me.OnWorldUpdate = _ =>
                 {
                     double now = clock.Elapsed.TotalSeconds;
-                    if (t0 < 0) { t0 = now; tick0 = tick; }
-                    lateness.Add((now - t0) - (tick - tick0) / 15.0);
+                    if (lastAt >= 0) gaps.Add(now - lastAt);
+                    lastAt = now;
                     updates++;
                 };
                 var pump = PumpLoop(platform, transport, me);
@@ -294,29 +297,29 @@ public static class EosSelfTest
                 if (!ok()) return 1;
                 double end = clock.Elapsed.TotalSeconds + seconds, lastReport = clock.Elapsed.TotalSeconds;
                 long totalUpdates = 0;
-                double firstP95 = double.NaN, lastP95 = double.NaN;
+                double worstGap = 0;
                 while (clock.Elapsed.TotalSeconds < end)
                 {
                     pump(() => clock.Elapsed.TotalSeconds - lastReport >= 10, 11);
                     double span = clock.Elapsed.TotalSeconds - lastReport;
                     lastReport = clock.Elapsed.TotalSeconds;
-                    lateness.Sort();
-                    double p95 = lateness.Count > 0 ? lateness[Math.Max(0, (int)Math.Ceiling(0.95 * lateness.Count) - 1)] : double.NaN;
-                    if (double.IsNaN(firstP95) && lateness.Count > 0) firstP95 = p95;
-                    if (lateness.Count > 0) lastP95 = p95;
+                    gaps.Sort();
+                    double p95 = gaps.Count > 0 ? gaps[Math.Max(0, (int)Math.Ceiling(0.95 * gaps.Count) - 1)] : double.NaN;
+                    double max = gaps.Count > 0 ? gaps[^1] : double.NaN;
+                    if (gaps.Count > 0) worstGap = Math.Max(worstGap, max);
                     var w = me.World;
                     int followed = w.Current.Count(e => e.Key >= MpQuant.FirstActorKey);
                     int walking = w.Current.Count(e => e.Key >= MpQuant.FirstActorKey && (e.S.Flags & (byte)MpPlayerFlags.Moving) != 0);
                     Console.WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture,
-                        $"[mp-peer {index}] {updates / span:0.0} updates/s, lateness p95 {p95 * 1000:0} ms, follows {followed} actors ({walking} walking), " +
+                        $"[mp-peer {index}] {DateTime.Now:HH:mm:ss.fff} newest update {w.Newest}; {updates / span:0.0} updates/s, gap p95 {p95 * 1000:0} / max {max * 1000:0} ms, follows {followed} actors ({walking} walking), " +
                         $"late {w.Late} no-baseline {w.NoBaseline} malformed {w.Malformed} | {me.Stats.Report(span)}"));
                     totalUpdates += updates;
                     updates = 0;
-                    lateness.Clear();
+                    gaps.Clear();
                 }
                 assert(totalUpdates > seconds * 5, $"world updates kept coming ({totalUpdates} in {seconds:0} s)");
                 Console.WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture,
-                    $"[mp-peer {index}] lateness p95 first window {firstP95 * 1000:0} ms, last window {lastP95 * 1000:0} ms"));
+                    $"[mp-peer {index}] longest gap between updates {worstGap * 1000:0} ms"));
                 me.Dispose();
             }
         }
