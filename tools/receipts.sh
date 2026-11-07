@@ -50,7 +50,9 @@ step() {
     fi
 }
 
-step build "$dotnet" build "$repo/SiegeFX.sln" -c Release --nologo -warnaserror
+# --no-incremental: an up-to-date project is not compiled, so its warnings
+# would never show, and CI (a clean build) would be first to see them.
+step build "$dotnet" build "$repo/SiegeFX.sln" -c Release --nologo -warnaserror --no-incremental
 step tests "$dotnet" test "$repo/tests/SiegeFX.Tests" -c Release --no-build --nologo
 step test-menu "$repo/tools/test-menu.sh" --check
 step repo-content "$repo/tools/check-repo-content.sh" "$repo"

@@ -6625,7 +6625,7 @@ public sealed class RenderHost : IDisposable
             session.ApplyClientHit = MpApplyClientHit; // F3 — client hits resolve here
             // Join in progress, always: a player who joins from the menus is
             // sent straight into this region (and placed beside the host).
-            session.InProgress = (_regionPath, (int)_difficulty);
+            session.InProgress = (_regionPath ?? MpRegionPath, (int)_difficulty);
             // The co-op leash: a player this camera cannot see is too far.
             session.IsPlayerOutOfView = MpRemoteOutOfView;
             transport.PeerConnected += id => SiegeFX.Core.Net.NetLog.Info($"in-region: peer {id} joined ({transport.Peers.Count} in world)");
@@ -40335,9 +40335,9 @@ void main()
                 var subsets = s.Actor.Mesh.Subsets;
                 bool ghostDraw = s.IsGhost;
                 bool blendWasOn = false;
-                if (ghostDraw && _gl is not null)
+                if (ghostDraw)
                 {
-                    blendWasOn = _gl.IsEnabled(EnableCap.Blend);
+                    blendWasOn = _gl!.IsEnabled(EnableCap.Blend);
                     _gl.Enable(EnableCap.Blend);
                     _gl.BlendFunc(BlendingFactor.SrcAlpha, BlendingFactor.OneMinusSrcAlpha);
                     _gl.DepthMask(false);
@@ -40376,10 +40376,10 @@ void main()
                     if (_subsetTintActive)
                         _skinShader.SetInt("uSubsetTintActive", 0);
                 }
-                if (ghostDraw && _gl is not null)
+                if (ghostDraw)
                 {
                     _skinShader.SetFloat("uGhost", 0f);
-                    _gl.DepthMask(true);
+                    _gl!.DepthMask(true);
                     if (!blendWasOn) _gl.Disable(EnableCap.Blend);
                 }
             }
