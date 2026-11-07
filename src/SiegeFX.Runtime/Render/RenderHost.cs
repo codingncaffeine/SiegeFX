@@ -16244,25 +16244,32 @@ void main()
         return Math.Max(0, idx);
     }
 
-    /// <summary>The creator's starting hair for a gender on the first head:
-    /// /config/character_defaults.gas texture_farmboy_hair /
-    /// texture_farmgirl_hair (the girl's is red), else the first.</summary>
-    private int DefaultHairIdx(HeroGender gender)
+    /// <summary>The creator's starting look for a gender, as the original's:
+    /// /config/character_defaults.gas texture_farmboy_faces / _hair / _shirts /
+    /// _pants (farmgirl_ for her: skin 010 and red hair 007), placed in the
+    /// creator's lists (the hair in the first head's); a name the lists lack
+    /// starts on the first.</summary>
+    private (int Face, int Hair, int Shirt, int Pants) DefaultLook(HeroGender gender)
     {
-        var picker = new HeroVariantPicker { Gender = gender };
         EnsureCreatorOptions(gender);
-        var list = HairListFor(picker);
-        string key = gender == HeroGender.Girl ? "texture_farmgirl_hair" : "texture_farmboy_hair";
-        if (_playResolver is null || !_playResolver.TryLoadByBasename("character_defaults.gas", out var bytes)) return 0;
-        try
+        var hairs = HairListFor(new HeroVariantPicker { Gender = gender });
+        string tpl = gender == HeroGender.Girl ? "farmgirl" : "farmboy";
+        var named = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (_playResolver is not null && _playResolver.TryLoadByBasename("character_defaults.gas", out var bytes))
         {
-            foreach (var r in SiegeFX.Core.Assets.GasDocument.Load(bytes).Roots)
-                foreach (var a in r.Attributes)
-                    if (a.Name.Equals(key, StringComparison.OrdinalIgnoreCase))
-                        return Math.Max(0, list.FindIndex(h => h.Equals(a.Value.Trim(), StringComparison.OrdinalIgnoreCase)));
+            try
+            {
+                foreach (var r in SiegeFX.Core.Assets.GasDocument.Load(bytes).Roots)
+                    foreach (var a in r.Attributes) named[a.Name] = a.Value.Trim();
+            }
+            catch { }
         }
-        catch { }
-        return 0;
+        int Find(List<string> list, string key)
+            => named.TryGetValue($"texture_{tpl}_{key}", out var v)
+                ? Math.Max(0, list.FindIndex(x => x.Equals(v, StringComparison.OrdinalIgnoreCase))) : 0;
+        var look = (Find(_ccSkin, "faces"), Find(hairs, "hair"), Find(_ccShirt, "shirts"), Find(_ccPant, "pants"));
+        Console.WriteLine($"[cc-options] {tpl} default look: skin {look.Item1} hair {look.Item2} shirt {look.Item3} pants {look.Item4}");
+        return look;
     }
 
     // True when the head maps part of itself onto the strips below the face.
@@ -25283,7 +25290,7 @@ void main()
                 // the state-machine edge.
                 if (now == Hud.FrontendScene.ScreenState.CharacterSelect)
                 {
-                    _creator.DefaultHair ??= DefaultHairIdx;
+                    _creator.DefaultLook ??= DefaultLook;
                     _creator.HairOnNewHead ??= HairOnNewHead;
                     _creator.Reset();
                 }
@@ -28852,7 +28859,7 @@ void main()
         {
             _pendingSpawner = spawner;
             _pendingNavMesh = navMesh;
-            _creator.DefaultHair ??= DefaultHairIdx;
+            _creator.DefaultLook ??= DefaultLook;
             _creator.HairOnNewHead ??= HairOnNewHead;
             _creator.Reset();
             // Phase 22-SC-MUSIC-B — kick the menu music as the creator
