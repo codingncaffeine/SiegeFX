@@ -149,6 +149,8 @@ static void PrintUsage()
     Console.WriteLine("  siegefx audio sed-list     <Sound.dsres> [--filter=PREFIX] [--show-all|--show-aliases|--show-rate-only]");
     Console.WriteLine("  siegefx mood list          <Logic.dsres> [--map=world] [--with-bed] [--regions]");
     Console.WriteLine("  siegefx ui mesh-info       <Objects.dsres> <mesh-basename>");
+    Console.WriteLine("  siegefx ui head-meshes     <Objects.dsres> [armor_version]   (the hero's body against each creator head mesh)");
+    Console.WriteLine("  siegefx ui head-uv         <Objects.dsres> [--logic=Logic.dsres] [--out=DIR]   (where each head samples the skin + hair texture)");
     Console.WriteLine();
     Console.WriteLine("Examples:");
     Console.WriteLine("  siegefx tank info Objects.dsres");
@@ -11382,6 +11384,8 @@ static int DispatchUi(string[] a)
     return a[0].ToLowerInvariant() switch
     {
         "mesh-info" => CmdUiMeshInfo(a[1..]),
+        "head-meshes" => CmdUiHeadMeshes(a[1..]),
+        "head-uv" => CmdUiHeadUv(a[1..]),
         "tips"      => CmdUiTips(a[1..]),
         _           => UnknownCommand("ui " + a[0]),
     };
@@ -11834,6 +11838,297 @@ static int CmdMusicPlay(string[] a)
     music.Stop();
     engine.Dispose();
     Console.WriteLine($"  done after {(DateTime.UtcNow - started).TotalSeconds:F1}s");
+    return 0;
+}
+
+/// <summary>`ui head-meshes` — the hero's body mesh against every head mesh
+/// the original's character creator offers (the Head button saves
+/// <c>custom_head = m_c_&lt;armor_version&gt;_hlmt_head-NN</c>): for each, its
+/// triangles, how high it reaches, its textures, and which bones its geometry
+/// hangs on. Shows whether the body carries a head of its own (geometry on the
+/// head bone) or the head mesh is the whole head.</summary>
+static int CmdUiHeadMeshes(string[] a)
+{
+    if (a.Length < 1)
+    {
+        Console.Error.WriteLine("usage: siegefx ui head-meshes <Objects.dsres> [armor_version=gah_fb]");
+        return 1;
+    }
+    var av = a.Length > 1 ? a[1] : "gah_fb";
+    using var tank = SiegeFX.Core.Tank.TankFile.Open(a[0]);
+    var resolver = new SiegeFX.Core.Assets.AssetResolver();
+    resolver.Add(new SiegeFX.Core.Tank.TankReader(tank), Path.GetFileName(a[0]));
+    var heads = resolver.BasenamesWithPrefix($"m_c_{av}_hlmt_head")
+        .Where(b => b.EndsWith(".asp", StringComparison.OrdinalIgnoreCase))
+        .Select(b => b[..^4]).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToList();
+    Console.WriteLine($"head meshes for {av}: {heads.Count}");
+    foreach (var name in new[] { $"m_c_{av}_pos_a1" }.Concat(heads))
+    {
+        if (!resolver.TryLoadModel(name, out var bytes)) { Console.WriteLine($"  {name}: not found"); continue; }
+        var m = SiegeFX.Core.Assets.AspMesh.Load(bytes);
+        var perBone = new int[Math.Max(1, m.BoneCount)];
+        float yMin = float.MaxValue, yMax = float.MinValue;
+        for (int c = 0; c < m.Corners.Length; c++)
+        {
+            var p = m.Positions[m.Corners[c].VertexIndex];
+            yMin = MathF.Min(yMin, p.Y); yMax = MathF.Max(yMax, p.Y);
+            int primary = 0;
+            if (m.HasSkin && c < m.SkinWeights.Length)
+            {
+                var w = m.SkinWeights[c]; uint b = m.SkinBones[c]; float pw = -1f;
+                if (w.X > pw) { primary = (int)( b        & 0xFF); pw = w.X; }
+                if (w.Y > pw) { primary = (int)((b >>  8) & 0xFF); pw = w.Y; }
+                if (w.Z > pw) { primary = (int)((b >> 16) & 0xFF); pw = w.Z; }
+                if (w.W > pw) { primary = (int)((b >> 24) & 0xFF); }
+            }
+            if (primary < perBone.Length) perBone[primary]++;
+        }
+        Console.WriteLine($"  {name}: {m.TriangleCount} tris, {m.BoneCount} bones, Y {yMin:0.###}..{yMax:0.###}, " +
+                          $"textures [{string.Join(", ", m.TextureNames)}]");
+        var bones = Enumerable.Range(0, perBone.Length).Where(i => perBone[i] > 0)
+            .Select(i => $"{(i < m.BoneNames.Count ? m.BoneNames[i] : $"#{i}")}={perBone[i]}");
+        Console.WriteLine($"      corners by bone: {string.Join(" ", bones)}");
+        int headBone = -1;
+        for (int i = 0; i < m.BoneNames.Count; i++)
+            if (m.BoneNames[i].Equals("Bip01_Head", StringComparison.OrdinalIgnoreCase)) headBone = i;
+        if (headBone >= 0)
+        {
+            var below = Enumerable.Range(0, m.BoneCount)
+                .Where(i => i < m.BoneParents.Length && m.BoneParents[i] == headBone)
+                .Select(i => $"{m.BoneNames[i]}={perBone[i]}");
+            Console.WriteLine($"      bones parented to Bip01_Head: {string.Join(" ", below)}");
+        }
+    }
+    return 0;
+}
+
+/// <summary>`ui head-uv` — where each creator head mesh samples the hero's
+/// skin texture (skin_NNN with a hair_NNN over it). For each head: its UV
+/// range, the UVs of its crest (the part above the body's own head, e.g. a
+/// mohawk), which hair overlays paint there, and PNGs of the composite and of
+/// the head's own texture with its UV wireframe drawn on (crest in red). With
+/// --logic, also lists the .gas lines naming head meshes or hair textures.</summary>
+static int CmdUiHeadUv(string[] a)
+{
+    if (a.Length < 1)
+    {
+        Console.Error.WriteLine("usage: siegefx ui head-uv <Objects.dsres> [--logic=Logic.dsres] [--av=gah_fb] " +
+                                "[--skin=b_c_gah_fb_skin_007] [--hair=b_c_gah_fb_hair_005] [--out=DIR]");
+        return 1;
+    }
+    string Opt(string key, string dflt)
+    {
+        foreach (var s in a) if (s.StartsWith($"--{key}=", StringComparison.Ordinal)) return s[(key.Length + 3)..];
+        return dflt;
+    }
+    var av   = Opt("av", "gah_fb");
+    var skin = Opt("skin", $"b_c_{av}_skin_007");
+    var hair = Opt("hair", $"b_c_{av}_hair_005");
+    var outDir = Opt("out", "head-uv");
+    var logic = Opt("logic", "");
+    Directory.CreateDirectory(outDir);
+
+    using var tank = SiegeFX.Core.Tank.TankFile.Open(a[0]);
+    var resolver = new SiegeFX.Core.Assets.AssetResolver();
+    resolver.Add(new SiegeFX.Core.Tank.TankReader(tank), Path.GetFileName(a[0]));
+
+    byte[]? Load(string name, out int w, out int h)
+    {
+        w = h = 0;
+        if (!resolver.TryLoadByBasename(name + ".raw", out var bytes)) return null;
+        var img = RawImage.Load(bytes);
+        w = img.Width; h = img.Height;
+        var rgba = img.GetSurfaceRgba(0);
+        return rgba.Length >= w * h * 4 ? rgba : null;
+    }
+    static int Texel(Vector2 uv, int w, int h)
+    {
+        float u = uv.X - MathF.Floor(uv.X), v = uv.Y - MathF.Floor(uv.Y);
+        int x = Math.Clamp((int)(u * w), 0, w - 1), y = Math.Clamp((int)(v * h), 0, h - 1);
+        return (y * w + x) * 4;
+    }
+
+    var comp = Load(skin, out int cw, out int ch);
+    if (comp is null) { Console.Error.WriteLine($"{skin}.raw not found"); return 2; }
+    var hairRgba = Load(hair, out int hw, out int hh);
+    if (hairRgba is not null && hw == cw && hh == ch)
+        for (int i = 0; i < comp.Length; i += 4)
+        {
+            float al = hairRgba[i + 3] / 255f;
+            for (int k = 0; k < 3; k++) comp[i + k] = (byte)(hairRgba[i + k] * al + comp[i + k] * (1 - al));
+        }
+    else Console.WriteLine($"  note: {hair}.raw missing or a different size; composite is the skin alone");
+    Console.WriteLine($"composite: {skin} ({cw}x{ch}) + {hair}");
+
+    var hairs = resolver.BasenamesWithPrefix($"b_c_{av}_hair_")
+        .Where(b => b.EndsWith(".raw", StringComparison.OrdinalIgnoreCase))
+        .Select(b => b[..^4]).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToList();
+    var hairTex = new List<(string Name, byte[] Rgba, int W, int H)>();
+    foreach (var n in hairs) { var r = Load(n, out int w, out int h); if (r is not null) hairTex.Add((n, r, w, h)); }
+
+    var heads = resolver.BasenamesWithPrefix($"m_c_{av}_hlmt_head")
+        .Where(b => b.EndsWith(".asp", StringComparison.OrdinalIgnoreCase))
+        .Select(b => b[..^4]).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToList();
+    var bodyName = $"m_c_{av}_pos_a1";
+    float bodyTop = float.MinValue;
+    if (resolver.TryLoadModel(bodyName, out var bodyBytes))
+    {
+        var body = SiegeFX.Core.Assets.AspMesh.Load(bodyBytes);
+        foreach (var c in body.Corners) bodyTop = MathF.Max(bodyTop, body.Positions[c.VertexIndex].Y);
+    }
+    Console.WriteLine($"body {bodyName} top Y {bodyTop:0.###}; crest = corners above {bodyTop - 0.02f:0.###}");
+
+    foreach (var name in new[] { bodyName }.Concat(heads))
+    {
+        if (!resolver.TryLoadModel(name, out var bytes)) { Console.WriteLine($"  {name}: not found"); continue; }
+        var m = SiegeFX.Core.Assets.AspMesh.Load(bytes);
+        var uvMin = new Vector2(float.MaxValue); var uvMax = new Vector2(float.MinValue);
+        var crMin = new Vector2(float.MaxValue); var crMax = new Vector2(float.MinValue);
+        int crest = 0, outside = 0;
+        long[] sum = new long[3];
+        var crestUvs = new List<Vector2>();
+        for (int c = 0; c < m.Corners.Length; c++)
+        {
+            var uv = m.Corners[c].Uv;
+            uvMin = Vector2.Min(uvMin, uv); uvMax = Vector2.Max(uvMax, uv);
+            if (uv.X < 0 || uv.X > 1 || uv.Y < 0 || uv.Y > 1) outside++;
+            if (m.Positions[m.Corners[c].VertexIndex].Y <= bodyTop - 0.02f) continue;
+            crest++; crestUvs.Add(uv);
+            crMin = Vector2.Min(crMin, uv); crMax = Vector2.Max(crMax, uv);
+            int t = Texel(uv, cw, ch);
+            for (int k = 0; k < 3; k++) sum[k] += comp[t + k];
+        }
+        Console.WriteLine($"  {name}: textures [{string.Join(", ", m.TextureNames)}], " +
+                          $"subsets {string.Join(" ", m.Subsets.Select(s => $"{s.FirstTriangle}+{s.TriangleCount}:t{s.TextureIndex}"))}");
+        Console.WriteLine($"      uv {uvMin.X:0.###},{uvMin.Y:0.###}..{uvMax.X:0.###},{uvMax.Y:0.###}, {outside} corners outside 0..1");
+        if (crest > 0)
+        {
+            Console.WriteLine($"      crest: {crest} corners, uv {crMin.X:0.###},{crMin.Y:0.###}..{crMax.X:0.###},{crMax.Y:0.###}, " +
+                              $"composite color there #{sum[0] / crest:X2}{sum[1] / crest:X2}{sum[2] / crest:X2}");
+            var covered = new List<string>();
+            foreach (var (hn, hr, w, h) in hairTex)
+            {
+                int on = 0;
+                foreach (var uv in crestUvs) if (hr[Texel(uv, w, h) + 3] > 32) on++;
+                covered.Add($"{hn[(hn.LastIndexOf('_') + 1)..]}={100 * on / crest}%");
+            }
+            Console.WriteLine($"      hair painted on the crest: {string.Join(" ", covered)}");
+            // Alpha and color under each hair at the crest, alpha ignored: an
+            // overlay can carry color where its alpha is 0.
+            var under = new List<string>();
+            foreach (var (hn, hr, w, h) in hairTex)
+            {
+                long r = 0, g = 0, b = 0, al = 0;
+                foreach (var uv in crestUvs) { int t = Texel(uv, w, h); r += hr[t]; g += hr[t + 1]; b += hr[t + 2]; al += hr[t + 3]; }
+                under.Add($"{hn[(hn.LastIndexOf('_') + 1)..]}=#{r / crest:X2}{g / crest:X2}{b / crest:X2}/a{al / crest}");
+            }
+            Console.WriteLine($"      hair rgb/alpha at the crest: {string.Join(" ", under)}");
+        }
+
+        void Wire(byte[] src, int w, int h, string file)
+        {
+            var img = (byte[])src.Clone();
+            for (int i = 3; i < img.Length; i += 4) img[i] = 255;
+            for (int t = 0; t + 2 < m.TriangleIndices.Length; t += 3)
+            {
+                bool hi = false;
+                for (int k = 0; k < 3; k++)
+                    hi |= m.Positions[m.Corners[m.TriangleIndices[t + k]].VertexIndex].Y > bodyTop - 0.02f;
+                for (int k = 0; k < 3; k++)
+                {
+                    var p0 = m.Corners[m.TriangleIndices[t + k]].Uv;
+                    var p1 = m.Corners[m.TriangleIndices[t + (k + 1) % 3]].Uv;
+                    int steps = (int)(Vector2.Distance(p0, p1) * Math.Max(w, h)) + 1;
+                    for (int s = 0; s <= steps; s++)
+                    {
+                        int o = Texel(Vector2.Lerp(p0, p1, s / (float)steps), w, h);
+                        img[o] = hi ? (byte)255 : (byte)0; img[o + 1] = hi ? (byte)0 : (byte)255; img[o + 2] = 0;
+                    }
+                }
+            }
+            using var fs = File.Create(Path.Combine(outDir, file));
+            Png.EncodeRgba(fs, img, w, h);
+        }
+        Wire(comp, cw, ch, $"{name}_on_composite.png");
+        if (m.TextureNames.Count > 0)
+        {
+            var own = Load(m.TextureNames[0], out int ow, out int oh);
+            if (own is not null) Wire(own, ow, oh, $"{name}_on_{m.TextureNames[0]}.png");
+        }
+    }
+    // Contact sheets: every hair overlay over grey, the same with alpha
+    // ignored, its alpha alone, and every skin base; cells in name order.
+    void Sheet(List<string> names, string file, int mode)
+    {
+        const int cell = 256, cols = 6;
+        int rows = (names.Count + cols - 1) / cols;
+        if (rows == 0) return;
+        var img = new byte[cols * cell * rows * cell * 4];
+        for (int i = 3; i < img.Length; i += 4) img[i] = 255;
+        for (int n = 0; n < names.Count; n++)
+        {
+            var src = Load(names[n], out int w, out int h);
+            if (src is null || w == 0 || h == 0) continue;
+            int ox = n % cols * cell, oy = n / cols * cell;
+            for (int y = 0; y < cell; y++)
+            for (int x = 0; x < cell; x++)
+            {
+                int si = ((y * h / cell) * w + x * w / cell) * 4;
+                int di = ((oy + y) * cols * cell + ox + x) * 4;
+                float al = src[si + 3] / 255f;
+                for (int k = 0; k < 3; k++)
+                    img[di + k] = mode switch
+                    {
+                        0 => (byte)(src[si + k] * al + 128 * (1 - al)),
+                        1 => src[si + k],
+                        _ => src[si + 3],
+                    };
+            }
+        }
+        using var fs = File.Create(Path.Combine(outDir, file));
+        Png.EncodeRgba(fs, img, cols * cell, rows * cell);
+    }
+    var skins = resolver.BasenamesWithPrefix($"b_c_{av}_skin_")
+        .Where(b => b.EndsWith(".raw", StringComparison.OrdinalIgnoreCase))
+        .Select(b => b[..^4]).Distinct(StringComparer.OrdinalIgnoreCase)
+        .Where(b => b.Length - b.LastIndexOf('_') - 1 == 3)
+        .Order(StringComparer.OrdinalIgnoreCase).ToList();
+    Sheet(hairs, "sheet_hair.png", 0);
+    Sheet(hairs, "sheet_hair_rgb.png", 1);
+    Sheet(hairs, "sheet_hair_alpha.png", 2);
+    Sheet(skins, "sheet_skin.png", 1);
+    Console.WriteLine($"sheets (6 per row, name order): hair {string.Join(" ", hairs.Select(h => h[(h.LastIndexOf('_') + 1)..]))}; " +
+                      $"skin {string.Join(" ", skins.Select(h => h[(h.LastIndexOf('_') + 1)..]))}");
+    Console.WriteLine($"wrote PNGs to {Path.GetFullPath(outDir)}");
+
+    if (logic.Length > 0)
+    {
+        using var lt = SiegeFX.Core.Tank.TankFile.Open(logic);
+        var lr = new SiegeFX.Core.Tank.TankReader(lt);
+        Console.WriteLine($".gas lines in {Path.GetFileName(logic)} naming head meshes or hair/skin textures:");
+        foreach (var path in lr.ListFiles())
+        {
+            if (!path.EndsWith(".gas", StringComparison.OrdinalIgnoreCase)) continue;
+            string text;
+            try { text = System.Text.Encoding.Latin1.GetString(lr.ExtractToMemory(path)); } catch { continue; }
+            if (!text.Contains("hlmt_head", StringComparison.OrdinalIgnoreCase)
+                && !text.Contains("_hair_", StringComparison.OrdinalIgnoreCase)
+                && !text.Contains("custom_head", StringComparison.OrdinalIgnoreCase)) continue;
+            int shown = 0;
+            foreach (var line in text.Split('\n'))
+            {
+                var l = line.Trim();
+                if (l.Contains("hlmt_head", StringComparison.OrdinalIgnoreCase)
+                    || l.Contains("_hair_", StringComparison.OrdinalIgnoreCase)
+                    || l.Contains("custom_head", StringComparison.OrdinalIgnoreCase)
+                    || l.Contains("_skin_", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (shown++ < 60) Console.WriteLine($"  {path}: {l}");
+                }
+            }
+            if (shown > 60) Console.WriteLine($"  {path}: ... {shown - 60} more");
+        }
+    }
     return 0;
 }
 
