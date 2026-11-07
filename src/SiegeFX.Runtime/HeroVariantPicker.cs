@@ -54,16 +54,25 @@ internal sealed class HeroVariantPicker
     public string? PantsSuffix { get; init; }
 
     // SC-CD-COMPOSITE — the creator's real, label-matching appearance axes.
-    // Head=hairstyle (which hair_NNN overlay = the shape), Hair=color (a recolor
-    // tint of that style), Face=skin (skin_NN), Shirt=shrt_NNN, Pants=pant_NNN.
+    // Head = which head mesh (or the body's own, bald), Hair = which hair_NNN
+    // overlay from that head's list, Face (the Skin button) = skin_NNN,
+    // Shirt = shrt_NNN, Pants = pant_NNN.
     // These are plain indices cycled UNBOUNDED by CharacterCreatorPanel; the
     // renderer mods each by the count of variants that actually ship (skin
     // numbering is sparse, so ranges are enumerated, not hardcoded). They
     // supersede the suffix fields above, which now only feed the (default) mesh
     // pick + save plumbing — the body mesh no longer changes from a lever.
     public int FaceIdx  { get; init; }
+    /// <summary>The Head button: which of the template's head meshes
+    /// (<c>m_c_&lt;armor_version&gt;_hlmt_head-NN</c>, sorted) replaces the
+    /// body's own head, as in the original, whose saves name it as
+    /// <c>custom_head</c>. 0 = the first, head-02, the original's default;
+    /// one past the last head mesh = the body's own head (bald, saved as
+    /// <c>custom_head = default</c>).</summary>
+    public int HeadIdx  { get; init; }
+    /// <summary>The Hair button: which hair overlay (hair_NNN) goes on the
+    /// skin, an index into the list the head offers.</summary>
     public int StyleIdx { get; init; }
-    public int ColorIdx { get; init; }
     public int PantsIdx { get; init; }
 
     public static HeroVariantPicker FromEnv()
@@ -97,8 +106,8 @@ internal sealed class HeroVariantPicker
             SkinSuffix = skin,
             PantsSuffix = pants,
             FaceIdx  = EnvIdx("SIEGEFX_HERO_FACE"),
+            HeadIdx  = EnvIdx("SIEGEFX_HERO_HEAD"),
             StyleIdx = EnvIdx("SIEGEFX_HERO_STYLE"),
-            ColorIdx = EnvIdx("SIEGEFX_HERO_COLOR"),
             ShirtIdx = EnvIdx("SIEGEFX_HERO_SHIRT"),
             PantsIdx = EnvIdx("SIEGEFX_HERO_PANTSIDX"),
         };
