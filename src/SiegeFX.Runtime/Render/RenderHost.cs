@@ -1672,10 +1672,18 @@ public sealed class RenderHost : IDisposable
     // spawned player is kept so the created look carries into the game.
     private HeroVariantPicker? _playerPicker;
     private HeroGender? _ccOptGender;
+    private int _perfFrames;
+    private double _perfSeconds, _perfWorst;
     private List<string> _ccHair  = new();
     private List<string> _ccSkin  = new();
     private List<string> _ccShirt = new();
     private List<string> _ccPant  = new();
+    // Each gender's options, listed once. Co-op draws a boy and a girl in the
+    // same frame: one shared slot re-listed the tanks and dropped every
+    // composite (without freeing its GPU texture) twice a frame.
+    private readonly Dictionary<HeroGender, (List<string> Hair, List<string> Skin, List<string> Shirt, List<string> Pant)> _ccOptionsByGender = new();
+    // Keys name the gender's own files (skin_*/hair_* of fb or fg, clothing
+    // base 008 or 009), so both genders' composites live here side by side.
     private readonly Dictionary<string, GlTexture?> _ccCompCache = new();
     // Hair-color palette (target hair tints, 0..1 per channel). Head picks the
     // style; this recolors it so the same style can be any colour.
@@ -15605,12 +15613,17 @@ void main()
 
     // SC-CD-COMPOSITE — enumerate the shipped appearance variants for a gender
     // once (skin numbering is sparse, so we list what's really in the tanks and
-    // skip blank/no-art skin slots). Re-runs only when the gender changes.
+    // skip blank/no-art skin slots), then switch between the genders' lists
+    // for free.
     private void EnsureCreatorOptions(HeroGender gender)
     {
         if (_ccOptGender == gender && _ccSkin.Count > 0) return;
         _ccOptGender = gender;
-        _ccCompCache.Clear();
+        if (_ccOptionsByGender.TryGetValue(gender, out var known))
+        {
+            (_ccHair, _ccSkin, _ccShirt, _ccPant) = known;
+            return;
+        }
         string stem = gender == HeroGender.Girl ? "fg" : "fb";
         _ccHair  = StrippedSorted($"b_c_gah_{stem}_hair_");
         _ccShirt = StrippedSorted("b_c_pos_a1_shrt_");
@@ -15636,6 +15649,7 @@ void main()
         if (_ccSkin.Count == 0) _ccSkin = skins; // never leave the face with nothing
         Console.WriteLine($"[cc-options] {stem}: styles={_ccHair.Count} skins={_ccSkin.Count}/{skins.Count} " +
                           $"shirts={_ccShirt.Count} pants={_ccPant.Count} colors={HairPalette.Length}");
+        if (_ccSkin.Count > 0) _ccOptionsByGender[gender] = (_ccHair, _ccSkin, _ccShirt, _ccPant);
     }
 
     private List<string> StrippedSorted(string prefix)
@@ -39769,6 +39783,17 @@ void main()
         // (stamped to the millisecond) say what was loading.
         if (dt > 0.1 && _player is not null)
             Console.WriteLine($"[perf] slow frame {dt * 1000.0:F0}ms");
+        // In a co-op game, the frame rate every 10 s: "laggy" in a report is
+        // then either frames (here) or the network (the [net] lines).
+        if (_mpNetSession is not null && _player is not null)
+        {
+            _perfFrames++; _perfSeconds += dt; if (dt > _perfWorst) _perfWorst = dt;
+            if (_perfSeconds >= 10)
+            {
+                Console.WriteLine($"[perf] {_perfFrames / _perfSeconds:F0} fps over {_perfSeconds:F0} s (worst frame {_perfWorst * 1000:F0} ms)");
+                _perfFrames = 0; _perfSeconds = 0; _perfWorst = 0;
+            }
+        }
 
         // SC-TERRAIN-WHITE-GRID (audit fold — finding #3) — dev
         // fly-cam reference grid. Previously gated on
