@@ -487,13 +487,17 @@ public sealed class HeroVariantSnapshot
 
     // SC-CD-PERSIST (v14) — the creator's COMPOSITE axes (the look system
     // that actually drives the in-game body textures: skin/face tone,
-    // hairstyle overlay, hair tint, shirt/pants overlays). -1 = not present
+    // head, hair overlay, shirt/pants overlays; an older save's hair-tint
+    // ColorIdx is no longer read). -1 = not present
     // (pre-v14 save) — the loader then falls back to the legacy suffix
     // fields above. These were the documented v1 follow-up ("appearance
     // resets on load") — a load used to silently drop face/hair/shirt/pants.
     public int FaceIdx  { get; set; } = -1;
+    /// <summary>The creator's Head: which head mesh replaces the body's own
+    /// (sorted m_c_&lt;armor_version&gt;_hlmt_head-*; 0 = the first, head-02).
+    /// -1 = a save from before the field, which loads with the first.</summary>
+    public int HeadIdx  { get; set; } = -1;
     public int StyleIdx { get; set; } = -1;
-    public int ColorIdx { get; set; } = -1;
     public int ShirtIdx { get; set; } = -1;
     public int PantsIdx { get; set; } = -1;
 }

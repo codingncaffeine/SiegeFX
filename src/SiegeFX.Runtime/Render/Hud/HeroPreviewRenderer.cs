@@ -90,6 +90,13 @@ internal sealed class HeroPreviewRenderer : IDisposable
     private bool _dragging;
     private int _dragLastX;
 
+    // The head mesh drawn in place of the body's own head (the creator's Head
+    // button), set by the host each frame; loaded when the name changes.
+    public string? HeadMesh { get; set; }
+    private string? _headName;
+    private AspMesh? _headAsp;
+    private SkinnedMesh? _headGl;
+
     public Actor? Actor => _actor;
     public string? SkinOverrideName => _skinOverride;
     public string? PantsOverrideName => _pantsOverride;
@@ -331,6 +338,7 @@ internal sealed class HeroPreviewRenderer : IDisposable
         }
         else activeClip = _fidgetA ?? _fidgetB ?? (_actor.Clips.Length > 0 ? _actor.Clips[0] : null);
 
+        float clipT = 0f;
         if (activeClip is not null)
         {
             // Phase within the active clip itself (re-derive from cycle so
@@ -345,10 +353,16 @@ internal sealed class HeroPreviewRenderer : IDisposable
             }
             else t = activeClip.AnimLength > 0f ? _animTime % activeClip.AnimLength : 0f;
             AnimationRuntime.ComputeSkinMatrices(_actor.Mesh, activeClip, t, skin);
+            clipT = t;
         }
         else
             for (int i = 0; i < boneCount; i++) skin[i] = Matrix4x4.Identity;
         _skinShader.SetMatrix4Array("uBones[0]", skin);
+
+        // A head mesh replaces the body's own head: leave that out.
+        bool head = EnsureHeadMesh();
+        if (head) _glMesh.HideBoneTriangles(_actor.Mesh, HeadBone(_actor.Mesh));
+        _glMesh.HideMarked = head;
 
         var subsets = _actor.Mesh.Subsets;
         if (subsets.Length == 0)
@@ -372,6 +386,23 @@ internal sealed class HeroPreviewRenderer : IDisposable
                 }
                 _glMesh.DrawSubset(sub.FirstTriangle, sub.TriangleCount);
             }
+        }
+
+        if (head && _headAsp is not null && _headGl is not null && _headAsp.BoneCount <= MaxStack)
+        {
+            var headSkin = skinBuf.Slice(0, _headAsp.BoneCount);
+            if (activeClip is not null) AnimationRuntime.ComputeSkinMatrices(_headAsp, activeClip, clipT, headSkin);
+            else headSkin.Fill(Matrix4x4.Identity);
+            _skinShader.SetMatrix4Array("uBones[0]", headSkin);
+            // Its texture slots are the hero's (skin + hair, clothing), as on the body.
+            foreach (var sub in _headAsp.Subsets)
+            {
+                var tex = _resolveTexture(_actor, Math.Max(0, sub.TextureIndex));
+                if (tex is not null) { tex.Bind(TextureUnit.Texture0); _skinShader.SetInt("uHasTexture", 1); }
+                else _skinShader.SetInt("uHasTexture", 0);
+                _headGl.DrawSubset(sub.FirstTriangle, sub.TriangleCount);
+            }
+            if (_headAsp.Subsets.Length == 0) _headGl.Draw();
         }
 
         // Leave no hero depth behind for the frame pieces drawn after us.
@@ -459,8 +490,45 @@ internal sealed class HeroPreviewRenderer : IDisposable
             System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : 0;
     }
 
+    /// <summary>Load <see cref="HeadMesh"/> when it changed; true when one is ready to draw.</summary>
+    private bool EnsureHeadMesh()
+    {
+        if (HeadMesh is null) return false;
+        if (!string.Equals(HeadMesh, _headName, StringComparison.OrdinalIgnoreCase))
+        {
+            _headGl?.Dispose();
+            _headGl = null;
+            _headAsp = null;
+            _headName = HeadMesh;
+            try
+            {
+                if (_resolver.TryLoadModel(HeadMesh, out var bytes))
+                {
+                    var asp = AspMesh.Load(bytes);
+                    if (asp.HasSkin && asp.BoneCount <= SkinnedMesh.MaxBones)
+                    {
+                        _headGl = new SkinnedMesh(_gl, asp);
+                        _headAsp = asp;
+                    }
+                }
+            }
+            catch { _headGl = null; _headAsp = null; }
+        }
+        return _headGl is not null;
+    }
+
+    /// <summary>The body's head bone (Bip01_Head on the heroes), or -1.</summary>
+    internal static int HeadBone(AspMesh mesh)
+    {
+        for (int i = 0; i < mesh.BoneNames.Count; i++)
+            if (string.Equals(mesh.BoneNames[i], "Bip01_Head", StringComparison.OrdinalIgnoreCase)) return i;
+        return -1;
+    }
+
     public void Dispose()
     {
+        _headGl?.Dispose();
+        _headGl = null;
         _glMesh?.Dispose();
         _glMesh = null;
         _actor = null;
