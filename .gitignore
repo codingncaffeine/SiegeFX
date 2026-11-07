@@ -184,6 +184,8 @@ DocProject/Help/html
 
 # Click-Once directory
 publish/
+# The builds handed to playtesters (latest test only).
+/testing/
 
 # Publish Web Output
 *.[Pp]ublish.xml
