@@ -5765,7 +5765,7 @@ public sealed class RenderHost : IDisposable
     /// single-player region dial the old host.</summary>
     private static void DropMultiplayerEnv(IDictionary<string, string?> env)
     {
-        foreach (var k in new[] { "SIEGEFX_MP_ROLE", "SIEGEFX_MP_PROVIDER", "SIEGEFX_MP_HOST", "SIEGEFX_MP_PORT", "SIEGEFX_MP_NAME" })
+        foreach (var k in new[] { "SIEGEFX_MP_ROLE", "SIEGEFX_MP_PROVIDER", "SIEGEFX_MP_HOST", "SIEGEFX_MP_PORT", "SIEGEFX_MP_NAME", "SIEGEFX_MP_CHARACTER" })
             env.Remove(k);
     }
 
@@ -6512,6 +6512,7 @@ public sealed class RenderHost : IDisposable
             ? pv : SiegeFX.Core.Net.UdpTransport.DefaultGamePort;
         string name = Environment.GetEnvironmentVariable("SIEGEFX_MP_NAME") is { Length: > 0 } n
             ? n : (_heroName.Length > 0 ? _heroName : "Player");
+        _mpLocalName = name;
         bool asHost = string.Equals(role, "host", StringComparison.OrdinalIgnoreCase);
 
         MpInitProvider(name); // reflection-load EOS if present (idempotent, fresh process)
@@ -6759,70 +6760,90 @@ public sealed class RenderHost : IDisposable
         catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"mp: the game could not save itself ({why}): {ex.Message}"); }
     }
 
-    // Every player's co-op character is their own and lives on their own
-    // machine, host and joiners alike (the original kept multiplayer
-    // characters the same way: "If you or the host exits, character's
-    // attributes, skills, and Inventory items are saved"). It is checked
-    // every half minute and written when it changed, and written on close and
-    // when the game ends; the next co-op game this player hosts or joins
-    // starts with it. Nothing is written until the saved one is on the player,
-    // so a slow or failed load can never overwrite it with a new hero.
+    // Every player's co-op characters are their own and live on their own
+    // machine, host and joiners alike, one file each (the original kept
+    // multiplayer characters the same way: "If you or the host exits,
+    // character's attributes, skills, and Inventory items are saved"). The
+    // one chosen in the staging area travels into the region by
+    // SIEGEFX_MP_CHARACTER; it is checked every half minute and written when it
+    // changed, and written on close and when the game ends. Nothing is written
+    // until the saved one is on the player, so a slow or failed load can never
+    // overwrite it with a new hero.
     private const double MpCharacterCheckInterval = 30;
     private double _mpCharacterTimer;
     private bool _mpCharacterRestored;
     private string? _mpCharacterLast;
+    private string? _mpCharacterPath;          // the file this game writes; null = a new one on the first save
+    private string _mpCharacterImportedFrom = "";
+    private string _mpLocalName = "";
 
-    /// <summary>Put this player's saved co-op character on the player, once,
-    /// as the co-op game starts. No file: the hero is new. A file that will
-    /// not load is kept aside under another name, never overwritten.</summary>
+    /// <summary>Which co-op character this game plays: the one the staging area
+    /// passed on, else the one chosen last, else the file older builds kept.</summary>
+    private static string? MpChosenCharacterPath()
+    {
+        var env = Environment.GetEnvironmentVariable("SIEGEFX_MP_CHARACTER");
+        if (!string.IsNullOrWhiteSpace(env)) return env;
+        var chosen = SiegeFX.Core.Save.CoopCharacters.SelectedPath();
+        if (chosen is not null) return chosen;
+        var legacy = SiegeFX.Core.Save.SaveStore.CoopCharacterPath();
+        return File.Exists(legacy) ? legacy : null;
+    }
+
+    /// <summary>Put this player's chosen co-op character on the player, once,
+    /// as the co-op game starts. None chosen, or one created and not played
+    /// yet: the hero is new (its name and look came with the relaunch). A file
+    /// that will not load is kept aside under another name, never overwritten.</summary>
     private void MpRestoreCharacter()
     {
         if (_mpCharacterRestored || !InMultiplayerGame || _player is null || _bootMode) return;
         _mpCharacterRestored = true;
-        var path = SiegeFX.Core.Save.SaveStore.CoopCharacterPath();
-        if (!File.Exists(path)) { SiegeFX.Core.Net.NetLog.Info("mp: no saved co-op character on this machine; this hero is new"); return; }
+        var path = MpChosenCharacterPath();
+        _mpCharacterPath = path;
+        if (path is null || !File.Exists(path))
+        {
+            _mpCharacterPath = null;
+            SiegeFX.Core.Net.NetLog.Info("mp: no co-op character chosen on this machine; this hero is new");
+            return;
+        }
         try
         {
             var save = SiegeFX.Core.Save.SaveStore.Load(path);
-            if (save.Player is null) throw new InvalidDataException("the file holds no hero");
-            RestoreHero(save.Player, save.DisplayName, null, coopCharacter: true);
-            _mpCharacterLast = MpCharacterKey(save.Player);
+            _mpCharacterImportedFrom = save.Coop?.ImportedFrom ?? "";
+            if (SiegeFX.Core.Save.CoopCharacters.IsNew(save))
+            {
+                SiegeFX.Core.Net.NetLog.Info($"mp: co-op character '{_heroName}' is new: the starting kit -> {path}");
+                return;
+            }
+            RestoreHero(save.Player!, save.DisplayName, null, coopCharacter: true);
+            _mpCharacterLast = MpCharacterKey(save.Player!);
             SiegeFX.Core.Net.NetLog.Info($"mp: co-op character restored: '{_heroName}', level {_progression?.Level ?? 0}, " +
                 $"{_playerInventory.Count} carried, {_progression?.Gold ?? 0} gold, worn: " +
-                string.Join(", ", _playerEquipment.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}={kv.Value}")));
+                string.Join(", ", _playerEquipment.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}={kv.Value}")) + $" <- {path}");
         }
         catch (Exception ex)
         {
             string aside = path + $".unreadable-{DateTime.Now:yyyyMMdd-HHmmss}";
             try { File.Move(path, aside); } catch { aside = path; }
+            _mpCharacterPath = null;
             SiegeFX.Core.Net.NetLog.Warn($"mp: the saved co-op character did not load ({ex.Message}); kept as {aside}; this hero is new");
         }
     }
 
     /// <summary>The co-op character as saved: the hero without the parts that
-    /// belong to the world it was played in (journal, picked-up world items,
-    /// camera, facing, a summon, being knocked out).</summary>
+    /// belong to the world it was played in.</summary>
     private SiegeFX.Core.Save.PlayerSnapshot? MpCaptureCharacter()
     {
         var hero = CapturePlayerSnapshot();
-        if (hero is null) return null;
-        hero.Quests.Clear();
-        hero.ConsumedInventoryScids.Clear();
-        hero.SummonScid = 0; hero.SummonEndScript = "";
-        hero.Downed = false;
-        hero.Facing = default; hero.CameraPos = default;
-        hero.CameraMode = 0; hero.ChaseYaw = 0; hero.ChaseDistance = 0; hero.ChaseHeight = 0;
-        hero.CameraYaw = 0; hero.CameraPitch = 0;
-        hero.Scid = 0;
-        return hero;
+        return hero is null ? null : SiegeFX.Core.Save.CoopCharacters.StripWorld(hero);
     }
 
     private static string MpCharacterKey(SiegeFX.Core.Save.PlayerSnapshot hero) =>
         System.Text.Json.JsonSerializer.Serialize(hero);
 
     /// <summary>Write this player's co-op character when it changed since the
-    /// last write. False when the write failed; the last good file and its
-    /// backup stay.</summary>
+    /// last write (a hero with no file yet gets one of its own, named after it,
+    /// and becomes the chosen one). False when the write failed; the last good
+    /// file and its backup stay.</summary>
     private bool MpSaveCharacter(string why)
     {
         if (!_mpCharacterRestored || !InMultiplayerGame || _player is null || _bootMode) return true;
@@ -6832,19 +6853,31 @@ public sealed class RenderHost : IDisposable
             if (hero is null) return true;
             string key = MpCharacterKey(hero);
             if (key == _mpCharacterLast) return true;
+            string name = !string.IsNullOrWhiteSpace(_heroName) ? _heroName
+                        : _mpLocalName.Length > 0 ? _mpLocalName : "Hero";
+            if (string.IsNullOrWhiteSpace(hero.HeroName)) hero.HeroName = name;
+            var (melee, ranged, nature, combat) = MpSkillLevelsNow();
             var save = new SiegeFX.Core.Save.SaveFile
             {
                 SchemaVersion = SiegeFX.Core.Save.SaveFile.CurrentSchemaVersion,
                 SavedAt = DateTime.UtcNow,
-                DisplayName = $"Co-op character: {_heroName}",
-                HeroName = _heroName,
+                DisplayName = $"Co-op character: {name}",
+                HeroName = name,
                 Difficulty = _difficulty.ToString(),
                 Player = hero,
+                Coop = new SiegeFX.Core.Save.CoopCharacterSummary
+                {
+                    ClassName = SiegeFX.Core.Assets.ClassTitleResolver.Resolve(_playerStartingClass, melee, ranged, nature, combat),
+                    Melee = melee, Ranged = ranged, NatureMagic = nature, CombatMagic = combat,
+                    ImportedFrom = _mpCharacterImportedFrom,
+                },
             };
-            var path = SiegeFX.Core.Save.SaveStore.CoopCharacterPath();
+            bool first = _mpCharacterPath is null;
+            var path = _mpCharacterPath ??= SiegeFX.Core.Save.CoopCharacters.UniquePath(name);
             SiegeFX.Core.Save.SaveStore.Save(path, save, backupPath: path + ".bak");
+            if (first) SiegeFX.Core.Save.CoopCharacters.Select(path);
             _mpCharacterLast = key;
-            SiegeFX.Core.Net.NetLog.Info($"mp: co-op character saved ({why}): '{_heroName}', level {hero.Level}, " +
+            SiegeFX.Core.Net.NetLog.Info($"mp: co-op character saved ({why}): '{name}', level {hero.Level}, " +
                 $"{hero.Inventory.Count} items, {hero.Gold} gold -> {path}");
             return true;
         }
@@ -7061,8 +7094,20 @@ public sealed class RenderHost : IDisposable
     }
 
     /// <summary>The local player's card, from the same fields the HUD shows.</summary>
+    /// <summary>The hero's four skill levels as the character sheet shows them.</summary>
+    private (int Melee, int Ranged, int Nature, int Combat) MpSkillLevelsNow()
+    {
+        if (_progression is { } pr)
+            return (pr.SkillLevel(SiegeFX.Core.Assets.SkillKind.Melee), pr.SkillLevel(SiegeFX.Core.Assets.SkillKind.Ranged),
+                    pr.SkillLevel(SiegeFX.Core.Assets.SkillKind.NatureMagic), pr.SkillLevel(SiegeFX.Core.Assets.SkillKind.CombatMagic));
+        var st = _player!.Actor.Stats;
+        return ((int)MathF.Round(st.MeleeSkill), (int)MathF.Round(st.RangedSkill),
+                (int)MathF.Round(st.NatureMagicSkill), (int)MathF.Round(st.CombatMagicSkill));
+    }
+
     private SiegeFX.Core.Net.MpPlayerInfo MpBuildLocalInfo()
     {
+        var lv = MpSkillLevelsNow();
         var pick = _playerPicker ?? _heroVariant;
         var st = _player!.Actor.Stats;
         static byte B(double v) => (byte)Math.Clamp((int)Math.Round(v), 0, 255);
@@ -7073,9 +7118,9 @@ public sealed class RenderHost : IDisposable
             B(pick?.FaceIdx ?? 0), B(pick?.StyleIdx ?? 0), B(pick?.ColorIdx ?? 0),
             B(pick?.ShirtIdx ?? 0), B(pick?.PantsIdx ?? 0),
             string.IsNullOrEmpty(_heroName) ? "Adventurer" : _heroName,
-            _playerStartingClass,
+            SiegeFX.Core.Assets.ClassTitleResolver.Resolve(_playerStartingClass, lv.Melee, lv.Ranged, lv.Nature, lv.Combat),
             U(st.Strength), U(st.Dexterity), U(st.Intelligence),
-            B(st.MeleeSkill), B(st.RangedSkill), B(st.NatureMagicSkill), B(st.CombatMagicSkill),
+            B(lv.Melee), B(lv.Ranged), B(lv.Nature), B(lv.Combat),
             PlayerWieldRef() is { Length: > 0 } wieldRef ? ResolveItemRef(wieldRef) : "",
             _playerEquipment.TryGetValue("es_shield_hand", out var shieldRef) && !string.IsNullOrWhiteSpace(shieldRef)
                 ? ResolveItemRef(shieldRef) : "",
@@ -8810,7 +8855,14 @@ public sealed class RenderHost : IDisposable
         _mpStaging.IsHost = asHost;
         _mpStaging.LocalReady = asHost; // host is implicitly ready
         _mpStaging.Players.Clear();
-        _mpStaging.Players.Add((_mpSession.PlayerName, asHost, asHost));
+        _mpStaging.Players.Add(new(_mpSession.PlayerName, asHost, asHost, "", true));
+        _mpStaging.InProgress = false;
+        _mpStaging.Characters.Close();
+        _mpStagingCards.Clear();
+        _mpEnterPending = null;
+        MpLoadChosenCharacter();
+        _mpStaging.Map = "Kingdom of Ehb";
+        _mpStaging.Difficulty = _difficulty.ToString();
         // F1 — for EOS the join id is the host ProductUserId (relayed, no port
         // forward); for direct providers it's the LAN endpoint. The PUID may
         // still be minting (CreateAsync is async) — FlushMpStaging refreshes it.
@@ -8821,10 +8873,29 @@ public sealed class RenderHost : IDisposable
         // the copy the session hands over, and the chat notes what changed.
         _mpLastRoster = asHost ? _mpNetSession.Roster.ToList() : new();
         _mpNetSession.OnRoster = MpApplyRoster;
-        _mpNetSession.OnChat += line => _mpStaging.Chat.Add(line);
+        _mpNetSession.OnChatFrom += (from, line) =>
+        {
+            string who = MpStagingName(from);
+            _mpStaging.Chat.Add($"{who}: {line}");
+            Console.WriteLine($"[chat] {who}: {line}");
+        };
+        _mpNetSession.OnPlayerInfo = info =>
+        {
+            bool changed = !_mpStagingCards.TryGetValue(info.Player, out var had) || had.HeroName != info.HeroName || had.ClassName != info.ClassName;
+            _mpStagingCards[info.Player] = info;
+            MpRebuildStagingPlayers();
+            if (changed) SiegeFX.Core.Net.NetLog.Info($"staging: {MpStagingName(info.Player)}'s character: {info.HeroName}, {info.ClassName}");
+        };
         if (!asHost)
         {
-            _mpNetSession.OnJoinAccepted = _ => _mpStaging.Status = "Joined. Click READY, then wait for the host to start.";
+            _mpNetSession.OnJoinAccepted = _ =>
+            {
+                _mpStaging.Status = _mpChosen is null
+                    ? "Joined. Select your character, then click I'm Ready to Begin."
+                    : "Joined. Click I'm Ready to Begin, then wait for the host to start.";
+                MpRebuildStagingPlayers();
+                MpSendStagingCard();
+            };
             _mpNetSession.OnJoinRejected = reason => { _mpStaging.Status = $"Join rejected: {reason}"; };
             // Client receives the host's world snapshot; parked for the
             // in-game apply (SC-MP-INGAME) — verifying it arrives + parses.
@@ -8839,10 +8910,25 @@ public sealed class RenderHost : IDisposable
             // reconnecting to the same host address we joined in staging.
             _mpNetSession.OnGameStart = (region, diff) =>
             {
-                if (_mpClientStartPending is not null) return;
+                if (_mpClientStartPending is not null || _mpEnterPending is not null) return;
+                var relaunch = new MpRelaunch("client", _mpSessionProvider, _mpJoinedHostAddress ?? "", 0, _mpSession.PlayerName);
+                if (!_mpStaging.LocalReady)
+                {
+                    // A game already under way (the host starts only when
+                    // everyone is ready): choose a character, then Enter Game,
+                    // as the original's join-in-progress screen asked.
+                    _mpEnterPending = relaunch;
+                    _mpStaging.InProgress = true;
+                    _mpStaging.Status = _mpChosen is null
+                        ? "This game is under way. Select your character, then click Enter Game."
+                        : "This game is under way. Click Enter Game to join it.";
+                    MpRebuildStagingPlayers();
+                    SiegeFX.Core.Net.NetLog.Info("staging: the game is under way — waiting for Enter Game");
+                    return;
+                }
                 _mpStaging.Status = "Host started the game — loading region...";
                 SiegeFX.Core.Net.NetLog.Info($"staging: GameStart received — relaunching as client to host '{_mpJoinedHostAddress}'");
-                _mpClientStartPending = new MpRelaunch("client", _mpSessionProvider, _mpJoinedHostAddress ?? "", 0, _mpSession.PlayerName);
+                _mpClientStartPending = relaunch;
             };
         }
         // Host serves the world snapshot to joiners (the save capture). No
@@ -8857,6 +8943,220 @@ public sealed class RenderHost : IDisposable
             };
         }
         _frontendScene?.SetState(Hud.FrontendScene.ScreenState.MpStaging);
+    }
+
+    // ---- co-op characters in the staging area ---------------------------
+    // The original's staging area: each player picks a co-op character (or
+    // creates one, or imports a single-player hero) before marking ready, and
+    // the Character column shows everyone's. Reading and writing the files
+    // happens off the frame; results come back through _mpUiQueue.
+    private SiegeFX.Core.Save.CoopCharacterEntry? _mpChosen;
+    private readonly Dictionary<int, SiegeFX.Core.Net.MpPlayerInfo> _mpStagingCards = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<Action> _mpUiQueue = new();
+    private MpRelaunch? _mpEnterPending;          // a game under way: waits for Enter Game
+    private SiegeFX.Core.Save.SaveFile? _mpImportSave;
+    private SiegeFX.Core.Assets.FormulasStore? _mpFormulas;
+    private readonly Dictionary<bool, GlTexture?> _mpPortraits = new();
+    private const string MpChooseFirst = "You must select a character before you can start the game.";
+
+    private void MpInBackground<T>(Func<T> work, Action<T> done, string what)
+    {
+        Task.Run(() =>
+        {
+            try { var r = work(); _mpUiQueue.Enqueue(() => done(r)); }
+            catch (Exception ex)
+            {
+                SiegeFX.Core.Net.NetLog.Warn($"staging: could not {what}: {ex.Message}");
+                _mpUiQueue.Enqueue(() => { _mpStaging.Characters.Loading = false; _mpStaging.Status = $"Could not {what}: {ex.Message}"; });
+            }
+        });
+    }
+
+    private static string MpCharacterLabel(SiegeFX.Core.Save.CoopCharacterEntry e) =>
+        e.New ? $"{e.Name} (new)" : $"{e.Name}, level {e.Level} {e.ClassName}";
+
+    private string MpStagingName(int player)
+    {
+        foreach (var e in _mpLastRoster) if (e.Player == player && e.Name.Length > 0) return e.Name;
+        return player == (_mpNetSession?.LocalPlayerId ?? -1) ? _mpSession.PlayerName : $"Player {player}";
+    }
+
+    /// <summary>The character chosen last (if its file is still there) is
+    /// this player's choice when the staging area opens.</summary>
+    private void MpLoadChosenCharacter()
+    {
+        _mpChosen = null;
+        MpInBackground(() =>
+        {
+            var chosen = SiegeFX.Core.Save.CoopCharacters.SelectedPath();
+            return (chosen, list: SiegeFX.Core.Save.CoopCharacters.List());
+        }, r =>
+        {
+            _mpChosen = r.list.FirstOrDefault(e => e.Path == r.chosen);
+            MpRebuildStagingPlayers();
+            MpSendStagingCard();
+            SiegeFX.Core.Net.NetLog.Info($"staging: {r.list.Count} co-op character(s); chosen: {(_mpChosen is { } c ? MpCharacterLabel(c) : "none")}");
+        }, "read your co-op characters");
+    }
+
+    /// <summary>This player's character card in the staging area: the chosen
+    /// character's name, class and skills (the game sends the full card).</summary>
+    private void MpSendStagingCard()
+    {
+        if (_mpChosen is not { } c || _mpNetSession is not { Joined: true } s) return;
+        static byte B(int v) => (byte)Math.Clamp(v, 0, 255);
+        s.SendClientInfo(new SiegeFX.Core.Net.MpPlayerInfo((byte)s.LocalPlayerId, (byte)(c.Girl ? 1 : 0), 0, 0, 0, 0, 0,
+            c.Name, c.New ? "New" : $"level {c.Level} {c.ClassName}", 0, 0, 0,
+            B(c.Melee), B(c.Ranged), B(c.NatureMagic), B(c.CombatMagic)));
+    }
+
+    /// <summary>The hero template's portrait (farmboy / farmgirl portrait_icon).</summary>
+    private GlTexture? MpHeroPortrait(bool girl)
+    {
+        if (_mpPortraits.TryGetValue(girl, out var t)) return t;
+        string name = "";
+        if (_templateStore is not null && _templateStore.TryGet(girl ? "farmgirl" : "farmboy", out var tpl))
+            name = (_templateStore.GetAttribute(tpl, "actor", "portrait_icon") ?? "").Trim().Trim('"');
+        t = name.Length > 0 ? TryGetGuiTexture(name) : null;
+        if (t is not null || _templateStore is not null) _mpPortraits[girl] = t;
+        return t;
+    }
+
+    private void MpOpenCharacterSelect(string? selectPath = null)
+    {
+        var panel = _mpStaging.Characters;
+        panel.OpenSelect();
+        panel.Loading = true;
+        selectPath ??= _mpChosen?.Path;
+        MpInBackground(() => SiegeFX.Core.Save.CoopCharacters.List(), list => panel.SetCharacters(list, selectPath),
+                       "read your co-op characters");
+    }
+
+    /// <summary>Ready, Start and Enter Game need a character first (the
+    /// original: "You must select a character before you can start the game.").</summary>
+    private bool MpHaveCharacter()
+    {
+        if (_mpChosen is not null) return true;
+        _mpStaging.Status = MpChooseFirst;
+        MpOpenCharacterSelect();
+        return false;
+    }
+
+    private void MpChoose(SiegeFX.Core.Save.CoopCharacterEntry e)
+    {
+        _mpChosen = e;
+        MpInBackground(() => { SiegeFX.Core.Save.CoopCharacters.Select(e.Path); return true; }, _ => { }, "remember your choice");
+        MpRebuildStagingPlayers();
+        MpSendStagingCard();
+        if (_mpStaging.Status == MpChooseFirst || _mpStaging.Status.Contains("Select your character", StringComparison.Ordinal))
+            _mpStaging.Status = _mpStaging.InProgress ? "Click Enter Game to join the game."
+                              : _mpStaging.IsHost ? "Click Start Game when everyone is ready."
+                              : "Click I'm Ready to Begin, then wait for the host to start.";
+        SiegeFX.Core.Net.NetLog.Info($"staging: character chosen: {MpCharacterLabel(e)} ({Path.GetFileName(e.Path)})");
+    }
+
+    /// <summary>The character screens' requests.</summary>
+    private void MpCharacterPanelActions()
+    {
+        var panel = _mpStaging.Characters;
+        var act = panel.ConsumeAction();
+        if (act == Hud.MpCharacterPanel.Action.None) return;
+        _audio?.Play(SfxFrontendBigButton);
+        switch (act)
+        {
+            case Hud.MpCharacterPanel.Action.Accept:
+                if (panel.SelectedEntry is { } pick) MpChoose(pick);
+                panel.Close();
+                break;
+            case Hud.MpCharacterPanel.Action.Cancel:
+                panel.Close();
+                break;
+            case Hud.MpCharacterPanel.Action.OpenCreate:
+                panel.OpenCreate(new HeroVariantPicker { Gender = HeroGender.Boy, BodyTypeIdx = 0, SkinSuffix = "01", HairSuffix = "001", PantsSuffix = "001" });
+                break;
+            case Hud.MpCharacterPanel.Action.CreateCancel:
+            case Hud.MpCharacterPanel.Action.ImportCancel:
+                MpOpenCharacterSelect();
+                break;
+            case Hud.MpCharacterPanel.Action.CreateAccept:
+            {
+                var pk = panel.Picker;
+                var look = new SiegeFX.Core.Save.HeroVariantSnapshot
+                {
+                    Gender = pk.Gender == HeroGender.Girl ? "girl" : "boy",
+                    BodyTypeIdx = pk.BodyTypeIdx, SkinSuffix = pk.SkinSuffix, PantsSuffix = pk.PantsSuffix,
+                    FaceIdx = pk.FaceIdx, StyleIdx = pk.StyleIdx, ColorIdx = pk.ColorIdx, ShirtIdx = pk.ShirtIdx, PantsIdx = pk.PantsIdx,
+                };
+                string name = panel.NewName.Trim();
+                MpInBackground(() => SiegeFX.Core.Save.CoopCharacters.Create(name, look, _playerStartingClass),
+                    path => { SiegeFX.Core.Net.NetLog.Info($"staging: created co-op character '{name}' -> {path}"); MpOpenCharacterSelect(path); },
+                    "create the character");
+                break;
+            }
+            case Hud.MpCharacterPanel.Action.OpenImport:
+                panel.OpenImport(Array.Empty<SiegeFX.Core.Save.SaveStore.SaveSlot>());
+                panel.ImportStatus = "Looking for your single-player games...";
+                MpInBackground(() => SiegeFX.Core.Save.SaveStore.ListSaves()
+                        .Where(sl => !string.Equals(Path.GetFileName(sl.Path), MpAutoSaveFile, StringComparison.OrdinalIgnoreCase))
+                        .ToList(),
+                    saves => panel.OpenImport(saves), "list your saved games");
+                break;
+            case Hud.MpCharacterPanel.Action.ImportPickSave:
+            {
+                if (panel.PickedSave is not { } slot) break;
+                _mpImportSave = null;
+                var levels = MpSkillLevels();
+                MpInBackground(() =>
+                {
+                    var save = SiegeFX.Core.Save.SaveStore.Load(slot.Path);
+                    if (save.Player is null) return (save, (SiegeFX.Core.Save.CoopCharacterEntry?)null);
+                    var hero = save.Player;
+                    int Lv(int i) => levels is not null && i < hero.SkillXp.Count ? levels(hero.SkillXp[i]) : 0;
+                    var cls = SiegeFX.Core.Assets.ClassTitleResolver.Resolve("Farmer", Lv(0), Lv(1), Lv(2), Lv(3));
+                    string nm = !string.IsNullOrWhiteSpace(hero.HeroName) ? hero.HeroName : !string.IsNullOrWhiteSpace(save.HeroName) ? save.HeroName : "Hero";
+                    return (save, (SiegeFX.Core.Save.CoopCharacterEntry?)new SiegeFX.Core.Save.CoopCharacterEntry(slot.Path, nm, Math.Max(1, hero.Level), cls,
+                        Lv(0), Lv(1), Lv(2), Lv(3), string.Equals(hero.Variant?.Gender, "girl", StringComparison.OrdinalIgnoreCase), false, save.SavedAt));
+                }, r =>
+                {
+                    if (panel.PickedSave?.Path != slot.Path) return;   // another save was picked meanwhile
+                    _mpImportSave = r.save;
+                    panel.ImportHero = r.Item2;
+                    panel.ImportStatus = r.Item2 is null ? "That saved game holds no hero." : "";
+                }, "read the saved game");
+                break;
+            }
+            case Hud.MpCharacterPanel.Action.ImportAccept:
+            {
+                if (_mpImportSave is not { } from) break;
+                var levels = MpSkillLevels();
+                MpInBackground(() => SiegeFX.Core.Save.CoopCharacters.Import(from, levels, "Farmer"),
+                    path => { SiegeFX.Core.Net.NetLog.Info($"staging: imported '{from.HeroName}' from '{from.DisplayName}' -> {path}"); MpOpenCharacterSelect(path); },
+                    "import the hero");
+                break;
+            }
+            case Hud.MpCharacterPanel.Action.DeleteConfirmed:
+            {
+                if (panel.SelectedEntry is not { } gone) break;
+                if (_mpChosen?.Path == gone.Path) { _mpChosen = null; MpRebuildStagingPlayers(); }
+                MpInBackground(() => { SiegeFX.Core.Save.CoopCharacters.Delete(gone.Path); return true; },
+                    _ => { SiegeFX.Core.Net.NetLog.Info($"staging: deleted co-op character '{gone.Name}' ({Path.GetFileName(gone.Path)})"); MpOpenCharacterSelect(); },
+                    "delete the character");
+                break;
+            }
+        }
+    }
+
+    /// <summary>A skill's experience to its level, from the game's formulas
+    /// (read once from the logic tank; null when they are not readable).</summary>
+    private Func<long, int>? MpSkillLevels()
+    {
+        if (_mpFormulas is null && (_formulas is not null || _playLogicTank is not null))
+        {
+            try { _mpFormulas = _formulas ?? SiegeFX.Core.Assets.FormulasStore.LoadFromTank(new TankReader(_playLogicTank!)); }
+            catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"staging: formulas not read: {ex.Message}"); }
+        }
+        var f = _mpFormulas;
+        return f is null ? null : xp => f.LevelForXp(xp);
     }
 
     private const string MpJoiningStatus = "Joining the host's game...";
@@ -8884,7 +9184,7 @@ public sealed class RenderHost : IDisposable
         MpRebuildStagingPlayers();
         if (_mpStaging.IsHost && _mpStartCountdown <= 0)
             _mpStaging.Status = roster.Count > 1 && roster.All(e => e.Ready)
-                ? "Everyone is ready. Click START GAME."
+                ? "Everyone is ready. Click Start Game."
                 : "Waiting for players to join and ready up.";
     }
 
@@ -8893,17 +9193,22 @@ public sealed class RenderHost : IDisposable
     private void MpRebuildStagingPlayers()
     {
         _mpStaging.Players.Clear();
+        _mpStaging.LocalCharacter = _mpChosen is { } mine ? MpCharacterLabel(mine) : "";
         if (_mpLastRoster.Count == 0)
         {
-            _mpStaging.Players.Add((_mpSession.PlayerName, _mpStaging.IsHost, _mpStaging.IsHost || _mpStaging.LocalReady));
+            _mpStaging.Players.Add(new(_mpSession.PlayerName, _mpStaging.IsHost, _mpStaging.IsHost || _mpStaging.LocalReady,
+                                       _mpStaging.LocalCharacter, true));
             return;
         }
         int me = _mpNetSession?.LocalPlayerId ?? 0;
         foreach (var e in _mpLastRoster)
         {
             bool host = e.Player == 0;
+            bool local = e.Player == me && (_mpNetSession?.Joined ?? false);
             bool ready = host || (!_mpStaging.IsHost && e.Player == me ? _mpStaging.LocalReady : e.Ready);
-            _mpStaging.Players.Add((e.Name, host, ready));
+            string character = local ? _mpStaging.LocalCharacter
+                : _mpStagingCards.TryGetValue(e.Player, out var card) ? $"{card.HeroName}, {card.ClassName}" : "";
+            _mpStaging.Players.Add(new(e.Name, host, ready, character, local));
         }
     }
 
@@ -9116,33 +9421,49 @@ public sealed class RenderHost : IDisposable
             var invite = MpHostInviteAddress();
             if (invite.Length > 0 && _mpStaging.HostIp != invite) _mpStaging.HostIp = invite;
         }
-        // Keep the host player-count attribute fresh-ish for the roster line.
+        while (_mpUiQueue.TryDequeue(out var done)) done();
+        MpCharacterPanelActions();
         var act = _mpStaging.ConsumeAction();
-        if (act != Hud.MpStagingScreen.Action.None) _audio?.Play(SfxFrontendBigButton);
+        if (act != Hud.MpStagingScreen.Action.None && act != Hud.MpStagingScreen.Action.SendChat) _audio?.Play(SfxFrontendBigButton);
         switch (act)
         {
             case Hud.MpStagingScreen.Action.Leave:
                 MpTearDownSession();
                 _frontendScene?.SetState(Hud.FrontendScene.ScreenState.Multiplayer);
                 break;
+            case Hud.MpStagingScreen.Action.ChooseCharacter:
+                MpOpenCharacterSelect();
+                break;
+            case Hud.MpStagingScreen.Action.SendChat:
+                if (_mpNetSession is { Joined: true } chatSession) chatSession.SendChat(_mpStaging.SentChat);
+                break;
+            case Hud.MpStagingScreen.Action.EnterGame:
+                if (_mpEnterPending is null || !MpHaveCharacter()) break;
+                _mpStaging.Status = "Entering the game...";
+                SiegeFX.Core.Net.NetLog.Info($"staging: Enter Game — relaunching as client to host '{_mpJoinedHostAddress}'");
+                _mpClientStartPending = _mpEnterPending;
+                _mpEnterPending = null;
+                break;
             case Hud.MpStagingScreen.Action.ToggleReady:
                 if (_mpStaging.IsHost) break;   // the host is always ready
+                if (!_mpStaging.LocalReady && !MpHaveCharacter()) break;
                 _mpStaging.LocalReady = !_mpStaging.LocalReady;
                 _mpNetSession?.SetReady(_mpStaging.LocalReady);
                 MpRebuildStagingPlayers();
                 if (_mpNetSession is { Joined: true })
                     _mpStaging.Status = _mpStaging.LocalReady
                         ? "Ready. Waiting for the host to start."
-                        : "Joined. Click READY, then wait for the host to start.";
+                        : "Joined. Click I'm Ready to Begin, then wait for the host to start.";
                 break;
             case Hud.MpStagingScreen.Action.Start:
+                if (_mpStartCountdown <= 0 && !MpHaveCharacter()) break;
                 // Host launches the co-op game. GameStart is an unreliable
                 // packet, so start a short repeat-broadcast window before we
                 // tear down and relaunch into the region (SC-MP-INGAME).
                 // Everyone who joined has to be ready first.
                 if (_mpStartCountdown <= 0 && _mpNetSession?.NotReady is { Count: > 0 } waiting)
                 {
-                    _mpStaging.Status = $"Waiting for {string.Join(", ", waiting)} to click READY.";
+                    _mpStaging.Status = $"Waiting for {string.Join(", ", waiting)} to be ready.";
                     break;
                 }
                 if (_mpStartCountdown <= 0)
@@ -10615,6 +10936,7 @@ void main()
                 else if (_saveDialog.IsOpen) _saveDialog.OnChar(c);
                 else if (_devConsoleOpen && _devItemFocus && c != '`' && c != '~') DevConsoleChar(c);
                 else if (_mpSession.IsActive) _mpSession.OnChar(c);
+                else if (_mpStaging.IsActive) _mpStaging.OnChar(c);
             };
             // SC-COMMANDS — item-labels toggle rides Alt RELEASE, exactly as
             // authored ([toggle_item_labels] input = key_alt, qualifiers =
@@ -10708,6 +11030,13 @@ void main()
                         _frontendScene?.SetState(Hud.FrontendScene.ScreenState.Multiplayer);
                         return;
                     }
+                }
+                // The staging area: its text boxes and the character screens'
+                // keys (Backspace, Enter, Escape, the arrows, Delete).
+                if (_mpStaging.IsActive)
+                {
+                    if (key is Key.Backspace or Key.Enter or Key.KeypadEnter or Key.Escape or Key.Up or Key.Down or Key.Delete)
+                    { _mpStaging.OnKey(key); return; }
                 }
                 // ALPHA-PACKAGING — Ctrl+F11 bug snapshot: zips the live
                 // session log + a state summary + the newest save into
@@ -11642,6 +11971,11 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
+                    // The Create screen's preview turns under a drag.
+                    if (_mpStaging.Characters.Mode == Hud.MpCharacterPanel.View.Create && !_mpStaging.Characters.AskingDelete
+                        && _heroPreview is not null
+                        && _heroPreview.TryStartDrag((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y))
+                        return;
                     _mpStaging.OnMouseDown((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
@@ -12909,6 +13243,7 @@ void main()
                     && btn == MouseButton.Left)
                 {
                     var sz = _window.FramebufferSize;
+                    if (_heroPreview is not null && _heroPreview.IsDragging) { _heroPreview.EndDrag(); return; }
                     _mpStaging.OnMouseUp((int)MousePx(m).X, (int)MousePx(m).Y, sz.X, sz.Y);
                     return;
                 }
@@ -13278,6 +13613,7 @@ void main()
                     && _frontendScene.State == Hud.FrontendScene.ScreenState.MpStaging)
                 {
                     var sz = _window.FramebufferSize;
+                    if (_heroPreview is not null && _heroPreview.IsDragging) _heroPreview.OnDragMove((int)pos.X);
                     _mpStaging.OnMouseMove((int)pos.X, (int)pos.Y, sz.X, sz.Y);
                 }
                 // SC-VIEW-ROTATE — dragging while the View button is held
@@ -13350,6 +13686,7 @@ void main()
                 // Save Game list scrolls with the wheel; consume it so the
                 // camera doesn't also zoom behind the modal.
                 if (_saveDialog.IsOpen) { _saveDialog.OnScroll(wheel.Y); return; }
+                if (_mpStaging.IsActive) { _mpStaging.OnWheel(wheel.Y > 0 ? 1 : wheel.Y < 0 ? -1 : 0); return; }
                 if (_loadDialog.IsOpen) { _loadDialog.OnScroll(wheel.Y); return; }
                 // SC-OPTIONS-REBIND — the Hotkeys bindings list scrolls
                 // with the wheel while the Options menu is up.
@@ -26932,19 +27269,27 @@ void main()
         if (!string.IsNullOrEmpty(heroName)) env["SIEGEFX_HERO_NAME"] = heroName;
     }
 
-    /// <summary>A co-op launch dresses the hero as this player's saved co-op
-    /// character. False when there is none (or it does not read).</summary>
-    private static bool CoopCharacterLookEnv(IDictionary<string, string?> env)
+    /// <summary>A co-op launch plays the co-op character chosen in the
+    /// staging area: its file travels as SIEGEFX_MP_CHARACTER and its look and
+    /// name dress the hero before the restore. False when none is chosen (or
+    /// it does not read).</summary>
+    private static bool CoopCharacterLookEnv(IDictionary<string, string?> env, string? chosen)
     {
-        var path = SiegeFX.Core.Save.SaveStore.CoopCharacterPath();
-        if (!File.Exists(path)) return false;
+        var path = chosen is not null && File.Exists(chosen) ? chosen : SiegeFX.Core.Save.CoopCharacters.SelectedPath();
+        if (path is null)
+        {
+            var legacy = SiegeFX.Core.Save.SaveStore.CoopCharacterPath();
+            if (!File.Exists(legacy)) return false;
+            path = legacy;
+        }
         try
         {
             HeroLookEnv(env, SiegeFX.Core.Save.SaveStore.Load(path));
-            Console.WriteLine("[hero] co-op hero dressed as this player's saved co-op character");
+            env["SIEGEFX_MP_CHARACTER"] = path;
+            Console.WriteLine($"[hero] co-op hero: the chosen co-op character {Path.GetFileName(path)}");
             return true;
         }
-        catch (Exception ex) { Console.WriteLine($"[hero] saved co-op character not read: {ex.Message}"); return false; }
+        catch (Exception ex) { Console.WriteLine($"[hero] chosen co-op character not read: {ex.Message}"); return false; }
     }
 
     private void LaunchRegionViaRelaunch(string ds1ResourcesDir, MpRelaunch? mp = null)
@@ -27025,11 +27370,11 @@ void main()
             // load path forwarded it before).
             if (!string.IsNullOrEmpty(_creator.HeroName))
                 psi.Environment["SIEGEFX_HERO_NAME"] = _creator.HeroName;
-            // Co-op has no character creator: a multiplayer launch dresses the
-            // hero as this player's saved co-op character, else as the last
+            // A co-op launch plays the co-op character chosen in the staging
+            // area; with none chosen, the hero is new and dressed as the last
             // one made for a single-player game.
             if (mp is null && _creator.Confirmed) SaveLastHeroEnv(psi.Environment);
-            else if (mp is not null && !_creator.Confirmed && !CoopCharacterLookEnv(psi.Environment)) LoadLastHeroEnv(psi.Environment);
+            else if (mp is not null && !CoopCharacterLookEnv(psi.Environment, _mpChosen?.Path) && !_creator.Confirmed) LoadLastHeroEnv(psi.Environment);
             psi.Environment["SIEGEFX_DIFFICULTY"] = _difficulty.ToString();
             // Skip the splash on relaunch — we already saw it.
             psi.Environment["SIEGEFX_NOVIDEO"] = "1";
@@ -29109,6 +29454,7 @@ void main()
                     {
                         // Drawn inside the chrome (FrontendScene.DrawInBox),
                         // between the stone wall and the frame.
+                        _heroPreview.Where = HeroPreviewRenderer.Placement.Creator;
                         _heroPreview.EnsurePreview(_creator.Picker);
                         _heroPreview.Tick(dt);
                     }
@@ -29199,8 +29545,29 @@ void main()
             {
                 // SC-MP-EOS P8 — staging area (roster/chat/settings).
                 if (_iconRenderer is not null && _barRenderer is not null && _textRenderer is not null)
+                {
+                    _mpStaging.Characters.Portrait ??= MpHeroPortrait;
                     _mpStaging.Draw(viewportW, viewportH,
-                        _iconRenderer, _barRenderer, _textRenderer, TryGetGuiTexture);
+                        _iconRenderer, _barRenderer, _textRenderer, TryGetGuiTexture, GetCommonTexture);
+                    // staging_area_create_character.gas character_background: the
+                    // hero being made, turning under a drag.
+                    if (_mpStaging.Characters.Mode == Hud.MpCharacterPanel.View.Create && !_mpStaging.Characters.AskingDelete)
+                    {
+                        if (_heroPreview is null && _gl is not null && _skinShader is not null
+                            && _templateStore is not null && _playResolver is not null)
+                            _heroPreview = new HeroPreviewRenderer(_gl, _skinShader, _templateStore, _playResolver, ResolveActorTexture);
+                        if (_heroPreview is not null)
+                        {
+                            var box = Hud.MpCharacterPanel.PreviewBox;
+                            _heroPreview.Where = new HeroPreviewRenderer.Placement(box.X0, box.Y0, box.X1, box.Y1,
+                                (box.X0 + box.X1) / 2f, box.Y1 - 8, box.Y1 - box.Y0 - 22);
+                            _heroPreview.EnsurePreview(_mpStaging.Characters.Picker);
+                            _heroPreview.Tick(dt);
+                            _heroPreview.Draw(viewportW, viewportH);
+                            _textRenderer.BeginPass();
+                        }
+                    }
+                }
             }
             // Phase 26-VIEWPORT — disable scissor so any HUD layers that
             // intentionally fill the framebuffer (e.g. About overlay's
@@ -42514,6 +42881,7 @@ void main()
                     {
                         // Drawn inside the chrome (FrontendScene.DrawInBox),
                         // between the stone wall and the frame.
+                        _heroPreview.Where = HeroPreviewRenderer.Placement.Creator;
                         _heroPreview.EnsurePreview(_creator.Picker);
                         _heroPreview.Tick((float)dt);
                     }

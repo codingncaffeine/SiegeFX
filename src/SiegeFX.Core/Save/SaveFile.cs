@@ -154,6 +154,24 @@ public sealed class SaveFile
     /// actor (matched by scid when it exists in the region, respawned from
     /// the template when it doesn't) and restores its backpack/equipment.</summary>
     public List<CompanionSnapshot> Party { get; set; } = new();
+
+    /// <summary>A co-op character's line in the Select Character list (null in
+    /// every other save). See <see cref="CoopCharacters"/>.</summary>
+    public CoopCharacterSummary? Coop { get; set; }
+}
+
+/// <summary>What the Select Character list shows of a co-op character without
+/// the game's formulas at hand: the class title and the four skill levels as
+/// of its last save.</summary>
+public sealed class CoopCharacterSummary
+{
+    public string ClassName { get; set; } = "";
+    public int Melee { get; set; }
+    public int Ranged { get; set; }
+    public int NatureMagic { get; set; }
+    public int CombatMagic { get; set; }
+    /// <summary>The single-player save it was imported from, if any.</summary>
+    public string ImportedFrom { get; set; } = "";
 }
 
 /// <summary>v13 SC-PARTY-PERSIST — one recruited companion.</summary>

@@ -36,17 +36,28 @@ internal sealed class HeroPreviewRenderer : IDisposable
     // listener rect: character_select.gas listener 408,73,649,494, placed
     // with the same uniform letterbox as the chrome. Click-drag spins the
     // hero inside it.
-    private const int RefRectX = 408;
-    private const int RefRectY = 73;
-    private const int RefRectW = 649 - 408;
-    private const int RefRectH = 494 - 73;
+    /// <summary>Where the preview stands in the 800×600 reference frame: the
+    /// listener rect that takes the drag, and the hero's centre line, feet
+    /// line and height.</summary>
+    public readonly record struct Placement(int X0, int Y0, int X1, int Y1, float CenterX, float FeetY, float Height)
+    {
+        /// <summary>The single-player creator (character_select.gas listener).</summary>
+        public static readonly Placement Creator = new(408, 73, 649, 494, 528.5f, 489f, 400f);
+    }
+
+    /// <summary>Set by the screen that draws the preview, before it draws.</summary>
+    public Placement Where { get; set; } = Placement.Creator;
+    int RefRectX => Where.X0;
+    int RefRectY => Where.Y0;
+    int RefRectW => Where.X1 - Where.X0;
+    int RefRectH => Where.Y1 - Where.Y0;
 
     // Where the hero stands, in 800×600 reference space: centred on the
     // listener rect as the original centres him, feet on the stone floor
     // at Y 489, about 400 tall so his head clears the top of the box.
-    private const float HeroRefCenterX = 528.5f;
-    private const float HeroRefFeetY = 489f;
-    private const float HeroRefHeight = 400f;
+    float HeroRefCenterX => Where.CenterX;
+    float HeroRefFeetY => Where.FeetY;
+    float HeroRefHeight => Where.Height;
     // The posed body against the bind-pose box (measured on screen): the
     // feet reach 6.4% of the box height below its bottom and the head stops
     // 3.9% below its top, so the body spans 1.025 box heights.
@@ -412,7 +423,7 @@ internal sealed class HeroPreviewRenderer : IDisposable
     public void EndDrag() => _dragging = false;
     public bool IsDragging => _dragging;
 
-    private static (int X, int Y, int W, int H) ScaleRect(int vw, int vh)
+    private (int X, int Y, int W, int H) ScaleRect(int vw, int vh)
     {
         var (dx, dy, scale) = Letterbox(vw, vh);
         return (
