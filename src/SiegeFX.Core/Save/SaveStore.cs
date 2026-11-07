@@ -31,7 +31,8 @@ public static class SaveStore
         catch { return null; }
     }
 
-    public static void Save(string path, SaveFile data)
+    /// <param name="backupPath">When set, the file being replaced is kept there.</param>
+    public static void Save(string path, SaveFile data, string? backupPath = null)
     {
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
@@ -43,7 +44,7 @@ public static class SaveStore
         // they share a volume by construction.
         var tmp = path + ".tmp";
         File.WriteAllText(tmp, JsonSerializer.Serialize(data, Json));
-        if (File.Exists(path)) File.Replace(tmp, path, destinationBackupFileName: null);
+        if (File.Exists(path)) File.Replace(tmp, path, destinationBackupFileName: backupPath);
         else                    File.Move(tmp, path);
     }
 
@@ -106,6 +107,12 @@ public static class SaveStore
     /// save and reads it on each load.</summary>
     public static string QuicksavePath()
         => Path.Combine(DefaultSaveDirectory(), "quicksave.save");
+
+    /// <summary>This player's co-op character (the hero alone, no world), kept
+    /// on this machine and carried into every co-op game this player hosts or
+    /// joins. A folder of its own keeps it out of the Load Game list.</summary>
+    public static string CoopCharacterPath()
+        => Path.Combine(DefaultSaveDirectory(), "Multiplayer", "character.save");
 
     /// <summary>One row in the Save/Load Game window's list. <see cref="Path"/>
     /// is the file to load/delete; <see cref="DisplayName"/> is the player-typed
@@ -171,9 +178,11 @@ public static class SaveStore
     /// newest first. Unreadable / partially-written files are skipped rather
     /// than throwing so one corrupt slot can't blank the whole list. The
     /// quicksave is included and flagged.</summary>
-    public static IReadOnlyList<SaveSlot> ListSaves()
+    public static IReadOnlyList<SaveSlot> ListSaves() => ListSaves(DefaultSaveDirectory());
+
+    /// <summary>The saves directly in <paramref name="dir"/> (not its subfolders).</summary>
+    public static IReadOnlyList<SaveSlot> ListSaves(string dir)
     {
-        var dir = DefaultSaveDirectory();
         if (!Directory.Exists(dir)) return System.Array.Empty<SaveSlot>();
         var quickName = Path.GetFileName(QuicksavePath());
         var slots = new List<SaveSlot>();

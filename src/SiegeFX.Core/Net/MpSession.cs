@@ -53,6 +53,12 @@ public sealed class MpSession : IDisposable
     /// <summary>Client: host pressed START — leave staging, relaunch into the
     /// region and reconnect. (regionPath, difficulty).</summary>
     public Action<string, int>? OnGameStart;
+    /// <summary>Client: the host left and the game is over (<see cref="MpMsg.GameEnd"/>).</summary>
+    public Action? OnGameEnded;
+    /// <summary>Client: seconds since the last frame from the host. The host
+    /// sends at least a bare world update twice a second, so a long silence
+    /// means the host is gone even when no <see cref="MpMsg.GameEnd"/> came.</summary>
+    public double SecondsSinceHost { get; private set; }
     /// <summary>Host: is this remote player outside the host's view? Marks the
     /// player in the pose frames (the co-op leash).</summary>
     public Func<int, bool>? IsPlayerOutOfView;
@@ -374,9 +380,11 @@ public sealed class MpSession : IDisposable
     /// Call once per engine frame with the frame dt.</summary>
     public void Tick(double dt)
     {
+        SecondsSinceHost += dt;
         while (_t.TryReceive(out int peer, out var data))
         {
             Stats.Received(peer, data);
+            if (!IsHost) SecondsSinceHost = 0;
             Handle(peer, data);
         }
 
@@ -637,6 +645,17 @@ public sealed class MpSession : IDisposable
     void Broadcast(byte[] frame)
     {
         foreach (var peer in _t.Peers) Out(peer, frame);
+    }
+
+    /// <summary>Host: tell everyone the game is over (the host is leaving).
+    /// Three copies: a LAN datagram can be lost and the host does not stay to
+    /// resend, and a repeat is harmless. The caller keeps the transport pumping
+    /// a moment so they go out before the connections close.</summary>
+    public void EndGame()
+    {
+        if (!IsHost) return;
+        for (int i = 0; i < 3; i++) Broadcast(new[] { (byte)MpMsg.GameEnd });
+        NetLog.Info($"session: told {_t.Peers.Count} peer(s) the game is over");
     }
 
     void Handle(int peer, byte[] data)
@@ -904,6 +923,12 @@ public sealed class MpSession : IDisposable
             {
                 if (!_joined) return;
                 if (_world.Take(data, out var now, out var before)) UseWorldUpdate(now, before);
+                break;
+            }
+            case MpMsg.GameEnd when !IsHost:
+            {
+                NetLog.Info("session: the host ended the game");
+                OnGameEnded?.Invoke();
                 break;
             }
             case MpMsg.GameStart when !IsHost:

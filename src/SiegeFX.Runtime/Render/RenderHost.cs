@@ -6619,6 +6619,7 @@ public sealed class RenderHost : IDisposable
             session.OnLootGone = MpOnLootGoneClient;
         }
         if (!asHost) { session.ApplyDelta = MpApplyWorldDelta; session.OnActorsLeft = MpOnActorsLeft; } // host-owned enemies
+        if (!asHost) session.OnGameEnded = () => MpGameOver("THE HOST HAS ENDED THE GAME.", "the host ended the game");
         if (!asHost) session.OnJoinAccepted = id =>
         {
             MpRemoveRemoteAvatar(id, "it is this machine's own player"); // never draw ourselves as a remote player
@@ -6735,14 +6736,14 @@ public sealed class RenderHost : IDisposable
     private const float LeashViewMargin = 1.2f;
 
     // The host's co-op world saves itself (manual saves are off in a
-    // multiplayer game): every few minutes and on close, into a slot of its
-    // own so the single-player autosave is never touched. A saved game hosts
-    // again later.
+    // multiplayer game): every few minutes, at the authored checkpoints and
+    // on close, into a slot of its own so the single-player autosave is never
+    // touched. A saved game hosts again later.
     private const double MpAutoSaveInterval = 300;
     private const string MpAutoSaveFile = "multiplayer_autosave.save";
     private double _mpAutoSaveTimer;
 
-    private void MpHostAutoSave(string why)
+    private void MpHostAutoSave(string why, bool toast = false)
     {
         if (_mpNetSession is not { IsHost: true } || !InMultiplayerGame || _player is null || _bootMode) return;
         try
@@ -6753,8 +6754,156 @@ public sealed class RenderHost : IDisposable
             var path = Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), MpAutoSaveFile);
             SiegeFX.Core.Save.SaveStore.Save(path, save);
             SiegeFX.Core.Net.NetLog.Info($"mp: the game saved itself ({why}) -> {path}");
+            if (toast) { _saveToastText = "Auto-saving..."; _saveToastRemaining = SaveToastDuration; }
         }
         catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"mp: the game could not save itself ({why}): {ex.Message}"); }
+    }
+
+    // Every player's co-op character is their own and lives on their own
+    // machine, host and joiners alike (the original kept multiplayer
+    // characters the same way: "If you or the host exits, character's
+    // attributes, skills, and Inventory items are saved"). It is checked
+    // every half minute and written when it changed, and written on close and
+    // when the game ends; the next co-op game this player hosts or joins
+    // starts with it. Nothing is written until the saved one is on the player,
+    // so a slow or failed load can never overwrite it with a new hero.
+    private const double MpCharacterCheckInterval = 30;
+    private double _mpCharacterTimer;
+    private bool _mpCharacterRestored;
+    private string? _mpCharacterLast;
+
+    /// <summary>Put this player's saved co-op character on the player, once,
+    /// as the co-op game starts. No file: the hero is new. A file that will
+    /// not load is kept aside under another name, never overwritten.</summary>
+    private void MpRestoreCharacter()
+    {
+        if (_mpCharacterRestored || !InMultiplayerGame || _player is null || _bootMode) return;
+        _mpCharacterRestored = true;
+        var path = SiegeFX.Core.Save.SaveStore.CoopCharacterPath();
+        if (!File.Exists(path)) { SiegeFX.Core.Net.NetLog.Info("mp: no saved co-op character on this machine; this hero is new"); return; }
+        try
+        {
+            var save = SiegeFX.Core.Save.SaveStore.Load(path);
+            if (save.Player is null) throw new InvalidDataException("the file holds no hero");
+            RestoreHero(save.Player, save.DisplayName, null, coopCharacter: true);
+            _mpCharacterLast = MpCharacterKey(save.Player);
+            SiegeFX.Core.Net.NetLog.Info($"mp: co-op character restored: '{_heroName}', level {_progression?.Level ?? 0}, " +
+                $"{_playerInventory.Count} carried, {_progression?.Gold ?? 0} gold, worn: " +
+                string.Join(", ", _playerEquipment.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}={kv.Value}")));
+        }
+        catch (Exception ex)
+        {
+            string aside = path + $".unreadable-{DateTime.Now:yyyyMMdd-HHmmss}";
+            try { File.Move(path, aside); } catch { aside = path; }
+            SiegeFX.Core.Net.NetLog.Warn($"mp: the saved co-op character did not load ({ex.Message}); kept as {aside}; this hero is new");
+        }
+    }
+
+    /// <summary>The co-op character as saved: the hero without the parts that
+    /// belong to the world it was played in (journal, picked-up world items,
+    /// camera, facing, a summon, being knocked out).</summary>
+    private SiegeFX.Core.Save.PlayerSnapshot? MpCaptureCharacter()
+    {
+        var hero = CapturePlayerSnapshot();
+        if (hero is null) return null;
+        hero.Quests.Clear();
+        hero.ConsumedInventoryScids.Clear();
+        hero.SummonScid = 0; hero.SummonEndScript = "";
+        hero.Downed = false;
+        hero.Facing = default; hero.CameraPos = default;
+        hero.CameraMode = 0; hero.ChaseYaw = 0; hero.ChaseDistance = 0; hero.ChaseHeight = 0;
+        hero.CameraYaw = 0; hero.CameraPitch = 0;
+        hero.Scid = 0;
+        return hero;
+    }
+
+    private static string MpCharacterKey(SiegeFX.Core.Save.PlayerSnapshot hero) =>
+        System.Text.Json.JsonSerializer.Serialize(hero);
+
+    /// <summary>Write this player's co-op character when it changed since the
+    /// last write. False when the write failed; the last good file and its
+    /// backup stay.</summary>
+    private bool MpSaveCharacter(string why)
+    {
+        if (!_mpCharacterRestored || !InMultiplayerGame || _player is null || _bootMode) return true;
+        try
+        {
+            var hero = MpCaptureCharacter();
+            if (hero is null) return true;
+            string key = MpCharacterKey(hero);
+            if (key == _mpCharacterLast) return true;
+            var save = new SiegeFX.Core.Save.SaveFile
+            {
+                SchemaVersion = SiegeFX.Core.Save.SaveFile.CurrentSchemaVersion,
+                SavedAt = DateTime.UtcNow,
+                DisplayName = $"Co-op character: {_heroName}",
+                HeroName = _heroName,
+                Difficulty = _difficulty.ToString(),
+                Player = hero,
+            };
+            var path = SiegeFX.Core.Save.SaveStore.CoopCharacterPath();
+            SiegeFX.Core.Save.SaveStore.Save(path, save, backupPath: path + ".bak");
+            _mpCharacterLast = key;
+            SiegeFX.Core.Net.NetLog.Info($"mp: co-op character saved ({why}): '{_heroName}', level {hero.Level}, " +
+                $"{hero.Inventory.Count} items, {hero.Gold} gold -> {path}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            SiegeFX.Core.Net.NetLog.Warn($"mp: the co-op character could not be saved ({why}): {ex.Message}");
+            return false;
+        }
+    }
+
+    /// <summary>Host leaving: everyone's game is over (the original: "If the
+    /// host exits, the game ends"). The message goes out on the reliable lane
+    /// and the transport is pumped a moment so it leaves before the
+    /// connections close; a joiner who misses it notices the silence. Only
+    /// from the game itself: the staging host also closes when START
+    /// relaunches it into the region, and that game goes on.</summary>
+    private void MpEndGameForAll()
+    {
+        if (!InMultiplayerGame || _bootMode) return;
+        if (_mpNetSession is not { IsHost: true } s || _mpTransport is null || _mpTransport.Peers.Count == 0) return;
+        try
+        {
+            s.EndGame();
+            var until = Environment.TickCount64 + 300;
+            while (Environment.TickCount64 < until)
+            {
+                _eosTick?.Invoke();
+                MpPumpEos(_mpTransport);
+                System.Threading.Thread.Sleep(10);
+            }
+        }
+        catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"mp: telling the others the game is over failed: {ex.Message}"); }
+    }
+
+    // Joiner: how long the host may stay silent. A few seconds: save the
+    // character now, in case the host is gone. Half a minute: the game is
+    // over (a hitch or a region load on the host lasts far less).
+    private const double MpHostQuietSaveSeconds = 5;
+    private const double MpHostGoneSeconds = 30;
+    private bool _mpSavedForQuietHost;
+    private bool _mpGameOver;
+
+    /// <summary>The exit question in a co-op game: leaving saves there, and
+    /// the host leaving ends the game for everyone. Null in single player.</summary>
+    private (string L1, string L2)? MpExitConfirmLines() =>
+        !InMultiplayerGame ? null
+        : _mpNetSession is { IsHost: true } ? ("END THE GAME FOR EVERYONE?", "THE GAME IS SAVED ON EXIT.")
+        : ("LEAVE THIS GAME?", "YOUR CHARACTER IS SAVED.");
+
+    /// <summary>Joiner: the game is over (the host ended it or stopped
+    /// answering). Save the character, say so, and leave for the main menu
+    /// on OK.</summary>
+    private void MpGameOver(string line1, string why)
+    {
+        if (_mpGameOver) return;
+        _mpGameOver = true;
+        bool saved = MpSaveCharacter(why);
+        SiegeFX.Core.Net.NetLog.Info($"in-region: the game is over ({why})");
+        _pauseMenu.ShowNotice(line1, saved ? "YOUR CHARACTER IS SAVED." : "YOUR LAST SAVED CHARACTER IS KEPT.");
     }
 
     // Client: placed beside the host once, as soon as the host's pose is known.
@@ -6835,7 +6984,15 @@ public sealed class RenderHost : IDisposable
         if (_mpNetSession is { IsHost: true })
         {
             _mpAutoSaveTimer += _frameDtSeconds;
-            if (_mpAutoSaveTimer >= MpAutoSaveInterval) { _mpAutoSaveTimer = 0; MpHostAutoSave("every 5 minutes"); }
+            if (_mpAutoSaveTimer >= MpAutoSaveInterval) { _mpAutoSaveTimer = 0; MpHostAutoSave("every 5 minutes", toast: true); }
+        }
+        _mpCharacterTimer += _frameDtSeconds;
+        if (_mpCharacterTimer >= MpCharacterCheckInterval) { _mpCharacterTimer = 0; MpSaveCharacter("every half minute when changed"); }
+        if (_mpNetSession is { IsHost: false, Joined: true } js && !_mpGameOver)
+        {
+            if (js.SecondsSinceHost < MpHostQuietSaveSeconds) _mpSavedForQuietHost = false;
+            else if (!_mpSavedForQuietHost) { _mpSavedForQuietHost = true; MpSaveCharacter("the host went quiet"); }
+            if (js.SecondsSinceHost >= MpHostGoneSeconds) MpGameOver("THE HOST STOPPED ANSWERING.", "no word from the host for 30 s");
         }
         MpForwardRemoteAvatarDamage();
         MpInterpolateRemoteActors((float)_frameDtSeconds);
@@ -10352,7 +10509,37 @@ void main()
         _window.Closing += OnClosing;
     }
 
-    public void Run() => _window.Run();
+    public void Run()
+    {
+        // A logout, a shutdown, a closed terminal or Ctrl+C asks the game to
+        // stop: close the window the normal way so everything that saves on
+        // close runs (a co-op character, the host's world). A second ask, or
+        // a close that hangs, ends the process.
+        var asks = new List<IDisposable>();
+        foreach (var sig in new[] { System.Runtime.InteropServices.PosixSignal.SIGTERM,
+                                    System.Runtime.InteropServices.PosixSignal.SIGHUP,
+                                    System.Runtime.InteropServices.PosixSignal.SIGINT })
+        {
+            try { asks.Add(System.Runtime.InteropServices.PosixSignalRegistration.Create(sig, OnStopAsked)); }
+            catch (Exception ex) when (ex is PlatformNotSupportedException or IOException) { }
+        }
+        try { _window.Run(); }
+        finally { foreach (var a in asks) a.Dispose(); }
+    }
+
+    private volatile bool _stopAsked;
+    private void OnStopAsked(System.Runtime.InteropServices.PosixSignalContext ctx)
+    {
+        if (_stopAsked) return;   // asked twice: let it end the process
+        _stopAsked = true;
+        ctx.Cancel = true;
+        Console.WriteLine($"[app] {ctx.Signal}: closing the window (saves on close run)");
+        _ = Task.Delay(10_000).ContinueWith(_ =>
+        {
+            Console.WriteLine("[app] the close took over 10 s: ending the process");
+            Environment.Exit(1);
+        }, TaskScheduler.Default);
+    }
 
     // Deferred window-icon application. Decoded once at load; re-applied over
     // the first frames of the live loop because GLFW only updates the Windows
@@ -10760,7 +10947,12 @@ void main()
                     else if (InMultiplayerGame && _defeatPhase == DefeatPhase.DialogClosed
                              && !_pauseMenu.IsOpen && PartyWiped())
                         _defeatPhase = DefeatPhase.Dialog;
-                    else { _pauseMenu.SaveLoadDisabled = InMultiplayerGame; _pauseMenu.Toggle(); }
+                    else
+                    {
+                        _pauseMenu.SaveLoadDisabled = InMultiplayerGame;
+                        _pauseMenu.ExitConfirmLines = MpExitConfirmLines();
+                        _pauseMenu.Toggle();
+                    }
                 }
                 // SC-KEY-AUDIT — the character pane rides its own registry
                 // action now (default P). Its old hardcoded C sat EARLIER in
@@ -18669,9 +18861,12 @@ void main()
     private bool _autoSaveRequested;
     private void TryAutoSave()
     {
-        if (_player is null || InMultiplayerGame) return;   // a co-op world is not a single-player save
+        if (_player is null) return;
         if (_playSeconds - _lastAutoSaveAt < 30) return;
         _lastAutoSaveAt = _playSeconds;
+        // A co-op world is not a single-player save: a checkpoint saves the
+        // host's world and this player's character into their own slots.
+        if (InMultiplayerGame) { MpHostAutoSave("checkpoint", toast: true); MpSaveCharacter("checkpoint"); return; }
         try
         {
             var path = Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "autosave.save");
@@ -24785,6 +24980,7 @@ void main()
 
     private void OnUpdate(double dt)
     {
+        if (_stopAsked && !_glDisposed) { _window.Close(); return; }
         // Re-apply the window/taskbar icon across the first frames of the live
         // loop. GLFW only pushes the icon to the Windows taskbar if events are
         // polled within ~500ms of SetWindowIcon (glfw#2753); OnLoad sets it
@@ -24835,6 +25031,7 @@ void main()
         if (_mpInRegionRole is not null && !_mpInRegionDone && _player is not null
             && !_bootMode && !string.IsNullOrEmpty(_regionPath))
         {
+            MpRestoreCharacter();
             _mpInRegionDone = MpInRegionInit();
         }
         if (_mpNetSession is not null && !_bootMode) TickMpInRegion();
@@ -26706,6 +26903,50 @@ void main()
         catch (Exception ex) { Console.WriteLine($"[hero] last hero not loaded: {ex.Message}"); }
     }
 
+    /// <summary>Forward a saved hero's appearance and name to a relaunch so
+    /// the spawned body matches the save before the state patch lands. Null
+    /// variant = stock farmboy (leave the envs unset, exactly like a default
+    /// New Game).</summary>
+    private static void HeroLookEnv(IDictionary<string, string?> env, SiegeFX.Core.Save.SaveFile save)
+    {
+        if (save.Player?.Variant is { } v)
+        {
+            env["SIEGEFX_HERO_GENDER"] = v.Gender;
+            if (v.BodyTypeIdx >= 0) env["SIEGEFX_HERO_BODY"] = (v.BodyTypeIdx + 1).ToString();
+            if (!string.IsNullOrEmpty(v.SkinSuffix))  env["SIEGEFX_HERO_SKIN"]  = v.SkinSuffix;
+            if (!string.IsNullOrEmpty(v.PantsSuffix)) env["SIEGEFX_HERO_PANTS"] = v.PantsSuffix;
+            // SC-CD-PERSIST (load side) — the composite axes are the look
+            // the body actually renders with. Forward the full set so EVERY
+            // character loads looking right from frame 0.
+            if (v.FaceIdx >= 0)
+            {
+                env["SIEGEFX_HERO_FACE"]     = v.FaceIdx.ToString();
+                env["SIEGEFX_HERO_STYLE"]    = Math.Max(0, v.StyleIdx).ToString();
+                env["SIEGEFX_HERO_COLOR"]    = Math.Max(0, v.ColorIdx).ToString();
+                env["SIEGEFX_HERO_SHIRT"]    = Math.Max(0, v.ShirtIdx).ToString();
+                env["SIEGEFX_HERO_PANTSIDX"] = Math.Max(0, v.PantsIdx).ToString();
+            }
+        }
+        string heroName = save.HeroName;
+        if (string.IsNullOrEmpty(heroName)) heroName = save.Player?.HeroName ?? "";
+        if (!string.IsNullOrEmpty(heroName)) env["SIEGEFX_HERO_NAME"] = heroName;
+    }
+
+    /// <summary>A co-op launch dresses the hero as this player's saved co-op
+    /// character. False when there is none (or it does not read).</summary>
+    private static bool CoopCharacterLookEnv(IDictionary<string, string?> env)
+    {
+        var path = SiegeFX.Core.Save.SaveStore.CoopCharacterPath();
+        if (!File.Exists(path)) return false;
+        try
+        {
+            HeroLookEnv(env, SiegeFX.Core.Save.SaveStore.Load(path));
+            Console.WriteLine("[hero] co-op hero dressed as this player's saved co-op character");
+            return true;
+        }
+        catch (Exception ex) { Console.WriteLine($"[hero] saved co-op character not read: {ex.Message}"); return false; }
+    }
+
     private void LaunchRegionViaRelaunch(string ds1ResourcesDir, MpRelaunch? mp = null)
     {
         try
@@ -26785,9 +27026,10 @@ void main()
             if (!string.IsNullOrEmpty(_creator.HeroName))
                 psi.Environment["SIEGEFX_HERO_NAME"] = _creator.HeroName;
             // Co-op has no character creator: a multiplayer launch dresses the
-            // hero as the last one made for a single-player game.
+            // hero as this player's saved co-op character, else as the last
+            // one made for a single-player game.
             if (mp is null && _creator.Confirmed) SaveLastHeroEnv(psi.Environment);
-            else if (mp is not null && !_creator.Confirmed) LoadLastHeroEnv(psi.Environment);
+            else if (mp is not null && !_creator.Confirmed && !CoopCharacterLookEnv(psi.Environment)) LoadLastHeroEnv(psi.Environment);
             psi.Environment["SIEGEFX_DIFFICULTY"] = _difficulty.ToString();
             // Skip the splash on relaunch — we already saw it.
             psi.Environment["SIEGEFX_NOVIDEO"] = "1";
@@ -26888,33 +27130,7 @@ void main()
             psi.ArgumentList.Add(objects);
             psi.ArgumentList.Add(regionPath);
 
-            // Forward the saved hero appearance so the spawned body matches the
-            // save before the state patch lands. Null variant = stock farmboy
-            // (leave the envs unset, exactly like a default New Game).
-            if (save.Player?.Variant is { } v)
-            {
-                psi.Environment["SIEGEFX_HERO_GENDER"] = v.Gender;
-                if (v.BodyTypeIdx >= 0) psi.Environment["SIEGEFX_HERO_BODY"] = (v.BodyTypeIdx + 1).ToString();
-                if (!string.IsNullOrEmpty(v.SkinSuffix))  psi.Environment["SIEGEFX_HERO_SKIN"]  = v.SkinSuffix;
-                if (!string.IsNullOrEmpty(v.PantsSuffix)) psi.Environment["SIEGEFX_HERO_PANTS"] = v.PantsSuffix;
-                // SC-CD-PERSIST (load side) — the composite axes are the look
-                // the body actually renders with. The New Game relaunch always
-                // forwarded them; this path forwarded only the legacy suffixes,
-                // so a cross-session load spawned a default-look body and
-                // depended on the ApplySave patch to fix it later. Forward the
-                // full set so EVERY character loads looking right from frame 0.
-                if (v.FaceIdx >= 0)
-                {
-                    psi.Environment["SIEGEFX_HERO_FACE"]     = v.FaceIdx.ToString();
-                    psi.Environment["SIEGEFX_HERO_STYLE"]    = Math.Max(0, v.StyleIdx).ToString();
-                    psi.Environment["SIEGEFX_HERO_COLOR"]    = Math.Max(0, v.ColorIdx).ToString();
-                    psi.Environment["SIEGEFX_HERO_SHIRT"]    = Math.Max(0, v.ShirtIdx).ToString();
-                    psi.Environment["SIEGEFX_HERO_PANTSIDX"] = Math.Max(0, v.PantsIdx).ToString();
-                }
-            }
-            string heroName = save.HeroName;
-            if (string.IsNullOrEmpty(heroName)) heroName = save.Player?.HeroName ?? "";
-            if (!string.IsNullOrEmpty(heroName)) psi.Environment["SIEGEFX_HERO_NAME"] = heroName;
+            HeroLookEnv(psi.Environment, save);
             psi.Environment["SIEGEFX_LOAD_SAVE"] = savePath;
             psi.Environment["SIEGEFX_NOVIDEO"] = "1";
             psi.Environment["SIEGEFX_CREATOR"] = "0";
@@ -27235,6 +27451,7 @@ void main()
             case "exit":
                 _defeatPhase = DefeatPhase.DialogClosed;
                 _pauseMenu.SaveLoadDisabled = true;
+                _pauseMenu.ExitConfirmLines = MpExitConfirmLines();
                 _pauseMenu.IsOpen = true;
                 _pauseMenu.BeginExitConfirm();
                 break;
@@ -43294,9 +43511,13 @@ void main()
         if (_glDisposed) return;
         _glDisposed = true;
 
-        // A multiplayer game: the host's world saves itself, then everyone
-        // leaves cleanly (the listing goes, the others see this player go).
+        // A multiplayer game: this player's character and the host's world
+        // save themselves, the host tells everyone the game is over, then
+        // everyone leaves cleanly (the listing goes, the others see this
+        // player go).
+        MpSaveCharacter("on close");
         MpHostAutoSave("on close");
+        MpEndGameForAll();
         if (_mpNetSession is not null || _mpLobby is not null || _mpTransport is not null)
         {
             try { MpTearDownSession(); }
@@ -43526,6 +43747,163 @@ void main()
         return _regionPath ?? "";
     }
 
+    /// <summary>The hero alone, as a save holds it: level, skills, attributes,
+    /// pack, worn gear, gold, spells, journal, name and look. Null with no player.</summary>
+    private SiegeFX.Core.Save.PlayerSnapshot? CapturePlayerSnapshot()
+    {
+        if (_player is null) return null;
+        var p = new SiegeFX.Core.Save.PlayerSnapshot
+        {
+            Scid          = _player.Actor.Instance.Scid,
+            TotalXp       = _progression?.TotalXp ?? 0,
+            Level         = _progression?.Level ?? 1,
+            Downed        = _player.Actor.Combat.Downed,   // SC-DOWNED
+            // SC-EQUIP-ENCHANT — snapshot NATURAL attributes (worn-gear
+            // alterations subtracted); the load path recomputes caps from
+            // the trio and the post-load equipment sync re-applies gear.
+            Strength      = _player.Actor.Stats.Strength     - _appliedEnchant.Str,
+            Dexterity     = _player.Actor.Stats.Dexterity    - _appliedEnchant.Dex,
+            Intelligence  = _player.Actor.Stats.Intelligence - _appliedEnchant.Int,
+            // Per-skill XP pools so attribute growth resumes from the right
+            // per-skill levels on load (see PlayerProgression.AwardXp).
+            SkillXp       = _progression is null
+                ? new System.Collections.Generic.List<long>()
+                : new System.Collections.Generic.List<long>(_progression.SkillXpSnapshot()),
+            Facing        = SiegeFX.Core.Save.Vec3.From(_playerFacing),
+            CameraMode    = (int)_cameraMode,
+            ChaseYaw      = _chaseYaw,
+            ChaseDistance = _chaseDistance,
+            ChaseHeight   = _chaseHeight,
+            CameraPos     = SiegeFX.Core.Save.Vec3.From(_camera.Position),
+            CameraYaw     = _camera.Yaw,
+            CameraPitch   = _camera.Pitch,
+            ActiveSlot    = _activeAbilityIdx,
+            // SC-FC-HERO — the hero's standing field-command orders.
+            MoveOrder     = FcOrderToInt(_player.FcMovement),
+            AtkOrder      = FcOrderToInt(_player.FcAttack),
+            TgtOrder      = FcOrderToInt(_player.FcTargeting),
+        };
+        // Inventory + equipment fold into the same flat list the loot
+        // path uses. On load, equipped items get re-wired by walking
+        // entries with es_-style slots; non-equipped items stay as
+        // inventory rows. Equipment lives in _playerEquipment as
+        // (es_slot -> ref); convert each to an entry whose Slot drops
+        // the es_ prefix so the round-trip matches LootEntry shape.
+        foreach (var item in _playerInventory)
+            p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
+            {
+                Slot      = item.Slot,
+                Reference = item.Reference,
+                Fill      = item.Fill,
+                BookSpells = item.BookSpells,
+            });
+        // An item mid-drag lives NOWHERE (pickup removed it from its
+        // container) — fold it into the pack row so an F5 while
+        // dragging can't silently delete it from the save.
+        if (_cursorItem is { } heldItem)
+            p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
+            { Slot = "", Reference = heldItem.Reference, Fill = heldItem.Fill, BookSpells = heldItem.BookSpells });
+        if (_cursorScroll is not null)
+            p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
+            { Slot = "", Reference = _cursorScroll.Name });
+        // An item a scripted beat put in the hero's hand (the intro's hoe, an
+        // ai_c_equip prop) is the scene's, not his: the save holds his own
+        // gear in that slot, which the beat set aside and gives back after.
+        var worn = new Dictionary<string, string>(_playerEquipment, StringComparer.OrdinalIgnoreCase);
+        if (_introHoeSwapped)
+        {
+            if (_introHoeOrigWeapon is not null) worn["es_weapon_hand"] = _introHoeOrigWeapon;
+            else worn.Remove("es_weapon_hand");
+        }
+        if (_commandHeldItem is { } lent)
+        {
+            if (lent.Original is not null) worn[lent.Slot] = lent.Original;
+            else worn.Remove(lent.Slot);
+        }
+        foreach (var kv in worn)
+        {
+            var slot = kv.Key.StartsWith("es_", StringComparison.OrdinalIgnoreCase)
+                ? kv.Key.Substring(3) : kv.Key;
+            p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
+            {
+                Slot      = "equipped:" + slot,
+                Reference = kv.Value,
+            });
+        }
+
+        if (_playerSpellbook is not null)
+        {
+            var snapshot = new SiegeFX.Core.Save.SpellbookSnapshot
+            {
+                PrimarySpell      = _playerSpellbook.Primary?.Name,
+                SecondarySpell    = _playerSpellbook.Secondary?.Name,
+                PrimaryCooldown   = _playerSpellbook.PrimaryCooldownRemaining,
+                SecondaryCooldown = _playerSpellbook.SecondaryCooldownRemaining,
+            };
+            // Phase 21-SC-SCROLL-G — persist Placed[] alongside the actives
+            // so a quicksave round-trips the user's spellbook layout. Null
+            // entries are written as JSON null and stay null on load.
+            for (int p_i = 0; p_i < _playerSpellbook.PlacedCount; p_i++)
+                snapshot.Placed.Add(_playerSpellbook.Placed[p_i]?.Name);
+            p.Spellbook = snapshot;
+        }
+
+        if (_progression is not null)
+        {
+            foreach (var entry in _progression.Journal.Entries)
+                p.Quests.Add(new SiegeFX.Core.Save.QuestSnapshot
+                {
+                    Key            = entry.Key,
+                    State          = entry.State,
+                    KillProgress   = entry.KillProgress,
+                    TalkProgress   = entry.TalkProgress,
+                    PickupProgress = entry.PickupProgress,
+                    DialogueLog    = new List<string>(entry.DialogueLog), // ALPHA-2G
+                });
+            p.Gold = _progression.Gold;
+        }
+
+        // SC-WORLD-INVENTORY-CONSUMED — persist picked-up world-inventory
+        // SCIDs so the fireshot scroll the player grabbed in fh_r1's
+        // basement stays gone across save-reload. On load, these SCIDs
+        // gate LoadWorldInventory's re-spawn pass.
+        if (_consumedInventoryScids is not null && _consumedInventoryScids.Count > 0)
+            p.ConsumedInventoryScids = new List<uint>(_consumedInventoryScids);
+
+        // 21d-2a-viii-c — hero name + variant pick from the creator (or
+        // env-var spawn). Empty/null when the creator was bypassed; the
+        // load path treats that as "no override" too.
+        p.HeroName = _heroName;
+        // SC-CD-PERSIST — snapshot the LIVE picker (the composite look the
+        // body actually renders with), not just the legacy suffix axes.
+        // A null picker (creator bypassed) writes no Variant at all, so a
+        // load can't restore garbage.
+        var snapPick = _playerPicker ?? _heroVariant;
+        if (snapPick is not null)
+        {
+            p.Variant = new SiegeFX.Core.Save.HeroVariantSnapshot
+            {
+                Gender      = snapPick.Gender == HeroGender.Girl ? "girl" : "boy",
+                BodyTypeIdx = snapPick.BodyTypeIdx,
+                SkinSuffix  = snapPick.SkinSuffix,
+                PantsSuffix = snapPick.PantsSuffix,
+                FaceIdx     = snapPick.FaceIdx,
+                StyleIdx    = snapPick.StyleIdx,
+                ColorIdx    = snapPick.ColorIdx,
+                ShirtIdx    = snapPick.ShirtIdx,
+                PantsIdx    = snapPick.PantsIdx,
+            };
+        }
+        // SC-SUMMON-UI — the live summon rides the save (its actor row
+        // is captured with every other actor; this rebinds control).
+        if (PlayerSummon is { } psmn)
+        {
+            p.SummonScid      = psmn.Actor.Instance.Scid;
+            p.SummonEndScript = psmn.SummonEndScript;
+        }
+        return p;
+    }
+
     internal SiegeFX.Core.Save.SaveFile CaptureSave()
     {
         var save = new SiegeFX.Core.Save.SaveFile
@@ -43711,145 +44089,7 @@ void main()
             save.LootPiles.Add(pileSnap);
         }
 
-        if (_player is not null)
-        {
-            var p = new SiegeFX.Core.Save.PlayerSnapshot
-            {
-                Scid          = _player.Actor.Instance.Scid,
-                TotalXp       = _progression?.TotalXp ?? 0,
-                Level         = _progression?.Level ?? 1,
-                Downed        = _player.Actor.Combat.Downed,   // SC-DOWNED
-                // SC-EQUIP-ENCHANT — snapshot NATURAL attributes (worn-gear
-                // alterations subtracted); the load path recomputes caps from
-                // the trio and the post-load equipment sync re-applies gear.
-                Strength      = _player.Actor.Stats.Strength     - _appliedEnchant.Str,
-                Dexterity     = _player.Actor.Stats.Dexterity    - _appliedEnchant.Dex,
-                Intelligence  = _player.Actor.Stats.Intelligence - _appliedEnchant.Int,
-                // Per-skill XP pools so attribute growth resumes from the right
-                // per-skill levels on load (see PlayerProgression.AwardXp).
-                SkillXp       = _progression is null
-                    ? new System.Collections.Generic.List<long>()
-                    : new System.Collections.Generic.List<long>(_progression.SkillXpSnapshot()),
-                Facing        = SiegeFX.Core.Save.Vec3.From(_playerFacing),
-                CameraMode    = (int)_cameraMode,
-                ChaseYaw      = _chaseYaw,
-                ChaseDistance = _chaseDistance,
-                ChaseHeight   = _chaseHeight,
-                CameraPos     = SiegeFX.Core.Save.Vec3.From(_camera.Position),
-                CameraYaw     = _camera.Yaw,
-                CameraPitch   = _camera.Pitch,
-                ActiveSlot    = _activeAbilityIdx,
-                // SC-FC-HERO — the hero's standing field-command orders.
-                MoveOrder     = FcOrderToInt(_player.FcMovement),
-                AtkOrder      = FcOrderToInt(_player.FcAttack),
-                TgtOrder      = FcOrderToInt(_player.FcTargeting),
-            };
-            // Inventory + equipment fold into the same flat list the loot
-            // path uses. On load, equipped items get re-wired by walking
-            // entries with es_-style slots; non-equipped items stay as
-            // inventory rows. Equipment lives in _playerEquipment as
-            // (es_slot -> ref); convert each to an entry whose Slot drops
-            // the es_ prefix so the round-trip matches LootEntry shape.
-            foreach (var item in _playerInventory)
-                p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
-                {
-                    Slot      = item.Slot,
-                    Reference = item.Reference,
-                    Fill      = item.Fill,
-                    BookSpells = item.BookSpells,
-                });
-            // An item mid-drag lives NOWHERE (pickup removed it from its
-            // container) — fold it into the pack row so an F5 while
-            // dragging can't silently delete it from the save.
-            if (_cursorItem is { } heldItem)
-                p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
-                { Slot = "", Reference = heldItem.Reference, Fill = heldItem.Fill, BookSpells = heldItem.BookSpells });
-            if (_cursorScroll is not null)
-                p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
-                { Slot = "", Reference = _cursorScroll.Name });
-            foreach (var kv in _playerEquipment)
-            {
-                var slot = kv.Key.StartsWith("es_", StringComparison.OrdinalIgnoreCase)
-                    ? kv.Key.Substring(3) : kv.Key;
-                p.Inventory.Add(new SiegeFX.Core.Save.LootEntrySnapshot
-                {
-                    Slot      = "equipped:" + slot,
-                    Reference = kv.Value,
-                });
-            }
-
-            if (_playerSpellbook is not null)
-            {
-                var snapshot = new SiegeFX.Core.Save.SpellbookSnapshot
-                {
-                    PrimarySpell      = _playerSpellbook.Primary?.Name,
-                    SecondarySpell    = _playerSpellbook.Secondary?.Name,
-                    PrimaryCooldown   = _playerSpellbook.PrimaryCooldownRemaining,
-                    SecondaryCooldown = _playerSpellbook.SecondaryCooldownRemaining,
-                };
-                // Phase 21-SC-SCROLL-G — persist Placed[] alongside the actives
-                // so a quicksave round-trips the user's spellbook layout. Null
-                // entries are written as JSON null and stay null on load.
-                for (int p_i = 0; p_i < _playerSpellbook.PlacedCount; p_i++)
-                    snapshot.Placed.Add(_playerSpellbook.Placed[p_i]?.Name);
-                p.Spellbook = snapshot;
-            }
-
-            if (_progression is not null)
-            {
-                foreach (var entry in _progression.Journal.Entries)
-                    p.Quests.Add(new SiegeFX.Core.Save.QuestSnapshot
-                    {
-                        Key            = entry.Key,
-                        State          = entry.State,
-                        KillProgress   = entry.KillProgress,
-                        TalkProgress   = entry.TalkProgress,
-                        PickupProgress = entry.PickupProgress,
-                        DialogueLog    = new List<string>(entry.DialogueLog), // ALPHA-2G
-                    });
-                p.Gold = _progression.Gold;
-            }
-
-            // SC-WORLD-INVENTORY-CONSUMED — persist picked-up world-inventory
-            // SCIDs so the fireshot scroll the player grabbed in fh_r1's
-            // basement stays gone across save-reload. On load, these SCIDs
-            // gate LoadWorldInventory's re-spawn pass.
-            if (_consumedInventoryScids is not null && _consumedInventoryScids.Count > 0)
-                p.ConsumedInventoryScids = new List<uint>(_consumedInventoryScids);
-
-            // 21d-2a-viii-c — hero name + variant pick from the creator (or
-            // env-var spawn). Empty/null when the creator was bypassed; the
-            // load path treats that as "no override" too.
-            p.HeroName = _heroName;
-            // SC-CD-PERSIST — snapshot the LIVE picker (the composite look the
-            // body actually renders with), not just the legacy suffix axes.
-            // A null picker (creator bypassed) writes no Variant at all, so a
-            // load can't restore garbage.
-            var snapPick = _playerPicker ?? _heroVariant;
-            if (snapPick is not null)
-            {
-                p.Variant = new SiegeFX.Core.Save.HeroVariantSnapshot
-                {
-                    Gender      = snapPick.Gender == HeroGender.Girl ? "girl" : "boy",
-                    BodyTypeIdx = snapPick.BodyTypeIdx,
-                    SkinSuffix  = snapPick.SkinSuffix,
-                    PantsSuffix = snapPick.PantsSuffix,
-                    FaceIdx     = snapPick.FaceIdx,
-                    StyleIdx    = snapPick.StyleIdx,
-                    ColorIdx    = snapPick.ColorIdx,
-                    ShirtIdx    = snapPick.ShirtIdx,
-                    PantsIdx    = snapPick.PantsIdx,
-                };
-            }
-            // SC-SUMMON-UI — the live summon rides the save (its actor row
-            // is captured with every other actor; this rebinds control).
-            if (PlayerSummon is { } psmn)
-            {
-                p.SummonScid      = psmn.Actor.Instance.Scid;
-                p.SummonEndScript = psmn.SummonEndScript;
-            }
-            save.Player = p;
-        }
+        save.Player = CapturePlayerSnapshot();
 
         // SC-PARTY-PERSIST (v13) — the recruited roster in order, each with
         // its backpack + worn-slot state. Dead-but-unrevived companions are
@@ -43962,6 +44202,283 @@ void main()
     // in the scene but missing from the save are left untouched at their
     // current state (treats them as "spawned after this save" — same as a
     // patch that adds NPCs).
+    /// <summary>Put a saved hero on the player: attributes, level and skills,
+    /// pack and worn gear, gold, spells, standing orders, name and look.
+    /// <paramref name="saveLabel"/> is the save slot's label (a legacy name
+    /// check reads it). A <paramref name="coopCharacter"/> is a player's co-op
+    /// character carried into a new co-op game: its journal, facing and camera
+    /// belong to the world it was saved in and stay out, and it starts at full
+    /// life.</summary>
+    private void RestoreHero(SiegeFX.Core.Save.PlayerSnapshot ps, string saveLabel,
+                             (float Life, float Mana, bool Dead)? playerVitals, bool coopCharacter = false)
+    {
+        if (_player is null) return;
+        // Republish auto-grown attributes through ResyncStats so MaxLife/
+        // MaxMana track what the player actually had at save time, not the
+        // template's L1 values. Then RestoreFromSave on the combat state
+        // reapplies current life/mana under the new caps.
+        if (_formulas is not null)
+        {
+            var current = _player.Actor.Stats;
+            var newMaxLife = _formulas.MaxLife(ps.Strength, ps.Dexterity, ps.Intelligence);
+            var newMaxMana = _formulas.MaxMana(ps.Strength, ps.Dexterity, ps.Intelligence);
+            _player.Actor.ResyncStats(current with
+            {
+                Strength = ps.Strength,
+                Dexterity = ps.Dexterity,
+                Intelligence = ps.Intelligence,
+                MaxLife = newMaxLife,
+                MaxMana = newMaxMana,
+            });
+            // The actor snapshot already reapplied CurrentLife/Mana above;
+            // running RestoreFromSave again would only hit the new caps.
+        }
+        if (_progression is not null)
+        {
+            _progression.RestoreFromSave(ps.TotalXp, ps.Level, ps.SkillXp);
+            if (!coopCharacter)
+            {
+                _progression.Journal.RestoreFromSave(
+                    ps.Quests.Select(q => (q.Key, q.State, q.KillProgress, q.TalkProgress, q.PickupProgress)));
+                // ALPHA-2G — the Show Dialogue chronicle survives reload.
+                foreach (var q in ps.Quests)
+                {
+                    if (q.DialogueLog.Count == 0) continue;
+                    if (_progression.Journal.TryGet(q.Key, out var je) && je is not null && je.DialogueLog.Count == 0)
+                        je.DialogueLog.AddRange(q.DialogueLog);
+                }
+            }
+            _progression.RestoreGoldFromSave(ps.Gold);
+        }
+        if (!coopCharacter) _playerFacing = ps.Facing.ToVector3();
+        // 9-SC-10b — same reseed as on spawn so the body doesn't smear from
+        // its pre-load position to the loaded one over a single tick.
+        _playerRenderInit = false;
+        if (_playerFollower is not null)
+            _playerRenderPosPrev = _playerRenderPosNext = _playerFollower.Position;
+        _playerRenderFacingPrev = _playerRenderFacingNext = _playerFacing;
+        if (!coopCharacter)
+        {
+            _cameraMode   = (CameraMode)ps.CameraMode;
+            _chaseYaw     = ps.ChaseYaw;
+            _chaseDistance = ps.ChaseDistance;
+            _chaseHeight  = ps.ChaseHeight;
+            _camera.Position = ps.CameraPos.ToVector3();
+            _camera.Yaw   = ps.CameraYaw;
+            _camera.Pitch = ps.CameraPitch;
+        }
+
+        _playerInventory.Clear();
+        _playerEquipment.Clear();
+        _inventoryPanel.Reset();
+        foreach (var e in ps.Inventory)
+        {
+            if (e.Slot.StartsWith("equipped:", StringComparison.OrdinalIgnoreCase))
+            {
+                var slotKey = "es_" + e.Slot.Substring("equipped:".Length);
+                // SC-PAPERDOLL-EQUIP — pre-v13-era saves wrote the
+                // non-canonical es_helm/es_gloves keys; remap so old
+                // saves' gear lands where the resolver renders it.
+                if (slotKey.Equals("es_helm", StringComparison.OrdinalIgnoreCase)) slotKey = "es_head";
+                else if (slotKey.Equals("es_gloves", StringComparison.OrdinalIgnoreCase)) slotKey = "es_forearms";
+                _playerEquipment[slotKey] = e.Reference;
+            }
+            else
+            {
+                _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference, e.Fill, e.BookSpells));
+                _inventoryPanel.NotifyItemAdded();
+            }
+        }
+        // Re-render the equipped weapon mesh so the visible model matches
+        // the restored es_weapon_hand entry. Safe even when no weapon was
+        // saved — TryLoadPlayerWeapon early-outs on a missing slot.
+        TryLoadPlayerWeapon();
+        // SC-EQUIP-ENCHANT — the snapshot stored NATURAL stats, so clear the
+        // applied-enchant layer before the sync re-derives it from restored
+        // gear (a stale same-session layer would double-subtract).
+        _appliedEnchant = default;
+        // SC-LOAD-GEAR-VISUALS — rebuild the WORN visuals from the restored
+        // equipment dict (chest texture swap, boots/helm/gauntlet layers,
+        // shield attach), not just the numbers. Its first act is
+        // SyncPlayerArmorDefense, so Defense + enchants republish too.
+        // Without this the body kept the spawn-time template gear and the
+        // save's worn armor was stats-only.
+        TryLoadPlayerEquipment(_player.Actor.Template);
+
+        // The selected AWP ability slot is state like any other: a save
+        // taken with the bow (or a spell) up used to come back on the
+        // melee default cold and keep the pre-load slot on F9. Restored
+        // AFTER the equipment rebuild so the wielded-weapon visual
+        // follows the slot. -1 = pre-field save, keep the default.
+        if (ps.ActiveSlot >= 0) SetActiveAbilitySlot(ps.ActiveSlot);
+
+        // SC-FC-HERO — the hero's standing orders. -1 = pre-field save:
+        // keep the DS1 defaults (Engage / Defend / Target Closest).
+        if (ps.MoveOrder >= 0) _player.FcMovement  = FcMoveFromInt(ps.MoveOrder);
+        if (ps.AtkOrder  >= 0) _player.FcAttack    = FcAtkFromInt(ps.AtkOrder);
+        if (ps.TgtOrder  >= 0) _player.FcTargeting = FcTgtFromInt(ps.TgtOrder);
+
+        // SC-VITALS-ORDER — re-apply the saved vitals now that EVERY
+        // max-affecting restore has run (level resync, gear enchants).
+        // The actor loop's first application clamped current life/mana
+        // against the fresh spawn's BASE maxima — a level-5 hero saved
+        // at 117/117 loaded as 65/117 ("full at save, half at load").
+        // Companions already order vitals after their stat restore; this
+        // gives the player the same guarantee.
+        if (coopCharacter)
+            _player.Actor.Combat.RestoreFromSave(_player.Actor.Stats.MaxLife, _player.Actor.Stats.MaxMana, false);
+        else if (playerVitals is { } pv)
+        {
+            _player.Actor.Combat.RestoreFromSave(pv.Life, pv.Mana, pv.Dead);
+            // SC-DOWNED — hero saved unconscious comes back unconscious:
+            // settled in the die pose, recovery ticking.
+            if (ps.Downed && !pv.Dead && pv.Life <= 0f)
+            {
+                _player.Actor.Combat.EnterDowned();
+                _player.DownedAtSeconds = _playSeconds - 60;   // predates the gate
+                BeginDeathChore(_player, settled: true);
+            }
+            else if (!pv.Dead)
+            {
+                // Healthy restore — drop a pinned die-pose from an
+                // in-session downed episode before this load.
+                _player.Actor.Host.OverrideAnimIndex(-1, 0f);
+            }
+            Console.WriteLine($"[load-diag] player vitals re-applied post-resync: " +
+                              $"{pv.Life:F0}/{_player.Actor.Stats.MaxLife:F0} HP, " +
+                              $"{pv.Mana:F0}/{_player.Actor.Stats.MaxMana:F0} MP");
+        }
+
+        if (ps.Spellbook is not null && _playerSpellbook is not null && _spellCatalog is not null)
+        {
+            // Actives resolve through the SAME resolver Placed rows and
+            // member books use — the catalog-only lookup dropped
+            // synthesized scroll/summon/charm templates (Active 1 came
+            // back empty on cold load, kept the pre-load spell on F9).
+            // A saved-empty or unresolvable slot explicitly clears.
+            SiegeFX.Core.Assets.SpellTemplate? RA(string? name) =>
+                string.IsNullOrEmpty(name) ? null : ResolveSlottableSpell(name!, debugSpellsEnv: null);
+            _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, RA(ps.Spellbook.PrimarySpell));
+            _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, RA(ps.Spellbook.SecondarySpell));
+            _playerSpellbook.RestoreCooldowns(
+                ps.Spellbook.PrimaryCooldown, ps.Spellbook.SecondaryCooldown);
+            // Phase 21-SC-SCROLL-G — restore Placed[]. v5 saves have no
+            // Placed list (defaults to empty list via the deserializer),
+            // so the loop simply doesn't fire and the player's placed
+            // rows stay at their startup state (all null). v6+ saves
+            // round-trip the layout. Resolves through ResolveSlottableSpell
+            // so synthesized summon templates restore too.
+            int placedSlots = Math.Min(ps.Spellbook.Placed.Count, _playerSpellbook.PlacedCount);
+            for (int p_i = 0; p_i < placedSlots; p_i++)
+            {
+                var name = ps.Spellbook.Placed[p_i];
+                if (name is null) { _playerSpellbook.SetPlaced(p_i, null); continue; }
+                var spell = ResolveSlottableSpell(name, debugSpellsEnv: null);
+                _playerSpellbook.SetPlaced(p_i, spell);
+            }
+        }
+
+        // SC-HERO-NAME — never DOWNGRADE the name: prefer the save's
+        // HeroName; a save that predates name persistence keeps the
+        // session's current (creator/env) name. The save-slot
+        // DisplayName is deliberately NOT in this chain — it labels the
+        // FILE, not the character, and using it painted the save's
+        // filename onto the character sheet.
+        // SANITIZER: saves written while the (removed) DisplayName
+        // fallback was live carry the slot label BAKED INTO HeroName
+        // ("first companion added"). The leak's signature is the
+        // DisplayName beginning with the HeroName (slot names get a
+        // " (elapsed)" suffix); such values are ignored rather than
+        // painted onto the character. A player who genuinely names the
+        // save slot exactly after their hero loses nothing — the
+        // session already carries that same name.
+        bool poisoned = !string.IsNullOrWhiteSpace(ps.HeroName)
+            && !string.IsNullOrWhiteSpace(saveLabel)
+            && saveLabel.StartsWith(ps.HeroName, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(ps.HeroName, _heroName, StringComparison.OrdinalIgnoreCase);
+        if (poisoned)
+            Console.WriteLine($"  load: ignoring save HeroName '{ps.HeroName}' " +
+                              "(matches the save-slot label — legacy DisplayName leak)");
+        else if (!string.IsNullOrWhiteSpace(ps.HeroName))
+            _heroName = ps.HeroName;
+        // SC-LOAD-BODY-TEX — only restore a variant that represents a REAL
+        // creator pick (BodyTypeIdx >= 0, same guard the relaunch env pass
+        // uses). Sessions started without the creator save a placeholder
+        // variant (BodyTypeIdx -1, null suffixes); restoring THAT set
+        // _playerPicker to garbage, which flipped ResolveActorTexture onto
+        // the creator-composite path with invalid indices — the body drew
+        // with a broken texture and turned invisible while the separately
+        // textured equipment layers kept rendering ("only my boots
+        // render"). No pick saved = leave the spawn appearance alone.
+        // SC-CD-PERSIST — a variant is REAL when it carries either the
+        // composite axes (v14+, FaceIdx >= 0) or a legacy body pick
+        // (BodyTypeIdx >= 0). Placeholders (creator bypassed) restore
+        // nothing so the spawn appearance stays untouched.
+        bool realVariant = ps.Variant is not null
+            && (ps.Variant.FaceIdx >= 0 || ps.Variant.BodyTypeIdx >= 0);
+        BodyDiag("load-variant",
+            $"load: saved variant {(ps.Variant is null ? "<none>" : $"gender={ps.Variant.Gender} body={ps.Variant.BodyTypeIdx} face={ps.Variant.FaceIdx} style={ps.Variant.StyleIdx} color={ps.Variant.ColorIdx} shirt={ps.Variant.ShirtIdx} pants={ps.Variant.PantsIdx}")} " +
+            $"-> {(realVariant ? "APPLYING" : "skipped (placeholder)")}; " +
+            $"picker at load: {(_playerPicker is null ? "<null>" : $"gender={_playerPicker.Gender} body={_playerPicker.BodyTypeIdx}")}");
+        if (realVariant)
+        {
+            var restored = new HeroVariantPicker
+            {
+                Gender = string.Equals(ps.Variant!.Gender, "girl", StringComparison.OrdinalIgnoreCase)
+                         ? HeroGender.Girl : HeroGender.Boy,
+                BodyTypeIdx = ps.Variant.BodyTypeIdx,
+                SkinSuffix  = ps.Variant.SkinSuffix,
+                PantsSuffix = ps.Variant.PantsSuffix,
+                // SC-CD-PERSIST — the composite axes drive the actual body
+                // textures (skin/face, hairstyle, hair tint, shirt/pants
+                // overlays). Pre-v14 saves carry -1 → render option 0,
+                // matching the pre-persistence default look.
+                FaceIdx  = Math.Max(0, ps.Variant.FaceIdx),
+                StyleIdx = Math.Max(0, ps.Variant.StyleIdx),
+                ColorIdx = Math.Max(0, ps.Variant.ColorIdx),
+                ShirtIdx = Math.Max(0, ps.Variant.ShirtIdx),
+                PantsIdx = Math.Max(0, ps.Variant.PantsIdx),
+            };
+            // Re-derive the texture overrides so the next ResolveActorTexture
+            // call paints skin/pants from the saved variant, not whichever
+            // override was active at boot. The body mesh itself is whatever
+            // was spawned at startup — re-spawning mid-load is out of scope;
+            // a mismatch only matters when the env-var spawn picker disagrees
+            // with the saved one (cross-session load), in which case the warn
+            // tells the user the model on screen doesn't match the bytes.
+            string playerTpl = restored.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
+            if (_templateStore is not null
+                && _templateStore.TryGet(playerTpl, out var pickTpl))
+            {
+                // SC-HERO-PORTRAIT — same authored read as the spawn path:
+                // the restored gender's template says which portrait retail
+                // shows. No derived mapping, so spawn and load can't differ.
+                var authoredPortrait =
+                    (_templateStore.GetAttribute(pickTpl, "actor", "portrait_icon") ?? "")
+                    .Trim().Trim('"');
+                if (!string.IsNullOrEmpty(authoredPortrait))
+                    _playerPortraitIconName = authoredPortrait;
+                var ov = restored.BuildOverride(_templateStore, pickTpl);
+                _skinTexOverrideName  = ov?.SkinTextureName;
+                _pantsTexOverrideName = ov?.ClothingTextureName;
+                if (_heroVariant is not null
+                    && (_heroVariant.BodyTypeIdx != restored.BodyTypeIdx
+                     || _heroVariant.Gender      != restored.Gender))
+                {
+                    Console.Error.WriteLine(
+                        $"  load: warning — saved hero variant (gender={restored.Gender}, " +
+                        $"body={restored.BodyTypeIdx + 1}) differs from spawned mesh; " +
+                        $"textures updated, body mesh stays as spawned");
+                }
+            }
+            // SC-CD-PERSIST — the picker drives the composite body
+            // textures and must restore even when the legacy template
+            // override path has nothing to do (composite-only variants).
+            _playerPicker = restored;
+            _heroVariant = restored;
+        }
+    }
+
     internal void ApplySave(SiegeFX.Core.Save.SaveFile save)
     {
         if (!IsRegionLive(save.RegionPath))
@@ -44443,265 +44960,7 @@ void main()
         }
 
         if (save.Player is not null && _player is not null)
-        {
-            var ps = save.Player;
-            // Republish auto-grown attributes through ResyncStats so MaxLife/
-            // MaxMana track what the player actually had at save time, not the
-            // template's L1 values. Then RestoreFromSave on the combat state
-            // reapplies current life/mana under the new caps.
-            if (_formulas is not null)
-            {
-                var current = _player.Actor.Stats;
-                var newMaxLife = _formulas.MaxLife(ps.Strength, ps.Dexterity, ps.Intelligence);
-                var newMaxMana = _formulas.MaxMana(ps.Strength, ps.Dexterity, ps.Intelligence);
-                _player.Actor.ResyncStats(current with
-                {
-                    Strength = ps.Strength,
-                    Dexterity = ps.Dexterity,
-                    Intelligence = ps.Intelligence,
-                    MaxLife = newMaxLife,
-                    MaxMana = newMaxMana,
-                });
-                // The actor snapshot already reapplied CurrentLife/Mana above;
-                // running RestoreFromSave again would only hit the new caps.
-            }
-            if (_progression is not null)
-            {
-                _progression.RestoreFromSave(ps.TotalXp, ps.Level, ps.SkillXp);
-                _progression.Journal.RestoreFromSave(
-                    ps.Quests.Select(q => (q.Key, q.State, q.KillProgress, q.TalkProgress, q.PickupProgress)));
-                // ALPHA-2G — the Show Dialogue chronicle survives reload.
-                foreach (var q in ps.Quests)
-                {
-                    if (q.DialogueLog.Count == 0) continue;
-                    if (_progression.Journal.TryGet(q.Key, out var je) && je is not null && je.DialogueLog.Count == 0)
-                        je.DialogueLog.AddRange(q.DialogueLog);
-                }
-                _progression.RestoreGoldFromSave(ps.Gold);
-            }
-            _playerFacing = ps.Facing.ToVector3();
-            // 9-SC-10b — same reseed as on spawn so the body doesn't smear from
-            // its pre-load position to the loaded one over a single tick.
-            _playerRenderInit = false;
-            if (_playerFollower is not null)
-                _playerRenderPosPrev = _playerRenderPosNext = _playerFollower.Position;
-            _playerRenderFacingPrev = _playerRenderFacingNext = _playerFacing;
-            _cameraMode   = (CameraMode)ps.CameraMode;
-            _chaseYaw     = ps.ChaseYaw;
-            _chaseDistance = ps.ChaseDistance;
-            _chaseHeight  = ps.ChaseHeight;
-            _camera.Position = ps.CameraPos.ToVector3();
-            _camera.Yaw   = ps.CameraYaw;
-            _camera.Pitch = ps.CameraPitch;
-
-            _playerInventory.Clear();
-            _playerEquipment.Clear();
-            _inventoryPanel.Reset();
-            foreach (var e in ps.Inventory)
-            {
-                if (e.Slot.StartsWith("equipped:", StringComparison.OrdinalIgnoreCase))
-                {
-                    var slotKey = "es_" + e.Slot.Substring("equipped:".Length);
-                    // SC-PAPERDOLL-EQUIP — pre-v13-era saves wrote the
-                    // non-canonical es_helm/es_gloves keys; remap so old
-                    // saves' gear lands where the resolver renders it.
-                    if (slotKey.Equals("es_helm", StringComparison.OrdinalIgnoreCase)) slotKey = "es_head";
-                    else if (slotKey.Equals("es_gloves", StringComparison.OrdinalIgnoreCase)) slotKey = "es_forearms";
-                    _playerEquipment[slotKey] = e.Reference;
-                }
-                else
-                {
-                    _playerInventory.Add(new SiegeFX.Core.Actors.LootEntry(e.Slot, e.Reference, e.Fill, e.BookSpells));
-                    _inventoryPanel.NotifyItemAdded();
-                }
-            }
-            // Re-render the equipped weapon mesh so the visible model matches
-            // the restored es_weapon_hand entry. Safe even when no weapon was
-            // saved — TryLoadPlayerWeapon early-outs on a missing slot.
-            TryLoadPlayerWeapon();
-            // SC-EQUIP-ENCHANT — the snapshot stored NATURAL stats, so clear the
-            // applied-enchant layer before the sync re-derives it from restored
-            // gear (a stale same-session layer would double-subtract).
-            _appliedEnchant = default;
-            // SC-LOAD-GEAR-VISUALS — rebuild the WORN visuals from the restored
-            // equipment dict (chest texture swap, boots/helm/gauntlet layers,
-            // shield attach), not just the numbers. Its first act is
-            // SyncPlayerArmorDefense, so Defense + enchants republish too.
-            // Without this the body kept the spawn-time template gear and the
-            // save's worn armor was stats-only.
-            TryLoadPlayerEquipment(_player.Actor.Template);
-
-            // The selected AWP ability slot is state like any other: a save
-            // taken with the bow (or a spell) up used to come back on the
-            // melee default cold and keep the pre-load slot on F9. Restored
-            // AFTER the equipment rebuild so the wielded-weapon visual
-            // follows the slot. -1 = pre-field save, keep the default.
-            if (ps.ActiveSlot >= 0) SetActiveAbilitySlot(ps.ActiveSlot);
-
-            // SC-FC-HERO — the hero's standing orders. -1 = pre-field save:
-            // keep the DS1 defaults (Engage / Defend / Target Closest).
-            if (ps.MoveOrder >= 0) _player.FcMovement  = FcMoveFromInt(ps.MoveOrder);
-            if (ps.AtkOrder  >= 0) _player.FcAttack    = FcAtkFromInt(ps.AtkOrder);
-            if (ps.TgtOrder  >= 0) _player.FcTargeting = FcTgtFromInt(ps.TgtOrder);
-
-            // SC-VITALS-ORDER — re-apply the saved vitals now that EVERY
-            // max-affecting restore has run (level resync, gear enchants).
-            // The actor loop's first application clamped current life/mana
-            // against the fresh spawn's BASE maxima — a level-5 hero saved
-            // at 117/117 loaded as 65/117 ("full at save, half at load").
-            // Companions already order vitals after their stat restore; this
-            // gives the player the same guarantee.
-            if (playerVitals is { } pv)
-            {
-                _player.Actor.Combat.RestoreFromSave(pv.Life, pv.Mana, pv.Dead);
-                // SC-DOWNED — hero saved unconscious comes back unconscious:
-                // settled in the die pose, recovery ticking.
-                if (ps.Downed && !pv.Dead && pv.Life <= 0f)
-                {
-                    _player.Actor.Combat.EnterDowned();
-                    _player.DownedAtSeconds = _playSeconds - 60;   // predates the gate
-                    BeginDeathChore(_player, settled: true);
-                }
-                else if (!pv.Dead)
-                {
-                    // Healthy restore — drop a pinned die-pose from an
-                    // in-session downed episode before this load.
-                    _player.Actor.Host.OverrideAnimIndex(-1, 0f);
-                }
-                Console.WriteLine($"[load-diag] player vitals re-applied post-resync: " +
-                                  $"{pv.Life:F0}/{_player.Actor.Stats.MaxLife:F0} HP, " +
-                                  $"{pv.Mana:F0}/{_player.Actor.Stats.MaxMana:F0} MP");
-            }
-
-            if (ps.Spellbook is not null && _playerSpellbook is not null && _spellCatalog is not null)
-            {
-                // Actives resolve through the SAME resolver Placed rows and
-                // member books use — the catalog-only lookup dropped
-                // synthesized scroll/summon/charm templates (Active 1 came
-                // back empty on cold load, kept the pre-load spell on F9).
-                // A saved-empty or unresolvable slot explicitly clears.
-                SiegeFX.Core.Assets.SpellTemplate? RA(string? name) =>
-                    string.IsNullOrEmpty(name) ? null : ResolveSlottableSpell(name!, debugSpellsEnv: null);
-                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Primary, RA(ps.Spellbook.PrimarySpell));
-                _playerSpellbook.Slot(SiegeFX.Core.Actors.SpellSlot.Secondary, RA(ps.Spellbook.SecondarySpell));
-                _playerSpellbook.RestoreCooldowns(
-                    ps.Spellbook.PrimaryCooldown, ps.Spellbook.SecondaryCooldown);
-                // Phase 21-SC-SCROLL-G — restore Placed[]. v5 saves have no
-                // Placed list (defaults to empty list via the deserializer),
-                // so the loop simply doesn't fire and the player's placed
-                // rows stay at their startup state (all null). v6+ saves
-                // round-trip the layout. Resolves through ResolveSlottableSpell
-                // so synthesized summon templates restore too.
-                int placedSlots = Math.Min(ps.Spellbook.Placed.Count, _playerSpellbook.PlacedCount);
-                for (int p_i = 0; p_i < placedSlots; p_i++)
-                {
-                    var name = ps.Spellbook.Placed[p_i];
-                    if (name is null) { _playerSpellbook.SetPlaced(p_i, null); continue; }
-                    var spell = ResolveSlottableSpell(name, debugSpellsEnv: null);
-                    _playerSpellbook.SetPlaced(p_i, spell);
-                }
-            }
-
-            // SC-HERO-NAME — never DOWNGRADE the name: prefer the save's
-            // HeroName; a save that predates name persistence keeps the
-            // session's current (creator/env) name. The save-slot
-            // DisplayName is deliberately NOT in this chain — it labels the
-            // FILE, not the character, and using it painted the save's
-            // filename onto the character sheet.
-            // SANITIZER: saves written while the (removed) DisplayName
-            // fallback was live carry the slot label BAKED INTO HeroName
-            // ("first companion added"). The leak's signature is the
-            // DisplayName beginning with the HeroName (slot names get a
-            // " (elapsed)" suffix); such values are ignored rather than
-            // painted onto the character. A player who genuinely names the
-            // save slot exactly after their hero loses nothing — the
-            // session already carries that same name.
-            bool poisoned = !string.IsNullOrWhiteSpace(ps.HeroName)
-                && !string.IsNullOrWhiteSpace(save.DisplayName)
-                && save.DisplayName.StartsWith(ps.HeroName, StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(ps.HeroName, _heroName, StringComparison.OrdinalIgnoreCase);
-            if (poisoned)
-                Console.WriteLine($"  load: ignoring save HeroName '{ps.HeroName}' " +
-                                  "(matches the save-slot label — legacy DisplayName leak)");
-            else if (!string.IsNullOrWhiteSpace(ps.HeroName))
-                _heroName = ps.HeroName;
-            // SC-LOAD-BODY-TEX — only restore a variant that represents a REAL
-            // creator pick (BodyTypeIdx >= 0, same guard the relaunch env pass
-            // uses). Sessions started without the creator save a placeholder
-            // variant (BodyTypeIdx -1, null suffixes); restoring THAT set
-            // _playerPicker to garbage, which flipped ResolveActorTexture onto
-            // the creator-composite path with invalid indices — the body drew
-            // with a broken texture and turned invisible while the separately
-            // textured equipment layers kept rendering ("only my boots
-            // render"). No pick saved = leave the spawn appearance alone.
-            // SC-CD-PERSIST — a variant is REAL when it carries either the
-            // composite axes (v14+, FaceIdx >= 0) or a legacy body pick
-            // (BodyTypeIdx >= 0). Placeholders (creator bypassed) restore
-            // nothing so the spawn appearance stays untouched.
-            bool realVariant = ps.Variant is not null
-                && (ps.Variant.FaceIdx >= 0 || ps.Variant.BodyTypeIdx >= 0);
-            BodyDiag("load-variant",
-                $"load: saved variant {(ps.Variant is null ? "<none>" : $"gender={ps.Variant.Gender} body={ps.Variant.BodyTypeIdx} face={ps.Variant.FaceIdx} style={ps.Variant.StyleIdx} color={ps.Variant.ColorIdx} shirt={ps.Variant.ShirtIdx} pants={ps.Variant.PantsIdx}")} " +
-                $"-> {(realVariant ? "APPLYING" : "skipped (placeholder)")}; " +
-                $"picker at load: {(_playerPicker is null ? "<null>" : $"gender={_playerPicker.Gender} body={_playerPicker.BodyTypeIdx}")}");
-            if (realVariant)
-            {
-                var restored = new HeroVariantPicker
-                {
-                    Gender = string.Equals(ps.Variant!.Gender, "girl", StringComparison.OrdinalIgnoreCase)
-                             ? HeroGender.Girl : HeroGender.Boy,
-                    BodyTypeIdx = ps.Variant.BodyTypeIdx,
-                    SkinSuffix  = ps.Variant.SkinSuffix,
-                    PantsSuffix = ps.Variant.PantsSuffix,
-                    // SC-CD-PERSIST — the composite axes drive the actual body
-                    // textures (skin/face, hairstyle, hair tint, shirt/pants
-                    // overlays). Pre-v14 saves carry -1 → render option 0,
-                    // matching the pre-persistence default look.
-                    FaceIdx  = Math.Max(0, ps.Variant.FaceIdx),
-                    StyleIdx = Math.Max(0, ps.Variant.StyleIdx),
-                    ColorIdx = Math.Max(0, ps.Variant.ColorIdx),
-                    ShirtIdx = Math.Max(0, ps.Variant.ShirtIdx),
-                    PantsIdx = Math.Max(0, ps.Variant.PantsIdx),
-                };
-                // Re-derive the texture overrides so the next ResolveActorTexture
-                // call paints skin/pants from the saved variant, not whichever
-                // override was active at boot. The body mesh itself is whatever
-                // was spawned at startup — re-spawning mid-load is out of scope;
-                // a mismatch only matters when the env-var spawn picker disagrees
-                // with the saved one (cross-session load), in which case the warn
-                // tells the user the model on screen doesn't match the bytes.
-                string playerTpl = restored.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
-                if (_templateStore is not null
-                    && _templateStore.TryGet(playerTpl, out var pickTpl))
-                {
-                    // SC-HERO-PORTRAIT — same authored read as the spawn path:
-                    // the restored gender's template says which portrait retail
-                    // shows. No derived mapping, so spawn and load can't differ.
-                    var authoredPortrait =
-                        (_templateStore.GetAttribute(pickTpl, "actor", "portrait_icon") ?? "")
-                        .Trim().Trim('"');
-                    if (!string.IsNullOrEmpty(authoredPortrait))
-                        _playerPortraitIconName = authoredPortrait;
-                    var ov = restored.BuildOverride(_templateStore, pickTpl);
-                    _skinTexOverrideName  = ov?.SkinTextureName;
-                    _pantsTexOverrideName = ov?.ClothingTextureName;
-                    if (_heroVariant is not null
-                        && (_heroVariant.BodyTypeIdx != restored.BodyTypeIdx
-                         || _heroVariant.Gender      != restored.Gender))
-                    {
-                        Console.Error.WriteLine(
-                            $"  load: warning — saved hero variant (gender={restored.Gender}, " +
-                            $"body={restored.BodyTypeIdx + 1}) differs from spawned mesh; " +
-                            $"textures updated, body mesh stays as spawned");
-                    }
-                }
-                // SC-CD-PERSIST — the picker drives the composite body
-                // textures and must restore even when the legacy template
-                // override path has nothing to do (composite-only variants).
-                _playerPicker = restored;
-                _heroVariant = restored;
-            }
-        }
+            RestoreHero(save.Player, save.DisplayName, playerVitals);
 
         // SC-PARTY-PERSIST (v13) — rebuild the recruited roster. Any live
         // roster beyond the leader is dropped first so the save is

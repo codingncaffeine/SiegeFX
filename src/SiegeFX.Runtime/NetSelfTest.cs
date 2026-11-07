@@ -270,6 +270,29 @@ public static class NetSelfTest
             hs.Dispose(); cs.Dispose(); h5.Dispose(); c5.Dispose();
         }
 
+        // ---- The host leaving ends the game; a silent host is noticed ----
+        {
+            var (h6, c6) = LoopbackTransport.CreatePair();
+            var hs = new MpSession(h6, isHost: true, "Host") { StatsInterval = 0 };
+            hs.BuildLocalPlayerState = () => new MpPlayerState(0, 1f, 0f, 1f, 0f, 100, 0);
+            var cs = new MpSession(c6, isHost: false, "Joiner") { StatsInterval = 0 };
+            int ended = 0, hostEnded = 0;
+            cs.OnGameEnded = () => ended++;
+            hs.OnGameEnded = () => hostEnded++;
+            cs.SendJoinRequest(); Pump(hs, cs);
+            for (int i = 0; i < 40; i++) cs.Tick(1.0);   // the host sends nothing for 40 s
+            Assert(cs.Joined && cs.SecondsSinceHost >= 39.5,
+                $"silence: a joiner counts the time since the host last sent anything ({cs.SecondsSinceHost:F1} s)");
+            hs.Tick(0.1); Pump(hs, cs);
+            Assert(cs.SecondsSinceHost < 0.5, $"silence: a frame from the host resets the count ({cs.SecondsSinceHost:F1} s)");
+            Assert(ended == 0, "game end: nothing ends the game while the host is there");
+            hs.EndGame(); Pump(hs, cs);
+            Assert(ended >= 1, $"game end: the host leaving tells the joiner the game is over ({ended} copies)");
+            cs.EndGame(); Pump(hs, cs);
+            Assert(hostEnded == 0, "game end: only the host can end the game");
+            hs.Dispose(); cs.Dispose(); h6.Dispose(); c6.Dispose();
+        }
+
         // ---- v8 world updates: interest, changes only, packing, 10 % loss ----
         {
             var (ht, ct) = LoopbackTransport.CreatePair();

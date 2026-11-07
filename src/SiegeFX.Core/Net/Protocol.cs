@@ -51,6 +51,8 @@ public enum MpMsg : byte
                          // [count u8][ (player u8, ready u8, nameLen u8, name utf8) * ]
     Snapshot       = 30, // host→client, lossy lane, 15 a second: the players and the world actors near the
                          // receiver, written against the newest update it acknowledged. See MpWorldUpdate.
+    GameEnd        = 31, // host→client: the host is leaving and the game is over (no payload). A build that
+                         // does not know it drops it as unknown and notices the silence instead.
 }
 
 /// <summary>Wire-protocol identity. Bump <see cref="Version"/> whenever a

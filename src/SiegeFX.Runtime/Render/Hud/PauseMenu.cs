@@ -26,6 +26,14 @@ public sealed class PauseMenu
     /// <summary>A multiplayer game: SAVE GAME and LOAD GAME show grayed and do
     /// nothing (the world is the host's, and a load would leave the session).</summary>
     public bool SaveLoadDisabled { get; set; }
+    /// <summary>The exit question in a multiplayer game, two lines (leaving
+    /// saves there, so "without saving" would be wrong). Null = single player.</summary>
+    public (string L1, string L2)? ExitConfirmLines { get; set; }
+    /// <summary>A notice in the confirm panel with one OK button that answers
+    /// <see cref="Action.ExitConfirmed"/> (a multiplayer game that ended). Escape
+    /// does not dismiss it.</summary>
+    private (string L1, string L2)? _notice;
+    public bool ShowingNotice => _notice is not null;
     bool Disabled(int i) => SaveLoadDisabled && Buttons[i].A is Action.SaveGame or Action.LoadGame;
 
     public enum Action { None, Resume, Options, SaveGame, LoadGame, ExitGame, ExitConfirmed }
@@ -42,6 +50,8 @@ public sealed class PauseMenu
     private static readonly (int x0, int y0, int x1, int y1) NoRect  = (326, 252, 386, 272);
     private readonly MenuButton _yesBtn = new("Yes", 0, 0, 0, 0);
     private readonly MenuButton _noBtn  = new("No", 0, 0, 0, 0);
+    private static readonly (int x0, int y0, int x1, int y1) OkRect = (291, 252, 351, 272);
+    private readonly MenuButton _okBtn  = new("OK", 0, 0, 0, 0);
 
     // Authored 640×480 button rects (x0,y0,x1,y1), top-to-bottom, each 160×32
     // and contiguous from y159. Labels are all-caps exactly as the gas text
@@ -66,13 +76,25 @@ public sealed class PauseMenu
 
     public void Toggle()
     {
+        if (_notice is not null) return;
         // Esc while the exit confirm is up backs out of the confirm first —
         // the menu itself stays open (one Esc per layer).
         if (IsOpen && ConfirmingExit) { ConfirmingExit = false; CancelPresses(); return; }
         IsOpen = !IsOpen;
         if (!IsOpen) { ConfirmingExit = false; CancelPresses(); }
     }
-    public void Close()  { IsOpen = false; ConfirmingExit = false; CancelPresses(); }
+    public void Close()
+    {
+        if (_notice is not null) return;
+        IsOpen = false; ConfirmingExit = false; CancelPresses();
+    }
+
+    /// <summary>Open on a notice with one OK button (see <see cref="ShowingNotice"/>).</summary>
+    public void ShowNotice(string line1, string line2)
+    {
+        _notice = (line1, line2);
+        IsOpen = true; ConfirmingExit = true; CancelPresses();
+    }
 
     /// <summary>SC-EXIT-CONFIRM — enter the exit confirmation state (EXIT GAME
     /// was clicked). The menu stays open behind the dialog.</summary>
@@ -83,6 +105,7 @@ public sealed class PauseMenu
         foreach (var b in _buttons) b.CancelPress();
         _yesBtn.CancelPress();
         _noBtn.CancelPress();
+        _okBtn.CancelPress();
     }
 
     private void Layout(int viewportW, int viewportH)
@@ -113,6 +136,7 @@ public sealed class PauseMenu
         }
         Place(_yesBtn, YesRect);
         Place(_noBtn, NoRect);
+        Place(_okBtn, OkRect);
     }
 
     public void OnMouseMove(int px, int py)
@@ -120,6 +144,7 @@ public sealed class PauseMenu
         if (!IsOpen) return;
         if (ConfirmingExit)
         {
+            if (_notice is not null) { _okBtn.UpdateHover(px, py); return; }
             _yesBtn.UpdateHover(px, py);
             _noBtn.UpdateHover(px, py);
             return;
@@ -134,6 +159,7 @@ public sealed class PauseMenu
         if (!IsOpen) return false;
         if (ConfirmingExit)
         {
+            if (_notice is not null) { _okBtn.TryPress(px, py); return true; }
             _yesBtn.TryPress(px, py);
             _noBtn.TryPress(px, py);
             return true;
@@ -151,6 +177,7 @@ public sealed class PauseMenu
         if (!IsOpen) return Action.None;
         if (ConfirmingExit)
         {
+            if (_notice is not null) return _okBtn.Release(px, py) ? Action.ExitConfirmed : Action.None;
             if (_yesBtn.Release(px, py)) return Action.ExitConfirmed;
             if (_noBtn.Release(px, py)) { ConfirmingExit = false; CancelPresses(); }
             return Action.None;
@@ -173,7 +200,8 @@ public sealed class PauseMenu
         // SC-HUD-MATCH — label size rides the same shared HUD scale as the
         // buttons (was raw viewportH/480 = oversized vs the rest of the UI).
         int fontScale = System.Math.Max(1, (int)MathF.Round(HudScale.Hud(viewportH)));
-        for (int bi = 0; bi < _buttons.Length; bi++)
+        // A notice stands alone: the game it would resume is over.
+        for (int bi = 0; bi < (_notice is null ? _buttons.Length : 0); bi++)
         {
             var b = _buttons[bi];
             bool off = Disabled(bi);
@@ -221,7 +249,19 @@ public sealed class PauseMenu
             int qw = text.MeasureWidth(ConfirmText, fontScale);
             int lineH = 12 * fontScale;
             int qy = py0 + (int)MathF.Round(24 * s);
-            if (qw <= pw - 12 * fontScale)
+            if ((_notice ?? ExitConfirmLines) is { } two)
+            {
+                // Two lines, centered in the room above the buttons (the
+                // font steps in whole pixels, so the room is measured).
+                int roomTop = py0, roomBottom = _yesBtn.Y;
+                int blockH = 2 * lineH + 2;
+                int ty = roomTop + Math.Max(0, (roomBottom - roomTop - blockH) / 2);
+                int w1 = text.MeasureWidth(two.L1, fontScale);
+                int w2 = text.MeasureWidth(two.L2, fontScale);
+                text.DrawString(viewportW, viewportH, two.L1, px0 + (pw - w1) / 2, ty, qInk, fontScale);
+                text.DrawString(viewportW, viewportH, two.L2, px0 + (pw - w2) / 2, ty + lineH + 2, qInk, fontScale);
+            }
+            else if (qw <= pw - 12 * fontScale)
             {
                 text.DrawString(viewportW, viewportH, ConfirmText,
                     px0 + (pw - qw) / 2, qy, qInk, fontScale);
@@ -236,7 +276,8 @@ public sealed class PauseMenu
                 text.DrawString(viewportW, viewportH, l2, px0 + (pw - w2) / 2, qy + lineH + 2, qInk, fontScale);
             }
 
-            foreach (var (btn, label) in new[] { (_yesBtn, "Yes"), (_noBtn, "No") })
+            var confirmButtons = _notice is not null ? new[] { (_okBtn, "OK") } : new[] { (_yesBtn, "Yes"), (_noBtn, "No") };
+            foreach (var (btn, label) in confirmButtons)
             {
                 var bstate = btn.Pressed ? ButtonChrome.State.Down
                            : btn.Hovered ? ButtonChrome.State.Hover
