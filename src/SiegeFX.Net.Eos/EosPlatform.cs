@@ -206,7 +206,9 @@ public sealed class EosPlatform : IDisposable
         // note to the other player) before the platform goes: a fifth of a
         // second, so the other side sees the player leave at once instead of
         // waiting out a connection timeout.
-        for (int i = 0; i < 10 && Platform is not null; i++) { Platform.Tick(); Thread.Sleep(20); }
+        // A lobby removal still on its way waits up to 1.5 s more.
+        for (int i = 0; Platform is not null && (i < 10 || (EosLobbyService.PendingDestroys > 0 && i < 75)); i++)
+        { Platform.Tick(); Thread.Sleep(20); }
         Platform?.Release();
         Platform = null;
         if (ReferenceEquals(_live, this)) _live = null;

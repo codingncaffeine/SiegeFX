@@ -25,8 +25,8 @@ public sealed class EosTransport : ISessionTransport
     // comes online a little later (it is loading the region after START) still
     // gets it; one that was online without listening drops it, and Epic then
     // waits ~45 s before asking again. So a request that is not up after 20 s
-    // is withdrawn and made again (then 40 s: a relayed connection that takes
-    // long to set up still gets its time). A connection that is up but has
+    // is withdrawn and made again, every 20 s (a relayed connection sets up in
+    // a few seconds). A connection that is up but has
     // never carried a packet from the host in 10 s (the two sides settled on
     // different attempts) is dialed again too.
     const int FirstAskAgainMs = 20_000, SilentHostMs = 10_000;
@@ -226,7 +226,9 @@ public sealed class EosTransport : ISessionTransport
                 NetLog.Info($"eos: {why}; asking again");
                 _hostUp = false;
                 _askedAtMs = now;
-                _askAgainMs = Math.Min(_askAgainMs * 2, 40_000);
+                // Every 20 s: after a crash, the host keeps the old connection
+                // until Epic times it out (~45 s); the next ask then gets in.
+                _askAgainMs = FirstAskAgainMs;
             }
         }
         while (true)

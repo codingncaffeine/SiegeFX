@@ -124,7 +124,7 @@ public sealed class EosLobbyService : ILobbyService
                     string hostPuid = ReadAttr(AttrHostPuid);
                     string name = ReadAttr(AttrName);
                     var attrs = new Dictionary<string, string>();
-                    foreach (var k in new[] { "map", "difficulty", "players", "host", "area", "levels" })
+                    foreach (var k in new[] { "map", "difficulty", "players", "host", "area", "levels", "state" })
                     { var val = ReadAttr(k); if (val.Length > 0) attrs[k] = val; }
                     if (hostPuid.Length > 0)
                         results.Add(new LobbyInfo(hostPuid, name.Length > 0 ? name : "SiegeFX Game", hostPuid, attrs));
@@ -149,15 +149,27 @@ public sealed class EosLobbyService : ILobbyService
     // than tracking lobby-membership state nothing reads.
     public Task<bool> JoinAsync(LobbyInfo lobby, CancellationToken ct) => Task.FromResult(true);
 
+    /// <summary>Lobby removals Epic has not confirmed yet. The program waits
+    /// for them before it exits (EosPlatform.Dispose): an unconfirmed one stays
+    /// listed, and since the same player signs in again in the region the
+    /// relaunch starts, Epic keeps showing the old game.</summary>
+    public static int PendingDestroys => Volatile.Read(ref _pendingDestroys);
+    static int _pendingDestroys;
+
     public Task LeaveAsync()
     {
-        if (_createdLobbyId != null)
+        if (_createdLobbyId == null) return Task.CompletedTask;
+        var tcs = new TaskCompletionSource();
+        var opts = new DestroyLobbyOptions { LocalUserId = _local, LobbyId = _createdLobbyId };
+        Interlocked.Increment(ref _pendingDestroys);
+        _lobby.DestroyLobby(ref opts, null, (ref DestroyLobbyCallbackInfo info) =>
         {
-            var opts = new DestroyLobbyOptions { LocalUserId = _local, LobbyId = _createdLobbyId };
-            _lobby.DestroyLobby(ref opts, null, (ref DestroyLobbyCallbackInfo _) => { });
-            _createdLobbyId = null;
-        }
-        return Task.CompletedTask;
+            Interlocked.Decrement(ref _pendingDestroys);
+            NetLog.Info(info.ResultCode == Result.Success ? "eos: lobby closed (no longer listed)" : $"eos: DestroyLobby {info.ResultCode}");
+            tcs.TrySetResult();
+        });
+        _createdLobbyId = null;
+        return tcs.Task;
     }
 
     public void Dispose() => LeaveAsync();
