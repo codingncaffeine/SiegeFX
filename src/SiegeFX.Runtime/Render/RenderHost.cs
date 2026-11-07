@@ -7036,7 +7036,7 @@ public sealed class RenderHost : IDisposable
     private static HeroVariantPicker MpPickerFromInfo(in SiegeFX.Core.Net.MpPlayerInfo i) => new()
     {
         Gender   = i.Gender == 1 ? HeroGender.Girl : HeroGender.Boy,
-        FaceIdx  = i.Face,  StyleIdx = i.Style,
+        FaceIdx  = i.Face,  StyleIdx = i.Style, HeadIdx = i.Head,
         ShirtIdx = i.Shirt, PantsIdx = i.Pants,
     };
 
@@ -7065,7 +7065,7 @@ public sealed class RenderHost : IDisposable
         return new SiegeFX.Core.Net.MpPlayerInfo(
             (byte)(_mpNetSession?.LocalPlayerId ?? 0),
             (byte)(pick?.Gender == HeroGender.Girl ? 1 : 0),
-            B(pick?.FaceIdx ?? 0), B(pick?.StyleIdx ?? 0), 0,
+            B(pick?.FaceIdx ?? 0), B(pick?.StyleIdx ?? 0), B(pick?.HeadIdx ?? 0),
             B(pick?.ShirtIdx ?? 0), B(pick?.PantsIdx ?? 0),
             string.IsNullOrEmpty(_heroName) ? "Adventurer" : _heroName,
             _playerStartingClass,
@@ -30424,6 +30424,58 @@ void main()
         }
     }
 
+    // Head meshes for other players' heroes, by mesh name (shared, like the
+    // body meshes); null = failed to load.
+    private readonly Dictionary<string, (SiegeFX.Core.Assets.AspMesh Asp, SkinnedMesh Mesh)?> _remoteHeads =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The head mesh another player picked for their hero (from their
+    /// character card), its body's own head marked hidden; null for the bald
+    /// body head, no card, or a mesh that will not load.</summary>
+    private (SiegeFX.Core.Assets.AspMesh Asp, SkinnedMesh Mesh)? RemoteHeadFor(ActorRenderState s)
+    {
+        if (_gl is null || _playResolver is null || s.GlMesh is null) return null;
+        if (!_netPickers.TryGetValue(s.Actor, out var pick)) return null;
+        var name = HeadMeshFor(pick);
+        if (name is null) return null;
+        if (!_remoteHeads.TryGetValue(name, out var head))
+        {
+            head = null;
+            try
+            {
+                if (_playResolver.TryLoadModel(name, out var bytes))
+                {
+                    var asp = SiegeFX.Core.Assets.AspMesh.Load(bytes);
+                    if (asp.HasSkin && asp.BoneCount <= SkinnedMesh.MaxBones) head = (asp, new SkinnedMesh(_gl, asp));
+                }
+            }
+            catch (Exception ex) { Console.WriteLine($"[mp] head '{name}' failed: {ex.Message}"); }
+            _remoteHeads[name] = head;
+        }
+        if (head is not null)
+            s.GlMesh.HideBoneTriangles(s.Actor.Mesh, HeroPreviewRenderer.HeadBone(s.Actor.Mesh));
+        return head;
+    }
+
+    /// <summary>Draw another player's head mesh in their hero's pose and skin
+    /// (uModel is still the body's).</summary>
+    private void DrawRemoteHead(ActorRenderState s, (SiegeFX.Core.Assets.AspMesh Asp, SkinnedMesh Mesh) head,
+                                SiegeFX.Core.Assets.PrsAnimation? clip, float t)
+    {
+        int lb = head.Asp.BoneCount;
+        if (_skinScratch.Length < lb) _skinScratch = new Matrix4x4[Math.Max(lb, 64)];
+        if (clip is not null) AnimationRuntime.ComputeSkinMatrices(head.Asp, clip, t, _skinScratch);
+        else for (int i = 0; i < lb; i++) _skinScratch[i] = Matrix4x4.Identity;
+        _skinShader!.SetMatrix4Array("uBones[0]", _skinScratch.AsSpan(0, lb));
+        var subs = head.Asp.Subsets;
+        if (subs.Length == 0) { BindActorSlot(s.Actor, 0); head.Mesh.Draw(); return; }
+        foreach (var sub in subs)
+        {
+            BindActorSlot(s.Actor, Math.Max(0, sub.TextureIndex));
+            head.Mesh.DrawSubset(sub.FirstTriangle, sub.TriangleCount);
+        }
+    }
+
     private void DisposeEquippedLayers()
     {
         foreach (var l in _equippedLayers)
@@ -40760,6 +40812,8 @@ void main()
                 var clips = s.Actor.Clips;
                 int boneCount = s.Actor.Mesh.BoneCount;
                 ReadOnlySpan<Matrix4x4> skin;
+                SiegeFX.Core.Assets.PrsAnimation? drawClip = null;
+                float drawT = 0f;
                 if (clips.Length == 0)
                 {
                     // No parsable PRS for this actor (shipped 0x0202 clips we don't support
@@ -40806,6 +40860,7 @@ void main()
                         _skinScratch = new Matrix4x4[Math.Max(boneCount, 64)];
                     AnimationRuntime.ComputeSkinMatrices(s.Actor.Mesh, clip, t, _skinScratch);
                     skin = _skinScratch.AsSpan(0, boneCount);
+                    drawClip = clip; drawT = t;
                 }
                 // SC-ACTOR-SCALE — apply the creature's authored [aspect] scale_base
                 // (× scale_multiplier) to the visual model only. Most mobs are 1.0
@@ -40838,7 +40893,9 @@ void main()
                 // The hero's own head gives way to the creator's head mesh
                 // (a layer, drawn below). The GL mesh is shared: reset after.
                 // (The layer pass skips a dead hero, so a dead one keeps his.)
-                s.GlMesh.HideMarked = s.IsPlayer && !s.IsDead && PlayerHeadReplaced();
+                // Another player's hero wears the head its owner picked.
+                var remoteHead = !s.IsPlayer && !s.IsDead ? RemoteHeadFor(s) : null;
+                s.GlMesh.HideMarked = (s.IsPlayer && !s.IsDead && PlayerHeadReplaced()) || remoteHead is not null;
                 if (subsets.Length == 0)
                 {
                     BindActorSlot(s.Actor, 0);
@@ -40873,6 +40930,7 @@ void main()
                         _skinShader.SetInt("uSubsetTintActive", 0);
                 }
                 s.GlMesh.HideMarked = false;
+                if (remoteHead is { } rh) DrawRemoteHead(s, rh, drawClip, drawT);
                 if (ghostDraw)
                 {
                     _skinShader.SetFloat("uGhost", 0f);
