@@ -40,6 +40,13 @@ Multiplayer
 Multiplayer > Internet lists the games other players host, on any
 system (Windows, Linux or Mac), and HOST GAME lists yours; nobody needs
 an IP address. Multiplayer > Network finds games on your own network.
+Internet play signs in to Epic anonymously (no account) and Epic's
+library keeps that sign-in in your keychain, so macOS may ask to let
+SiegeFX use the keychain: allow it.
+
+Each player's co-op character is saved on their own Mac, every half
+minute when it changed and when the game closes, and comes back in
+every co-op game they host or join.
 
 Where your data lives
 ---------------------
