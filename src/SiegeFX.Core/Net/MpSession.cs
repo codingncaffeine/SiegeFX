@@ -101,6 +101,8 @@ public sealed class MpSession : IDisposable
 
     readonly string _localName;
     uint _tick;
+    /// <summary>Host: the number of the last world update sent (15 a second).</summary>
+    public uint CurrentTick => _tick;
     double _deltaTimer;
     double _clientSendTimer;
     const double DeltaInterval = 1.0 / 15.0; // 15 Hz authoritative deltas
@@ -113,7 +115,7 @@ public sealed class MpSession : IDisposable
     // and a client that never hears JoinAccept plays as player 0, the host's id.
     bool _joinPending;
     // Client: until JoinAccept names our player id, LocalPlayerId is 0 (the
-    // host's) and our own pose in a PlayerDelta would read as someone else's.
+    // host's) and our own pose would be sent as the host's.
     bool _joined;
     double _joinRetryTimer;
     const double JoinRetryInterval = 1.0;
@@ -159,7 +161,7 @@ public sealed class MpSession : IDisposable
     }
 
     void SendReady() =>
-        _t.Send(0, new MpWriter().U8((byte)MpMsg.Ready).U8(_wantReady ? (byte)1 : (byte)0).Span);
+        Out(0, new MpWriter().U8((byte)MpMsg.Ready).U8(_wantReady ? (byte)1 : (byte)0).Span);
 
     byte[] BuildRosterFrame()
     {
@@ -184,6 +186,8 @@ public sealed class MpSession : IDisposable
         if (IsHost)
         {
             _players.Remove(peer);
+            _senders.Remove(peer);
+            _clientSeq.Remove(peer);
             if (!_joinAccepts.Remove(peer))
             {
                 // A connection that closed before its JoinRequest was answered
@@ -208,14 +212,14 @@ public sealed class MpSession : IDisposable
         if (IsHost) return;
         _joinPending = true;
         _joinRetryTimer = 0;
-        _t.Send(0, new MpWriter().U8((byte)MpMsg.JoinRequest).U16(MpProtocol.Version).Str(_localName).Span);
+        Out(0, new MpWriter().U8((byte)MpMsg.JoinRequest).U16(MpProtocol.Version).Str(_localName).Span);
         NetLog.Info($"session: sent JoinRequest as '{_localName}' (protocol v{MpProtocol.Version})");
     }
 
     public void SendInput(MpInputCmd cmd, float x, float z, uint targetScid = 0)
     {
         if (IsHost) return;
-        _t.Send(0, new MpWriter().U8((byte)MpMsg.Input)
+        Out(0, new MpWriter().U8((byte)MpMsg.Input)
             .U32(_tick).U8((byte)cmd).F32(x).F32(z).U32(targetScid).Span);
     }
 
@@ -225,14 +229,14 @@ public sealed class MpSession : IDisposable
     public void SendClientHit(uint targetScid, float damage)
     {
         if (IsHost || targetScid == 0 || damage <= 0f) return;
-        _t.Send(0, new MpWriter().U8((byte)MpMsg.ClientHit).U32(targetScid).F32(damage).Span);
+        Out(0, new MpWriter().U8((byte)MpMsg.ClientHit).U32(targetScid).F32(damage).Span);
         NetLog.Info($"client hit -> host: scid {targetScid:x8} dmg {damage:F1}");
     }
 
     public void SendChat(string text)
     {
         var w = new MpWriter().U8((byte)MpMsg.Chat).Str(text, u16Len: true);
-        if (IsHost) { RelayChat(0, text); } else _t.Send(0, w.Span);
+        if (IsHost) { RelayChat(0, text); } else Out(0, w.Span);
     }
 
     /// <summary>Both roles: publish this machine's character card. The host
@@ -252,7 +256,7 @@ public sealed class MpSession : IDisposable
         {
             var w = new MpWriter().U8((byte)MpMsg.ClientInfo);
             info.WriteBody(w);
-            _t.Send(0, w.Span);
+            Out(0, w.Span);
         }
     }
 
@@ -284,7 +288,7 @@ public sealed class MpSession : IDisposable
         if (!IsHost) return;
         var w = new MpWriter().U8((byte)MpMsg.LootSpawn).U32(netId).F32(x).F32(y).F32(z);
         WriteEntries(w, entries);
-        if (toPeer < 0) Broadcast(w.ToArray()); else _t.Send(toPeer, w.Span);
+        if (toPeer < 0) Broadcast(w.ToArray()); else Out(toPeer, w.Span);
     }
 
     /// <summary>Host: resolve a pile — taker adds contents, everyone removes.</summary>
@@ -297,7 +301,7 @@ public sealed class MpSession : IDisposable
     public void SendLootTake(uint netId)
     {
         if (IsHost) return;
-        _t.Send(0, new MpWriter().U8((byte)MpMsg.LootTake).U32(netId).Span);
+        Out(0, new MpWriter().U8((byte)MpMsg.LootTake).U32(netId).Span);
     }
 
     public void SendLootDrop(float x, float y, float z, IReadOnlyList<(string Slot, string Ref)> entries)
@@ -305,7 +309,7 @@ public sealed class MpSession : IDisposable
         if (IsHost) return;
         var w = new MpWriter().U8((byte)MpMsg.LootDrop).F32(x).F32(y).F32(z);
         WriteEntries(w, entries);
-        _t.Send(0, w.Span);
+        Out(0, w.Span);
     }
 
     /// <summary>Hand an item to another player. The host applies/relays;
@@ -315,7 +319,7 @@ public sealed class MpSession : IDisposable
         var w = new MpWriter().U8((byte)MpMsg.ItemGive)
             .U8((byte)LocalPlayerId).U8((byte)targetPlayer).Str(slot).Str(itemRef, u16Len: true);
         if (IsHost) RouteItemGive(LocalPlayerId, targetPlayer, slot, itemRef);
-        else _t.Send(0, w.Span);
+        else Out(0, w.Span);
     }
 
     void RouteItemGive(int from, int target, string slot, string itemRef)
@@ -323,13 +327,13 @@ public sealed class MpSession : IDisposable
         if (target == LocalPlayerId) { OnItemGive?.Invoke(from, target, slot, itemRef); return; }
         var w = new MpWriter().U8((byte)MpMsg.ItemGive)
             .U8((byte)from).U8((byte)target).Str(slot).Str(itemRef, u16Len: true);
-        _t.Send(target, w.Span);
+        Out(target, w.Span);
     }
 
     public void SendRecruitRequest(uint scid)
     {
         if (IsHost) return;
-        _t.Send(0, new MpWriter().U8((byte)MpMsg.RecruitRequest).U32(scid).Span);
+        Out(0, new MpWriter().U8((byte)MpMsg.RecruitRequest).U32(scid).Span);
     }
 
     /// <summary>Host: a host-run enemy hit remote player <paramref name="player"/>;
@@ -337,7 +341,7 @@ public sealed class MpSession : IDisposable
     public void SendPlayerHit(int player, float damage)
     {
         if (!IsHost || player == LocalPlayerId || damage <= 0f) return;
-        _t.Send(player, new MpWriter().U8((byte)MpMsg.PlayerHit).F32(damage).Span);
+        Out(player, new MpWriter().U8((byte)MpMsg.PlayerHit).F32(damage).Span);
     }
 
     /// <summary>Both: this machine shattered breakable prop <paramref name="scid"/>.
@@ -346,7 +350,7 @@ public sealed class MpSession : IDisposable
     {
         if (scid == 0) return;
         var frame = new MpWriter().U8((byte)MpMsg.PropBreak).U32(scid).ToArray();
-        if (IsHost) Broadcast(frame); else _t.Send(0, frame);
+        if (IsHost) Broadcast(frame); else Out(0, frame);
     }
 
     /// <summary>Host: a runtime-spawned actor clients must mirror under the same
@@ -355,7 +359,7 @@ public sealed class MpSession : IDisposable
     {
         if (!IsHost) return;
         var frame = new MpWriter().U8((byte)MpMsg.ActorSpawn).U32(scid).Str(template).F32(x).F32(y).F32(z).ToArray();
-        if (toPeer >= 0) _t.Send(toPeer, frame); else Broadcast(frame);
+        if (toPeer >= 0) Out(toPeer, frame); else Broadcast(frame);
     }
 
     /// <summary>Host: announce a granted hire to every machine (self included).</summary>
@@ -371,7 +375,20 @@ public sealed class MpSession : IDisposable
     public void Tick(double dt)
     {
         while (_t.TryReceive(out int peer, out var data))
+        {
+            Stats.Received(peer, data);
             Handle(peer, data);
+        }
+
+        if (StatsInterval > 0 && _t.Peers.Count > 0)
+        {
+            _statsTimer += dt;
+            if (_statsTimer >= StatsInterval)
+            {
+                NetLog.Info($"stats {_statsTimer:0} s: {Stats.Report(_statsTimer)}");
+                _statsTimer = 0;
+            }
+        }
 
         if (!IsHost && _joinPending && _t.Peers.Count > 0)
         {
@@ -379,7 +396,7 @@ public sealed class MpSession : IDisposable
             if (_joinRetryTimer >= JoinRetryInterval)
             {
                 _joinRetryTimer = 0;
-                _t.Send(0, new MpWriter().U8((byte)MpMsg.JoinRequest).U16(MpProtocol.Version).Str(_localName).Span);
+                Out(0, new MpWriter().U8((byte)MpMsg.JoinRequest).U16(MpProtocol.Version).Str(_localName).Span);
                 NetLog.Warn("session: no JoinAccept yet — JoinRequest re-sent");
             }
         }
@@ -411,67 +428,151 @@ public sealed class MpSession : IDisposable
 
         if (IsHost)
         {
+            // 15 updates a second on average whatever the frame rate: the
+            // remainder carries over (a long hitch does not cause a burst).
             _deltaTimer += dt;
             if (_deltaTimer >= DeltaInterval)
             {
-                _deltaTimer = 0;
+                _deltaTimer -= DeltaInterval;
+                if (_deltaTimer >= DeltaInterval) _deltaTimer = 0;
                 _tick++;
 
-                // Players: refresh our own pose (id 0), fan the whole set out to
-                // clients, and hand the host its own view of the remote avatars.
+                // Players: refresh our own pose (id 0) and hand the host its
+                // own view of the remote avatars.
                 if (BuildLocalPlayerState is not null)
                     _players[LocalPlayerId] = BuildLocalPlayerState() with { Player = (byte)LocalPlayerId };
-                if (_players.Count > 0)
-                {
-                    if (_t.Peers.Count > 0) Broadcast(BuildPlayerDelta());
-                    EmitRemotePlayers();
-                }
+                if (_players.Count > 0) EmitRemotePlayers();
 
-                // World actors (enemies) — host-authoritative, keyed by SCID.
+                // The world update for each joiner: players + the world actors
+                // near it, against what it last acknowledged.
                 var actors = EnumerateActors?.Invoke();
-                if (actors is { Count: > 0 } && _t.Peers.Count > 0)
-                {
-                    var w = new MpWriter(16 + actors.Count * 21);
-                    w.U8((byte)MpMsg.StateDelta).U32(_tick).U16((ushort)Math.Min(actors.Count, ushort.MaxValue));
-                    int n = Math.Min(actors.Count, ushort.MaxValue);
-                    for (int i = 0; i < n; i++)
-                    {
-                        var a = actors[i];
-                        w.U32(a.Scid).F32(a.X).F32(a.Y).F32(a.Z).U16(a.Life)
-                         .U8(a.Chore.Seq).U8(a.Chore.Clip).U8(a.Chore.Duration);
-                    }
-                    Broadcast(w.ToArray());
-                }
+                if (_t.Peers.Count > 0) SendWorldUpdates(actors);
             }
         }
         else
         {
-            // Client: movement is client-owned, so report our own pose upstream.
+            // Client: movement is client-owned, so report our own pose upstream,
+            // with the newest world update held (the host writes against it).
             _clientSendTimer += dt;
             if (_clientSendTimer >= DeltaInterval)
             {
-                _clientSendTimer = 0;
-                if (BuildLocalPlayerState is not null)
+                _clientSendTimer -= DeltaInterval;
+                if (_clientSendTimer >= DeltaInterval) _clientSendTimer = 0;
+                if (BuildLocalPlayerState is not null && _joined)
                     SendClientState(BuildLocalPlayerState() with { Player = (byte)LocalPlayerId });
             }
         }
     }
 
-    byte[] BuildPlayerDelta()
+    // ── World updates (protocol v8) ─────────────────────────────────────
+    /// <summary>Host: how far from each joiner's player the world actors are kept up to date.</summary>
+    public MpInterest Interest = MpInterest.Default;
+    /// <summary>Client: world actors that left this player's surroundings (by scid);
+    /// the host stops updating them until they come near again.</summary>
+    public Action<IReadOnlyList<uint>>? OnActorsLeft;
+    /// <summary>Client: a world update was used (its tick), after its callbacks ran.</summary>
+    public Action<uint>? OnWorldUpdate;
+
+    readonly Dictionary<int, MpWorldSender> _senders = new();   // host: per joiner
+    readonly Dictionary<int, ushort> _clientSeq = new();         // host: newest ClientState per joiner
+    readonly Dictionary<uint, uint> _netKeys = new();            // host: scid -> key
+    uint _nextNetKey = MpQuant.FirstActorKey;
+    readonly List<MpEnt> _all = new();
+    readonly HashSet<uint> _dupScids = new();
+    readonly MpWorldReceiver _world = new();                     // client
+    readonly Dictionary<uint, MpActorState> _actorsByScid = new(); // client: the newest state of each followed actor
+    ushort _seq;                                                 // client: ClientState counter
+
+    /// <summary>Host: the update writer for one joiner (made on first use).</summary>
+    public MpWorldSender SenderFor(int peer)
     {
-        var w = new MpWriter(8 + _players.Count * 23);
-        w.U8((byte)MpMsg.PlayerDelta).U32(_tick).U8((byte)Math.Min(_players.Count, byte.MaxValue));
-        int n = 0;
-        foreach (var s in _players.Values)
+        if (!_senders.TryGetValue(peer, out var s)) _senders[peer] = s = new MpWorldSender();
+        return s;
+    }
+
+    /// <summary>Client: the receiving side of the world updates.</summary>
+    public MpWorldReceiver World => _world;
+
+    /// <summary>Client: the newest state the host sent for world actor
+    /// <paramref name="scid"/>, for an actor this machine only now has (a
+    /// streamed-in neighbor region, a mirrored spawn).</summary>
+    public bool TryGetActor(uint scid, out MpActorState state) => _actorsByScid.TryGetValue(scid, out state);
+
+    void SendWorldUpdates(IReadOnlyList<MpActorState>? actors)
+    {
+        _all.Clear();
+        foreach (var p in _players.Values)
+            _all.Add(new MpEnt { Key = p.Player, Scid = 0, S = MpQuant.Of(p) });
+        if (actors is not null)
         {
-            if (n++ >= byte.MaxValue) break;
-            byte flags = (byte)(s.Flags & ~(byte)MpPlayerFlags.OutOfHostView);
-            if (s.Player != LocalPlayerId && IsPlayerOutOfView?.Invoke(s.Player) == true)
-                flags |= (byte)MpPlayerFlags.OutOfHostView;
-            w.U8(s.Player).F32(s.X).F32(s.Y).F32(s.Z).F32(s.Yaw).U16(s.Life).U8(flags)
-             .U8(s.Chore.Seq).U8(s.Chore.Clip).U8(s.Chore.Duration);
+            _dupScids.Clear();
+            foreach (var a in actors)
+            {
+                // Two actors on one scid would give one key twice, and the
+                // receiver refuses an update whose keys do not rise.
+                if (!_dupScids.Add(a.Scid)) continue;
+                if (!_netKeys.TryGetValue(a.Scid, out var key)) _netKeys[a.Scid] = key = _nextNetKey++;
+                _all.Add(new MpEnt { Key = key, Scid = a.Scid, S = MpQuant.Of(a) });
+            }
         }
-        return w.ToArray();
+        if (_all.Count == 0) return;   // nothing in the world to tell anyone (the staging area)
+        _all.Sort((a, b) => a.Key.CompareTo(b.Key));
+        (int, int, int) fallback = _players.TryGetValue(LocalPlayerId, out var me)
+            ? (MpQuant.Q(me.X), MpQuant.Q(me.Y), MpQuant.Q(me.Z)) : (0, 0, 0);
+        int max = _t.MaxUnreliableBytes;
+        foreach (var peer in _t.Peers)
+        {
+            // Only players: a connection that has not joined drops world updates.
+            if (!_joinAccepts.ContainsKey(peer)) continue;
+            var center = _players.TryGetValue(peer, out var them)
+                ? (MpQuant.Q(them.X), MpQuant.Q(them.Y), MpQuant.Q(them.Z)) : fallback;
+            bool outOfView = IsPlayerOutOfView?.Invoke(peer) == true;
+            foreach (var f in SenderFor(peer).Write(_tick, _all, peer, center, outOfView, Interest, max))
+                OutLossy(peer, f);
+        }
+    }
+
+    // Client: use a complete world update newer than the last: what changed
+    // goes to the game, actors that left are named, players are refreshed.
+    void UseWorldUpdate(MpEnt[] now, MpEnt[] before)
+    {
+        var changed = new List<MpActorState>();
+        var left = new List<uint>();
+        var players = new List<MpPlayerState>();
+        int i = 0, j = 0;
+        while (i < now.Length || j < before.Length)
+        {
+            uint kn = i < now.Length ? now[i].Key : uint.MaxValue;
+            uint kb = j < before.Length ? before[j].Key : uint.MaxValue;
+            if (kn <= kb)
+            {
+                var e = now[i++];
+                bool same = kn == kb && before[j].S == e.S;
+                if (kn == kb) j++;
+                if (e.Key < MpQuant.FirstActorKey)
+                {
+                    var ps = MpQuant.Player((byte)e.Key, e.S);
+                    players.Add(ps);
+                    if (e.Key == 0) HostState = ps;
+                }
+                else if (!same)
+                {
+                    var st = MpQuant.Actor(e.Scid, e.S);
+                    changed.Add(st);
+                    _actorsByScid[e.Scid] = st;
+                }
+            }
+            else
+            {
+                var e = before[j++];
+                if (e.Key >= MpQuant.FirstActorKey) { left.Add(e.Scid); _actorsByScid.Remove(e.Scid); }
+            }
+        }
+        OutOfHostView = (_world.Flags & 1) != 0;
+        if (changed.Count > 0) ApplyDelta?.Invoke(_world.Newest, changed);
+        if (left.Count > 0) OnActorsLeft?.Invoke(left);
+        if (players.Count > 0) ApplyPlayerStates?.Invoke(players);
+        OnWorldUpdate?.Invoke(_world.Newest);
     }
 
     // Host renders the OTHER players (everyone but itself) from its own table.
@@ -484,7 +585,7 @@ public sealed class MpSession : IDisposable
     }
 
     void SendClientState(MpPlayerState s) =>
-        _t.Send(0, new MpWriter().U8((byte)MpMsg.ClientState)
+        OutLossy(0, new MpWriter().U8((byte)MpMsg.ClientState).U16(++_seq).U32(_world.Newest)
             .F32(s.X).F32(s.Y).F32(s.Z).F32(s.Yaw).U16(s.Life).U8(s.Flags)
             .U8(s.Chore.Seq).U8(s.Chore.Clip).U8(s.Chore.Duration).Span);
 
@@ -512,12 +613,30 @@ public sealed class MpSession : IDisposable
     void SendInProgressStart(int peer)
     {
         if (InProgress is not { } ip) return;
-        _t.Send(peer, BuildGameStart(ip.Region, ip.Difficulty));
+        Out(peer, BuildGameStart(ip.Region, ip.Difficulty));
+    }
+
+    /// <summary>What this session sent and received, per peer and message type.</summary>
+    public MpNetStats Stats { get; } = new();
+    /// <summary>How often the session logs its <see cref="Stats"/> while peers are connected (s; 0 = never).</summary>
+    public double StatsInterval = 10;
+    double _statsTimer;
+
+    void Out(int peer, ReadOnlySpan<byte> frame)
+    {
+        Stats.Sent(peer, frame);
+        _t.Send(peer, frame);
+    }
+
+    void OutLossy(int peer, ReadOnlySpan<byte> frame)
+    {
+        Stats.Sent(peer, frame);
+        _t.SendUnreliable(peer, frame);
     }
 
     void Broadcast(byte[] frame)
     {
-        foreach (var peer in _t.Peers) _t.Send(peer, frame);
+        foreach (var peer in _t.Peers) Out(peer, frame);
     }
 
     void Handle(int peer, byte[] data)
@@ -537,24 +656,27 @@ public sealed class MpSession : IDisposable
                     // the two desync on incompatible byte layouts. The friend
                     // test's single most likely failure; make it unmistakable.
                     string why = $"Version mismatch — host is protocol v{MpProtocol.Version}, you sent v{ver}. Both players need the same SiegeFX build.";
-                    _t.Send(peer, new MpWriter().U8((byte)MpMsg.JoinReject).Str(why).Span);
+                    Out(peer, new MpWriter().U8((byte)MpMsg.JoinReject).Str(why).Span);
                     NetLog.Warn($"session: rejected peer {peer} — protocol v{ver} != host v{MpProtocol.Version}");
                     return;
                 }
                 if (_joinAccepts.TryGetValue(peer, out var accepted))
                 {
-                    _t.Send(peer, accepted);
+                    Out(peer, accepted);
                     SendInProgressStart(peer);
                     NetLog.Info($"session: player {peer} asked again — JoinAccept re-sent");
                     return;
                 }
                 if (_playerCount >= MaxPlayers)
                 {
-                    _t.Send(peer, new MpWriter().U8((byte)MpMsg.JoinReject).Str("Game is full.").Span);
+                    Out(peer, new MpWriter().U8((byte)MpMsg.JoinReject).Str("Game is full.").Span);
                     NetLog.Info($"session: rejected peer {peer} — full");
                     return;
                 }
                 _playerCount++;
+                // A new player on this connection starts from a full world update.
+                _senders.Remove(peer);
+                _clientSeq.Remove(peer);
                 var snap = BuildSnapshot?.Invoke() ?? Array.Empty<byte>();
                 var packed = MpSnapshot.Pack(snap);
                 if (packed.Length > MaxSnapshotBytes)
@@ -567,7 +689,7 @@ public sealed class MpSession : IDisposable
                 foreach (var b in packed) w.U8(b);
                 var accept = w.ToArray();
                 _joinAccepts[peer] = accept;
-                _t.Send(peer, accept);
+                Out(peer, accept);
                 OnPlayerJoined?.Invoke(peer, name);
                 Broadcast(new MpWriter().U8((byte)MpMsg.PlayerJoined).U8((byte)peer).Str(name).ToArray());
                 _roster[peer] = new MpRosterEntry(peer, name, false);
@@ -580,7 +702,7 @@ public sealed class MpSession : IDisposable
                 }
                 // Catch the late joiner up on every known character card.
                 foreach (var info in _infos.Values)
-                    _t.Send(peer, BuildPlayerInfoFrame(info));
+                    Out(peer, BuildPlayerInfoFrame(info));
                 NetLog.Info($"session: player {peer} '{name}' joined, sent snapshot ({snap.Length}B, {packed.Length}B packed), now {_playerCount}/{MaxPlayers}");
                 break;
             }
@@ -605,10 +727,16 @@ public sealed class MpSession : IDisposable
             }
             case MpMsg.ClientState when IsHost:
             {
+                ushort seq = r.U16();
+                uint ack = r.U32();
                 float x = r.F32(), y = r.F32(), z = r.F32(), yaw = r.F32();
                 ushort life = r.U16(); byte flags = r.U8();
                 var chore = new MpChore(r.U8(), r.U8(), r.U8());
                 if (r.Bad) { NetLog.Warn($"session: malformed ClientState from peer {peer} — dropped"); return; }
+                // The lossy lane can deliver an older one after a newer one.
+                if (_clientSeq.TryGetValue(peer, out var lastSeq) && (short)(seq - lastSeq) <= 0) return;
+                _clientSeq[peer] = seq;
+                SenderFor(peer).Ack(ack);
                 _players[peer] = new MpPlayerState((byte)peer, x, y, z, yaw, life, flags, chore);
                 break;
             }
@@ -618,7 +746,7 @@ public sealed class MpSession : IDisposable
                 if (r.Bad) { NetLog.Warn($"session: malformed Ready from peer {peer} — dropped"); return; }
                 if (!_roster.TryGetValue(peer, out var e))
                 { NetLog.Warn($"session: Ready from peer {peer}, which has not joined — dropped"); return; }
-                if (e.Ready == ready) { _t.Send(peer, BuildRosterFrame()); return; }  // asked again: its roster was lost
+                if (e.Ready == ready) { Out(peer, BuildRosterFrame()); return; }  // asked again: its roster was lost
                 _roster[peer] = e with { Ready = ready };
                 NetLog.Info($"session: player {peer} '{e.Name}' is {(ready ? "ready" : "not ready")}");
                 RosterChanged();
@@ -718,7 +846,7 @@ public sealed class MpSession : IDisposable
                 OnPropBreak?.Invoke(scid);
                 if (IsHost)
                     foreach (var other in _t.Peers)
-                        if (other != peer) _t.Send(other, data);
+                        if (other != peer) Out(other, data);
                 break;
             }
             case MpMsg.ActorSpawn when !IsHost:
@@ -752,6 +880,8 @@ public sealed class MpSession : IDisposable
                 if (!_joinPending) return; // a re-sent accept we already applied
                 _joinPending = false;
                 _joined = true;
+                _world.Reset();
+                _actorsByScid.Clear();
                 byte[] snap;
                 try { snap = MpSnapshot.Unpack(packed); }
                 catch (Exception ex) { NetLog.Error($"session: JoinAccept snapshot unreadable ({ex.Message}) — joined without it"); snap = Array.Empty<byte>(); }
@@ -770,37 +900,10 @@ public sealed class MpSession : IDisposable
                 NetLog.Warn($"session: join rejected: {reason}");
                 break;
             }
-            case MpMsg.StateDelta when !IsHost:
-            {
-                uint tick = r.U32();
-                int count = r.U16();
-                var list = new List<MpActorState>(count);
-                for (int i = 0; i < count && !r.Bad; i++)
-                    list.Add(new MpActorState(r.U32(), r.F32(), r.F32(), r.F32(), r.U16(),
-                                              new MpChore(r.U8(), r.U8(), r.U8())));
-                if (r.Bad) { NetLog.Warn("session: truncated StateDelta — dropped"); return; }
-                ApplyDelta?.Invoke(tick, list);
-                break;
-            }
-            case MpMsg.PlayerDelta when !IsHost:
+            case MpMsg.Snapshot when !IsHost:
             {
                 if (!_joined) return;
-                uint tick = r.U32();
-                int count = r.U8();
-                var list = new List<MpPlayerState>(count);
-                for (int i = 0; i < count && !r.Bad; i++)
-                {
-                    byte pid = r.U8();
-                    float x = r.F32(), y = r.F32(), z = r.F32(), yaw = r.F32();
-                    ushort life = r.U16(); byte flags = r.U8();
-                    var chore = new MpChore(r.U8(), r.U8(), r.U8());
-                    if (r.Bad) break;
-                    if (pid == LocalPlayerId) OutOfHostView = (flags & (byte)MpPlayerFlags.OutOfHostView) != 0;
-                    else list.Add(new MpPlayerState(pid, x, y, z, yaw, life, flags, chore));
-                    if (pid == 0) HostState = new MpPlayerState(pid, x, y, z, yaw, life, flags, chore);
-                }
-                if (r.Bad) { NetLog.Warn("session: truncated PlayerDelta — dropped"); return; }
-                if (list.Count > 0) ApplyPlayerStates?.Invoke(list);
+                if (_world.Take(data, out var now, out var before)) UseWorldUpdate(now, before);
                 break;
             }
             case MpMsg.GameStart when !IsHost:

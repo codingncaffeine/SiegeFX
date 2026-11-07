@@ -36,6 +36,13 @@ public interface ISessionTransport : IDisposable
     /// providers; opaque peer id for relayed ones).</summary>
     Task<bool> ConnectAsync(string hostAddress, CancellationToken ct);
     void Send(int peerId, ReadOnlySpan<byte> payload);
+    /// <summary>Send a frame that may be lost or overtaken: the pose and world
+    /// updates, where only the newest counts. It goes in one piece, so it must
+    /// fit <see cref="MaxUnreliableBytes"/>. A transport without a separate
+    /// lossy lane sends it like any other frame.</summary>
+    void SendUnreliable(int peerId, ReadOnlySpan<byte> payload) => Send(peerId, payload);
+    /// <summary>The largest frame <see cref="SendUnreliable"/> carries.</summary>
+    int MaxUnreliableBytes => 1168;
     /// <summary>Drain one received datagram; false when the queue is empty.
     /// peerId identifies the sender (host sees clients 1..N; clients see 0).</summary>
     bool TryReceive(out int peerId, out byte[] payload);

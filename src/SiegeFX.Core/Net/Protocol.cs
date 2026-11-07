@@ -15,8 +15,9 @@ public enum MpMsg : byte
     JoinRequest = 1,   // [nameLen u8][name utf8]
     Input       = 2,   // [tick u32][cmd u8][x f32][z f32][targetScid u32]
     Chat        = 3,   // [textLen u16][text utf8]
-    ClientState = 5,   // client→host: this player's authoritative pose (movement is
-                       // client-owned in the friend-trust model): [x f32][y f32][z f32][yaw f32][life u16][flags u8]
+    ClientState = 5,   // client→host, lossy lane, 15 a second: this player's pose (movement is client-owned in
+                       // the friend-trust model) and the newest world update it holds:
+                       // [seq u16][ack tick u32][x f32][y f32][z f32][yaw f32][life u16][flags u8][chore 3 × u8]
     ClientHit   = 6,   // client→host: apply this player's rolled damage to a host-owned
                        // actor (friend-trust: the client owns its own damage roll): [scid u32][damage f32]
     ClientInfo  = 7,   // client→host (host stores + relays as PlayerInfo): this player's
@@ -25,11 +26,10 @@ public enum MpMsg : byte
     // host → client
     JoinAccept  = 10,  // [assignedPlayer u8][worldSnapshotLen u32][snapshot bytes]
     JoinReject  = 11,  // [reasonLen u8][reason utf8]
-    StateDelta  = 12,  // [tick u32][actorCount u16][ (scid u32,x f32,y f32,z f32,life u16) * ]  — world/enemy poses
+    // 12 (StateDelta) and 16 (PlayerDelta) are retired since v8 (Snapshot carries both); not reused.
     PlayerJoined= 13,  // [player u8][nameLen u8][name utf8]
     PlayerLeft  = 14,  // [player u8]
     ChatRelay   = 15,  // [player u8][textLen u16][text utf8]
-    PlayerDelta = 16,  // [tick u32][count u8][ (player u8,x f32,y f32,z f32,yaw f32,life u16,flags u8) * ]  — all player poses
     GameStart   = 17,  // host→client: leave staging and relaunch into the region: [regionLen u8][region utf8][difficulty u8]
     PlayerInfo  = 18,  // host→client: a player's character card (relayed ClientInfo, host-stamped id):
                        // [player u8][ClientInfo body]
@@ -49,6 +49,8 @@ public enum MpMsg : byte
                          // [scid u32][templateLen u8][template][x f32][y f32][z f32]
     Roster         = 29, // host→client: everyone in the game, host first, as the host knows it:
                          // [count u8][ (player u8, ready u8, nameLen u8, name utf8) * ]
+    Snapshot       = 30, // host→client, lossy lane, 15 a second: the players and the world actors near the
+                         // receiver, written against the newest update it acknowledged. See MpWorldUpdate.
 }
 
 /// <summary>Wire-protocol identity. Bump <see cref="Version"/> whenever a
@@ -59,10 +61,12 @@ public enum MpMsg : byte
 /// human-readable reason.</summary>
 public static class MpProtocol
 {
-    public const ushort Version = 7;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
+    public const ushort Version = 8;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
                                         // v4: PlayerHit, PropBreak, ActorSpawn; v5: chores in the pose frames;
                                         // v6: Ready + Roster (the staging area's ready marks);
-                                        // v7: weapon, shield and stance on the character card
+                                        // v7: weapon, shield and stance on the character card;
+                                        // v8: Snapshot (acknowledged deltas, interest, 2 cm grid) on the lossy
+                                        //     lane replaces StateDelta + PlayerDelta; ClientState acknowledges
 }
 
 /// <summary>The JoinAccept world snapshot is the save JSON, indented: 130 kB
@@ -166,10 +170,12 @@ public ref struct MpReader
     }
 }
 
-/// <summary>One actor's authoritative pose in a StateDelta. Kept a plain
-/// struct so the delta loop allocates nothing per actor.</summary>
+/// <summary>One world actor's authoritative state: position, life, the last
+/// chore, heading (radians, atan2(facing.X, facing.Z)) and flags
+/// (<see cref="MpPlayerFlags.Moving"/>, <see cref="MpPlayerFlags.Dead"/>).
+/// Kept a plain struct so the update loop allocates nothing per actor.</summary>
 public readonly record struct MpActorState(uint Scid, float X, float Y, float Z, ushort Life,
-                                           MpChore Chore = default);
+                                           MpChore Chore = default, float Yaw = 0f, byte Flags = 0);
 
 /// <summary>The last one-shot chore an actor started (swing, cast): a counter
 /// that moves on each start, the clip index and its length in 50 ms steps. A

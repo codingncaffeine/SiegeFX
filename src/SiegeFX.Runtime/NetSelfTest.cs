@@ -270,6 +270,105 @@ public static class NetSelfTest
             hs.Dispose(); cs.Dispose(); h5.Dispose(); c5.Dispose();
         }
 
+        // ---- v8 world updates: interest, changes only, packing, 10 % loss ----
+        {
+            var (ht, ct) = LoopbackTransport.CreatePair();
+            var net = new LossyLane(ht, lossPct: 10, seed: 5);
+            var hs = new MpSession(net, isHost: true, "Host") { StatsInterval = 0 };
+            var cs = new MpSession(ct, isHost: false, "Joiner") { StatsInterval = 0 };
+            const double dt = 1.0 / 15.0;
+            double t = 0;
+            bool still = false;
+            float cx = 0f;
+            hs.BuildLocalPlayerState = () => new MpPlayerState(0, 0f, 8f, 0f, 0f, 100, 0);
+            cs.BuildLocalPlayerState = () => new MpPlayerState(0, cx, 8f, 2f, 0f, 90, 0);
+            const uint A = 0x01000001, B = 0x01000002, C = 0x01000003, D = 0x01000004;
+            MpActorState Walker(uint scid, float x0, double time)
+            {
+                float a = (float)(time * 1.2);
+                return new MpActorState(scid, x0 + 3f * MathF.Cos(a), 8f, 3f * MathF.Sin(a), 50,
+                    default, a + MathF.PI / 2, (byte)MpPlayerFlags.Moving);
+            }
+            List<MpActorState> World(double time) => new()
+            {
+                Walker(A, 10f, time),                                           // near
+                Walker(B, 70f, time),                                           // far band (5 a second)
+                new(C, 300f, 8f, 0f, 70, default, 0f, 0),                       // beyond the interest radius
+                new(D, 5f, 8f, 5f, 40, new MpChore(3, 7, 9), 1.0f, 0),          // near, standing still
+            };
+            hs.EnumerateActors = () => World(t);
+            var left = new List<uint>();
+            cs.OnActorsLeft = l => left.AddRange(l);
+            void Step(int n) { for (int i = 0; i < n; i++) { if (!still) t += dt; cs.Tick(dt); hs.Tick(dt); cs.Tick(0); } }
+            bool Close(uint scid, MpActorState truth, float cm)
+            {
+                if (!cs.TryGetActor(scid, out var got)) return false;
+                float d = Vector3Distance(got, truth);
+                return d <= cm / 100f && got.Life == truth.Life && got.Chore == truth.Chore && got.Flags == truth.Flags
+                       && Math.Abs(MpQuant.Yaw(got.Yaw) - MpQuant.Yaw(truth.Yaw)) <= 1;
+            }
+
+            cs.SendJoinRequest(); Pump(hs, cs);
+            Step(150);
+            Assert(net.Lost > 0, $"world updates: (control) the loopback really lost updates ({net.Lost} of {net.LossySent})");
+            net.LossPct = 0;
+            Step(3);   // a lossless stretch: the far band's turn comes round once
+            var now = World(t);
+            Assert(Close(A, now[0], 1.5f), "world updates: a near walker matches the host within 1.5 cm after 10 % loss");
+            // The far band is brought up to date on every third update: the
+            // joiner holds the host's state from one of the last three.
+            Assert(Close(B, World(t)[1], 1.5f) || Close(B, World(t - dt)[1], 1.5f) || Close(B, World(t - 2 * dt)[1], 1.5f),
+                "world updates: a walker in the far band matches the host's state of one of the last 3 updates within 1.5 cm");
+            Assert(Close(D, now[3], 0.1f), "world updates: a standing actor has the host's heading, life and chore");
+            Assert(!cs.TryGetActor(C, out _), "world updates: an actor beyond the interest radius is never sent");
+
+            still = true;
+            Step(20);                                 // the last moves (the far band's too) are acknowledged
+            net.Sizes.Clear();
+            Step(MpWorldSender.HeartbeatTicks * 2);
+            Assert(net.Sizes.Count == 2 && net.Sizes.TrueForAll(n => n == MpWorldUpdate.HeaderBytes),
+                $"world updates: a still world sends only a bare header every {MpWorldSender.HeartbeatTicks} updates (sent {string.Join(",", net.Sizes)} B)");
+            net.Sizes.Clear();
+            var bStill = World(t)[1];
+            still = false;                            // the next step moves A one update's walk; B stays
+            hs.EnumerateActors = () => { var w = World(t); w[1] = bStill; return w; };
+            Step(1);
+            Assert(net.Sizes.Count == 1 && net.Sizes[0] <= MpWorldUpdate.HeaderBytes + 8,
+                $"world updates: one walker's step costs one small entry (update {string.Join(",", net.Sizes)} B; v7 sent 21 B per actor every update)");
+
+            hs.EnumerateActors = () => World(t);
+            cx = 300f;                                // the joiner walks to C
+            Step(6);
+            Assert(cs.TryGetActor(C, out var cState) && Math.Abs(cState.X - 300f) < 0.02f,
+                "world updates: an actor comes into interest when the player nears it");
+            Assert(left.Contains(A) && left.Contains(D) && !cs.TryGetActor(A, out _),
+                "world updates: actors left behind are reported gone from interest");
+
+            // A receiver fed junk and cut frames refuses them without throwing.
+            var rx = new MpWorldReceiver();
+            var junk = new Random(99);
+            bool threw = false;
+            for (int i = 0; i < 5000; i++)
+            {
+                var f = new byte[junk.Next(0, 80)];
+                junk.NextBytes(f);
+                if (f.Length > 0) f[0] = (byte)MpMsg.Snapshot;
+                if (f.Length > 7) { f[5] = 0; f[6] = 0; f[7] = 1; }   // whole, no baseline: the entries get parsed
+                try { rx.Take(f, out _, out _); }
+                catch { threw = true; break; }
+            }
+            Assert(!threw && rx.Malformed > 0, $"world updates: junk frames are refused without throwing ({rx.Malformed} of 5000 refused)");
+            hs.Dispose(); cs.Dispose(); ht.Dispose(); ct.Dispose();
+        }
+
+        // ---- v8 world updates under load: 8 players, 360 walking mobs, 1 Mbit/s, 2 % loss, 100 ms ----
+        {
+            var saved = Console.Out;
+            int code = NetLoadTest.Run(new[] { "seconds=60", "max-error-cm=5", "max-missing=0", "max-latency-growth-ms=50", "max-kbit=450" });
+            Console.SetOut(saved);
+            Assert(code == 0, "world updates: the 8-player load stays within its limits (the [load] lines above)");
+        }
+
         // ---- P5: join rules + spawn-town gates ----
         var vet = new MpSessionInfo("Bob", "Utraea", MpDifficulty.Veteran, 2, 8, false, "Lang", 50, 60);
         Assert(!MpJoinRules.CanJoin(vet, 40, false).Ok, "level-40 char refused from a Veteran game (needs 54+)");
@@ -354,11 +453,42 @@ public static class NetSelfTest
         return ok;
     }
 
+    static float Vector3Distance(in MpActorState a, in MpActorState b) =>
+        System.Numerics.Vector3.Distance(new(a.X, a.Y, a.Z), new(b.X, b.Y, b.Z));
+
     static void Pump(MpSession host, MpSession client)
     {
         // Drain both directions a few times (deltas may cascade).
         for (int i = 0; i < 4; i++) { host.Tick(0.0); client.Tick(0.0); }
     }
+}
+
+/// <summary>A transport whose lossy lane loses <see cref="LossPct"/> % of its
+/// frames (seeded), recording the size of every lossy frame offered.</summary>
+sealed class LossyLane : ISessionTransport
+{
+    readonly ISessionTransport _inner;
+    readonly Random _rng;
+    public double LossPct;
+    public int Lost, LossySent;
+    public readonly List<int> Sizes = new();
+    public LossyLane(ISessionTransport inner, double lossPct, int seed) { _inner = inner; LossPct = lossPct; _rng = new Random(seed); }
+    public string ProviderId => _inner.ProviderId;
+    public IReadOnlyList<int> Peers => _inner.Peers;
+    public event Action<int>? PeerConnected { add => _inner.PeerConnected += value; remove => _inner.PeerConnected -= value; }
+    public event Action<int>? PeerDisconnected { add => _inner.PeerDisconnected += value; remove => _inner.PeerDisconnected -= value; }
+    public Task<bool> ListenAsync(int port, CancellationToken ct) => _inner.ListenAsync(port, ct);
+    public Task<bool> ConnectAsync(string hostAddress, CancellationToken ct) => _inner.ConnectAsync(hostAddress, ct);
+    public void Send(int peerId, ReadOnlySpan<byte> payload) => _inner.Send(peerId, payload);
+    public void SendUnreliable(int peerId, ReadOnlySpan<byte> payload)
+    {
+        LossySent++;
+        Sizes.Add(payload.Length);
+        if (_rng.NextDouble() * 100 < LossPct) { Lost++; return; }
+        _inner.SendUnreliable(peerId, payload);
+    }
+    public bool TryReceive(out int peerId, out byte[] payload) => _inner.TryReceive(out peerId, out payload);
+    public void Dispose() => _inner.Dispose();
 }
 
 /// <summary>A transport that loses its next <see cref="Drop"/> sends, for the

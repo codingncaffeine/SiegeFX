@@ -245,6 +245,88 @@ public static class EosSelfTest
         return ok() ? 0 : 1;
     }
 
+    public const string LoadPeerArg = "--selftest-mp-peer";
+
+    /// <summary>A headless player for network load runs against a real host
+    /// over Epic: <c>--selftest-mp-peer &lt;host product user id&gt;
+    /// &lt;eos_config.txt&gt; &lt;seconds&gt; &lt;index&gt;</c>. It joins, then
+    /// walks a circle around the host's player (radius 10 + 6 × index m, 3 m/s,
+    /// at the host's height), so the host's mobs see and chase it, and logs
+    /// every 10 s what the world updates brought: updates used a second, the
+    /// download, how many actors it follows and how many of them walk, and how
+    /// much later than the steady 15 a second the updates arrive (growth = a
+    /// backlog). Exits 0 when it joined and updates kept coming.</summary>
+    public static int RunLoadPeer(string hostId, string cfg, double seconds, int index)
+    {
+        string name = $"Load peer {index}";
+        var (platform, ok, assert, _, _) = Start("mp-peer", name, hostId, cfg);
+        if (platform is null) return 1;
+        try
+        {
+            var (lobby, transport) = MpProviderFactory.Create("eos");
+            using (lobby)
+            using (transport)
+            {
+                transport.ConnectAsync(hostId, CancellationToken.None);
+                var me = new MpSession(transport, isHost: false, name) { StatsInterval = 0 };
+                var clock = Stopwatch.StartNew();
+                double radius = 10 + 6 * index, phase = index * 0.9;
+                me.BuildLocalPlayerState = () =>
+                {
+                    var h = me.HostState ?? default;
+                    double a = phase + clock.Elapsed.TotalSeconds * 3.0 / radius;
+                    return new MpPlayerState(0, h.X + (float)(radius * Math.Cos(a)), h.Y, h.Z + (float)(radius * Math.Sin(a)),
+                        (float)(a + Math.PI), 200, (byte)MpPlayerFlags.Moving);
+                };
+                double t0 = -1; uint tick0 = 0;
+                var lateness = new List<double>();
+                long updates = 0;
+                me.OnWorldUpdate = tick =>
+                {
+                    double now = clock.Elapsed.TotalSeconds;
+                    if (t0 < 0) { t0 = now; tick0 = tick; }
+                    lateness.Add((now - t0) - (tick - tick0) / 15.0);
+                    updates++;
+                };
+                var pump = PumpLoop(platform, transport, me);
+                me.SendJoinRequest();
+                assert(pump(() => me.Joined, 90), "joined the host");
+                if (!ok()) return 1;
+                double end = clock.Elapsed.TotalSeconds + seconds, lastReport = clock.Elapsed.TotalSeconds;
+                long totalUpdates = 0;
+                double firstP95 = double.NaN, lastP95 = double.NaN;
+                while (clock.Elapsed.TotalSeconds < end)
+                {
+                    pump(() => clock.Elapsed.TotalSeconds - lastReport >= 10, 11);
+                    double span = clock.Elapsed.TotalSeconds - lastReport;
+                    lastReport = clock.Elapsed.TotalSeconds;
+                    lateness.Sort();
+                    double p95 = lateness.Count > 0 ? lateness[Math.Max(0, (int)Math.Ceiling(0.95 * lateness.Count) - 1)] : double.NaN;
+                    if (double.IsNaN(firstP95) && lateness.Count > 0) firstP95 = p95;
+                    if (lateness.Count > 0) lastP95 = p95;
+                    var w = me.World;
+                    int followed = w.Current.Count(e => e.Key >= MpQuant.FirstActorKey);
+                    int walking = w.Current.Count(e => e.Key >= MpQuant.FirstActorKey && (e.S.Flags & (byte)MpPlayerFlags.Moving) != 0);
+                    Console.WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                        $"[mp-peer {index}] {updates / span:0.0} updates/s, lateness p95 {p95 * 1000:0} ms, follows {followed} actors ({walking} walking), " +
+                        $"late {w.Late} no-baseline {w.NoBaseline} malformed {w.Malformed} | {me.Stats.Report(span)}"));
+                    totalUpdates += updates;
+                    updates = 0;
+                    lateness.Clear();
+                }
+                assert(totalUpdates > seconds * 5, $"world updates kept coming ({totalUpdates} in {seconds:0} s)");
+                Console.WriteLine(string.Create(System.Globalization.CultureInfo.InvariantCulture,
+                    $"[mp-peer {index}] lateness p95 first window {firstP95 * 1000:0} ms, last window {lastP95 * 1000:0} ms"));
+                me.Dispose();
+            }
+        }
+        finally
+        {
+            (platform as IDisposable)?.Dispose();
+        }
+        return ok() ? 0 : 1;
+    }
+
     /// <summary>A world snapshot the size of a real one that will not compress
     /// below Epic's 1170-byte packet, the same on both copies.</summary>
     static byte[] SnapshotBytes()

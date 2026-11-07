@@ -6618,7 +6618,7 @@ public sealed class RenderHost : IDisposable
             session.OnLootSpawn = MpOnLootSpawnClient;
             session.OnLootGone = MpOnLootGoneClient;
         }
-        if (!asHost) session.ApplyDelta = MpApplyWorldDelta; // P3 — host-owned enemies
+        if (!asHost) { session.ApplyDelta = MpApplyWorldDelta; session.OnActorsLeft = MpOnActorsLeft; } // host-owned enemies
         if (!asHost) session.OnJoinAccepted = id =>
         {
             MpRemoveRemoteAvatar(id, "it is this machine's own player"); // never draw ourselves as a remote player
@@ -8207,6 +8207,17 @@ public sealed class RenderHost : IDisposable
     // fuzz-hardened protocol reader is the load-bearing RCE protection regardless.
     private SiegeFX.Core.Net.ISessionTransport MpSecure(SiegeFX.Core.Net.ISessionTransport t)
     {
+        // Test hook: SIEGEFX_DEV_NET models a slow uplink under everything
+        // this machine sends (see MpLinkShape).
+        _mpShaper = null;
+        SiegeFX.Core.Net.MpLinkShape? shape = null;
+        try { shape = SiegeFX.Core.Net.MpLinkShape.FromEnvironment(); }
+        catch (FormatException ex) { SiegeFX.Core.Net.NetLog.Error($"mp: {ex.Message} — the link is not shaped"); }
+        if (shape is not null)
+        {
+            t = _mpShaper = new SiegeFX.Core.Net.ShapedTransport(t, shape);
+            SiegeFX.Core.Net.NetLog.Info($"mp: test link shaping on ({SiegeFX.Core.Net.MpLinkShape.EnvVar}): {shape}");
+        }
         var pass = Environment.GetEnvironmentVariable("SIEGEFX_MP_PASSPHRASE");
         if (string.IsNullOrEmpty(pass)) return t;
         SiegeFX.Core.Net.NetLog.Info("mp: AEAD enabled (SIEGEFX_MP_PASSPHRASE set) — payloads encrypted");
@@ -8218,12 +8229,16 @@ public sealed class RenderHost : IDisposable
     private static bool MpIsEncrypted(SiegeFX.Core.Net.ISessionTransport t) =>
         t is SiegeFX.Core.Net.SecureTransport;
 
+    // The test link shaper under the current session's transport, if any.
+    private SiegeFX.Core.Net.ShapedTransport? _mpShaper;
+
     // Drain the EOS P2P queue (a provider-specific method not on the interface),
     // unwrapping the SecureTransport decorator when AEAD is on.
     private void MpPumpEos(SiegeFX.Core.Net.ISessionTransport? tr)
     {
         if (tr is null) return;
         var inner = tr is SiegeFX.Core.Net.SecureTransport st ? st.Inner : tr;
+        if (inner is SiegeFX.Core.Net.ShapedTransport sh) { sh.Pump(); inner = sh.Inner; }
         if (inner.ProviderId.StartsWith("eos", StringComparison.Ordinal))
             inner.GetType().GetMethod("Pump")?.Invoke(inner, null);
     }
@@ -8283,11 +8298,18 @@ public sealed class RenderHost : IDisposable
             // A kill clears the Brain, so the dead are let through on IsDead or
             // their life==0 would never leave the host.
             if (a.IsPlayer || a.IsRemotePlayer || (a.Brain is null && !a.IsDead)) continue;
-            var pos = a.CurrentTransform.Translation;
+            var m = a.CurrentTransform;
+            // Heading = where the model's +Z points (the third row), so a mob
+            // standing at its authored angle or turning to swing faces the
+            // same way on every machine.
+            float yaw = MathF.Atan2(m.M31, m.M33);
+            byte flags = 0;
+            if (a.IsMoving && !a.IsDead) flags |= (byte)SiegeFX.Core.Net.MpPlayerFlags.Moving;
+            if (a.IsDead) flags |= (byte)SiegeFX.Core.Net.MpPlayerFlags.Dead;
             list.Add(new SiegeFX.Core.Net.MpActorState(
-                a.Actor.Instance.Scid, pos.X, pos.Y, pos.Z,
+                a.Actor.Instance.Scid, m.M41, m.M42, m.M43,
                 MpWireLife(a.Actor.Combat.CurrentLife),
-                MpChoreOf(a)));
+                MpChoreOf(a), yaw, flags));
         }
         return list;
     }
@@ -8422,7 +8444,7 @@ public sealed class RenderHost : IDisposable
         {
             if (a.IsNetworkOwned || a.IsPlayer || a.IsRemotePlayer || a.IsPartyMember || a.Brain is null) continue;
             a.IsNetworkOwned = true;
-            _mpScidIndex.TryAdd(a.Actor.Instance.Scid, a);
+            if (_mpScidIndex.TryAdd(a.Actor.Instance.Scid, a)) MpCatchUpActor(a);
         }
     }
 
@@ -8448,20 +8470,38 @@ public sealed class RenderHost : IDisposable
     {
         if (_actors.Count != _mpIndexedActorCount) MpIndexStreamedActors();
         foreach (var st in actors)
-        {
-            if (!_mpScidIndex.TryGetValue(st.Scid, out var a)) continue;
-            var cur = a.CurrentTransform.Translation;
-            bool dead = st.Life == 0;
-            float dx = st.X - cur.X, dz = st.Z - cur.Z;
-            bool moving = !dead && (dx * dx + dz * dz) > 0.0025f;
-            if (moving) a.NetTargetYaw = MathF.Atan2(dx, dz);
-            a.NetTargetPos = new Vector3(st.X, st.Y, st.Z);
-            a.NetHasTarget = true;
-            a.IsMoving = moving;
-            if (dead && !a.IsDead) SiegeFX.Core.Net.NetLog.Info($"world actor scid {st.Scid:x8} died (host)");
-            MpSetNetActorDead(a, dead, playDeathSfx: true);
-            MpReplayChore(a, st.Chore);
-        }
+            if (_mpScidIndex.TryGetValue(st.Scid, out var a)) MpApplyActorState(a, st);
+    }
+
+    // One host-owned actor takes the host's state: position (interpolated
+    // toward, see MpInterpolateRemoteActors), heading, the host's own walking
+    // flag, life (0 = the host's kill, the corpse shows) and the last chore.
+    private void MpApplyActorState(ActorRenderState a, in SiegeFX.Core.Net.MpActorState st)
+    {
+        bool dead = st.Life == 0;
+        a.NetTargetPos = new Vector3(st.X, st.Y, st.Z);
+        a.NetTargetYaw = st.Yaw;
+        a.NetHasTarget = true;
+        a.IsMoving = !dead && (st.Flags & (byte)SiegeFX.Core.Net.MpPlayerFlags.Moving) != 0;
+        if (dead && !a.IsDead) SiegeFX.Core.Net.NetLog.Info($"world actor scid {st.Scid:x8} died (host)");
+        MpSetNetActorDead(a, dead, playDeathSfx: true);
+        MpReplayChore(a, st.Chore);
+    }
+
+    // Client: actors the host no longer updates (far from this player) stop
+    // walking where they are until they come near again.
+    private void MpOnActorsLeft(IReadOnlyList<uint> scids)
+    {
+        foreach (var scid in scids)
+            if (_mpScidIndex.TryGetValue(scid, out var a)) a.IsMoving = false;
+    }
+
+    // Client: an actor this machine only now has (a streamed-in neighbor
+    // region, a mirrored spawn) takes the newest state the host sent for it.
+    private void MpCatchUpActor(ActorRenderState a)
+    {
+        if (_mpNetSession is { IsHost: false } s && s.TryGetActor(a.Actor.Instance.Scid, out var st))
+            MpApplyActorState(a, st);
     }
 
     // SC-MP-INGAME F3 — true when we're a co-op CLIENT and the target is a
@@ -8546,6 +8586,7 @@ public sealed class RenderHost : IDisposable
                 rs.NetTargetPos = new Vector3(x, y, z);
                 rs.NetHasTarget = true;
                 _mpScidIndex[scid] = rs;
+                MpCatchUpActor(rs);
                 SiegeFX.Core.Net.NetLog.Info($"client: mirrored host mob {template} {scid:x8}");
                 break;
             }
@@ -8647,27 +8688,15 @@ public sealed class RenderHost : IDisposable
                 _mpClientStartPending = new MpRelaunch("client", _mpSessionProvider, _mpJoinedHostAddress ?? "", 0, _mpSession.PlayerName);
             };
         }
-        // Host serves the world snapshot + authoritative actor poses to
-        // joiners; wired to the existing save-capture + actor list.
+        // Host serves the world snapshot to joiners (the save capture). No
+        // actor updates here: a joiner in the staging area has no world to
+        // apply them to; the region's session sends them after START.
         if (asHost)
         {
             _mpNetSession.BuildSnapshot = () =>
             {
                 try { return SiegeFX.Core.Save.SaveStore.Serialize(CaptureSave()); }
                 catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"snapshot build: {ex.Message}"); return System.Array.Empty<byte>(); }
-            };
-            _mpNetSession.EnumerateActors = () =>
-            {
-                var list = new List<SiegeFX.Core.Net.MpActorState>(_actors.Count);
-                foreach (var a in _actors)
-                {
-                    if (a.IsDead) continue;
-                    var p = a.CurrentTransform.Translation;
-                    list.Add(new SiegeFX.Core.Net.MpActorState(
-                        a.Actor.Instance.Scid, p.X, p.Y, p.Z,
-                        MpWireLife(a.Actor.Combat.CurrentLife)));
-                }
-                return list;
             };
         }
         _frontendScene?.SetState(Hud.FrontendScene.ScreenState.MpStaging);
@@ -40184,6 +40213,7 @@ void main()
             if (_perfSeconds >= 10)
             {
                 Console.WriteLine($"[perf] {_perfFrames / _perfSeconds:F0} fps over {_perfSeconds:F0} s (worst frame {_perfWorst * 1000:F0} ms)");
+                if (_mpShaper is not null) SiegeFX.Core.Net.NetLog.Info(_mpShaper.Report(_perfSeconds));
                 _perfFrames = 0; _perfSeconds = 0; _perfWorst = 0;
             }
         }

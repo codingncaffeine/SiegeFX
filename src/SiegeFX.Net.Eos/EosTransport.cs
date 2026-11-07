@@ -13,6 +13,10 @@ public sealed class EosTransport : ISessionTransport
 {
     const string SocketName = "SIEGEFX";
     const byte Channel = 0;
+    // The lossy lane: world updates and poses, where only the newest counts.
+    // Each is one whole packet; a lost one is never sent again and never
+    // holds up the reliable frames on channel 0.
+    const byte LossyChannel = 1;
 
     readonly EosPlatform _plat;
     readonly P2PInterface _p2p;
@@ -180,7 +184,7 @@ public sealed class EosTransport : ISessionTransport
         }
     }
 
-    bool SendPacket(ProductUserId to, byte tag, ReadOnlySpan<byte> body)
+    bool SendPacket(ProductUserId to, byte tag, ReadOnlySpan<byte> body, bool lossy = false)
     {
         var packet = new byte[body.Length + 1];
         packet[0] = tag;
@@ -190,15 +194,25 @@ public sealed class EosTransport : ISessionTransport
             LocalUserId = _local,
             RemoteUserId = to,
             SocketId = MakeSocket(),
-            Channel = Channel,
+            Channel = lossy ? LossyChannel : Channel,
             Data = new ArraySegment<byte>(packet),
-            AllowDelayedDelivery = true,
-            Reliability = PacketReliability.ReliableOrdered,
+            // Lossy frames are not kept for a connection still being set up:
+            // by the time it is, newer ones exist.
+            AllowDelayedDelivery = !lossy,
+            Reliability = lossy ? PacketReliability.UnreliableUnordered : PacketReliability.ReliableOrdered,
         };
         var r = _p2p.SendPacket(ref opts);
-        if (r != Result.Success) { NetLog.Warn($"eos: SendPacket {r} ({packet.Length} B)"); return false; }
+        if (r != Result.Success)
+        {
+            // A lossy frame with no connection up yet is refused on purpose;
+            // say so now and then, not 15 times a second.
+            if (!lossy || _lossyRefused++ % 150 == 0)
+                NetLog.Warn($"eos: SendPacket {r} ({packet.Length} B{(lossy ? $", lossy lane, {_lossyRefused} refused so far" : "")})");
+            return false;
+        }
         return true;
     }
+    long _lossyRefused;
 
     public void Send(int peerId, ReadOnlySpan<byte> payload)
     {
@@ -206,6 +220,17 @@ public sealed class EosTransport : ISessionTransport
         lock (_lock) _peers.TryGetValue(peerId, out to);
         if (to == null) { NetLog.Warn($"eos: send to unknown peer {peerId}"); return; }
         SendRaw(to, payload);
+    }
+
+    public int MaxUnreliableBytes => PieceBytes;
+
+    public void SendUnreliable(int peerId, ReadOnlySpan<byte> payload)
+    {
+        ProductUserId? to;
+        lock (_lock) _peers.TryGetValue(peerId, out to);
+        if (to == null) return;
+        if (payload.Length > PieceBytes) { SendRaw(to, payload); return; }   // too big for one packet: the reliable lane
+        SendPacket(to, TagWhole, payload, lossy: true);
     }
 
     /// <summary>Drain all queued P2P packets into the rx queue. Called from
@@ -271,6 +296,22 @@ public sealed class EosTransport : ISessionTransport
                     Deliver(peer, buf.AsSpan(0, (int)written).ToArray());
                     break;
             }
+        }
+        // The lossy lane: each packet is one whole frame.
+        while (true)
+        {
+            var sizeOpts = new GetNextReceivedPacketSizeOptions { LocalUserId = _local, RequestedChannel = LossyChannel };
+            if (_p2p.GetNextReceivedPacketSize(ref sizeOpts, out uint size) != Result.Success)
+                break;
+            var buf = new byte[Math.Max(size, 1u)];
+            var recvOpts = new ReceivePacketOptions { LocalUserId = _local, MaxDataSizeBytes = (uint)buf.Length, RequestedChannel = LossyChannel };
+            ProductUserId from = default!;
+            SocketId sock = default;
+            var r = _p2p.ReceivePacket(ref recvOpts, ref from, ref sock, out _, new ArraySegment<byte>(buf), out uint written);
+            if (r != Result.Success) { NetLog.Warn($"eos: ReceivePacket {r} on the lossy lane (packet of {size} B left in the queue)"); break; }
+            int peer = _isHost ? MapPeer(from) : 0;
+            if (!_isHost) _heardOnThisConnection = true;
+            if (written >= 2 && buf[0] == TagWhole) Deliver(peer, buf.AsSpan(1, (int)written - 1).ToArray());
         }
     }
 

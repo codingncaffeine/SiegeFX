@@ -261,6 +261,12 @@ else if (args.Length >= 1 && args[0] == "--selftest-net")
     // malformed-frame safety. No window; suitable for test-all.bat.
     return SiegeFX.Runtime.NetSelfTest.Run() ? 0 : 1;
 }
+else if (args.Length >= 1 && args[0] == "--selftest-mp-load")
+{
+    // A co-op game's network load in one process on a simulated clock: host +
+    // joiners, synthetic mobs, the host's uplink shaped. See NetLoadTest.
+    return SiegeFX.Runtime.NetLoadTest.Run(args[1..]);
+}
 else if (args.Length >= 1 && args[0] == "--selftest-eos")
 {
     // Internet play end to end: the EOS module, the game's credentials, a
@@ -271,6 +277,12 @@ else if (args.Length >= 3 && args[0] == SiegeFX.Runtime.EosSelfTest.PeerArg)
 {
     // The joining half of --selftest-eos, started by it as a second copy.
     return SiegeFX.Runtime.EosSelfTest.RunPeer(args[1], args[2]);
+}
+else if (args.Length >= 5 && args[0] == SiegeFX.Runtime.EosSelfTest.LoadPeerArg)
+{
+    // A headless player for network load runs against a real host over Epic.
+    return SiegeFX.Runtime.EosSelfTest.RunLoadPeer(args[1], args[2],
+        double.Parse(args[3], System.Globalization.CultureInfo.InvariantCulture), int.Parse(args[4]));
 }
 else if (args.Length >= 1 && args[0] == "--selftest-dialogue")
 {

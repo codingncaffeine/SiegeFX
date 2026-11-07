@@ -55,6 +55,8 @@ public static class MpSecurity
 
     // AEAD frame layout: [nonce 12][ciphertext N][tag 16].
     const int NonceLen = 12, TagLen = 16;
+    /// <summary>Bytes a sealed frame adds to its plaintext.</summary>
+    public const int SealOverhead = NonceLen + TagLen;
 
     /// <summary>AES-GCM seal a plaintext payload under the session key.</summary>
     public static byte[] Seal(byte[] key, ReadOnlySpan<byte> plaintext)
@@ -113,6 +115,9 @@ public sealed class SecureTransport : ISessionTransport
     public Task<bool> ListenAsync(int port, CancellationToken ct) => _inner.ListenAsync(port, ct);
     public Task<bool> ConnectAsync(string hostAddress, CancellationToken ct) => _inner.ConnectAsync(hostAddress, ct);
     public void Send(int peerId, ReadOnlySpan<byte> payload) => _inner.Send(peerId, MpSecurity.Seal(_key, payload));
+    public void SendUnreliable(int peerId, ReadOnlySpan<byte> payload) => _inner.SendUnreliable(peerId, MpSecurity.Seal(_key, payload));
+    /// <summary>The inner lane's limit less what sealing adds.</summary>
+    public int MaxUnreliableBytes => _inner.MaxUnreliableBytes - MpSecurity.SealOverhead;
 
     public bool TryReceive(out int peerId, out byte[] payload)
     {
