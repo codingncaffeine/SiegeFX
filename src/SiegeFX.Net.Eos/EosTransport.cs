@@ -20,6 +20,31 @@ public sealed class EosTransport : ISessionTransport
     bool _isHost;
     ulong _connReqNotify;
     ulong _connClosedNotify;
+    ulong _connUpNotify;
+    // Joiner: Epic re-sends a connection request a few times, so a host that
+    // comes online a little later (it is loading the region after START) still
+    // gets it; one that was online without listening drops it, and Epic then
+    // waits ~45 s before asking again. So a request that is not up after 20 s
+    // is withdrawn and made again (then 40 s: a relayed connection that takes
+    // long to set up still gets its time). A connection that is up but has
+    // never carried a packet from the host in 10 s (the two sides settled on
+    // different attempts) is dialed again too.
+    const int FirstAskAgainMs = 20_000, SilentHostMs = 10_000;
+    bool _hostUp;
+    bool _heardOnThisConnection;
+    long _askedAtMs, _upAtMs;
+    int _askAgainMs = FirstAskAgainMs;
+
+    // Epic carries at most P2PInterface.MAX_PACKET_SIZE (1170) bytes a packet,
+    // and a game frame can be several times that (a world update in the region,
+    // the snapshot in a JoinAccept). Each packet starts with a tag: a whole
+    // frame, or a piece of one (more to come / the last). Everything travels
+    // reliable and ordered on one channel, so a peer's pieces arrive in order
+    // and are joined again here.
+    const byte TagWhole = 0xF0, TagMore = 0xF1, TagLast = 0xF2;
+    const int PieceBytes = P2PInterface.MAX_PACKET_SIZE - 1;
+    const int MaxFrameBytes = 1 << 20;
+    readonly Dictionary<int, MemoryStream> _partial = new();
 
     readonly object _lock = new();
     readonly Dictionary<int, ProductUserId> _peers = new();      // gameId -> puid
@@ -46,6 +71,20 @@ public sealed class EosTransport : ISessionTransport
         {
             int id = PeerIdFor(info.RemoteUserId);
             if (id < 0) return;
+            if (!_isHost)
+            {
+                _hostUp = false;
+                _askedAtMs = Environment.TickCount64;
+                _partial.Remove(id);
+                // A joiner only ever talks to its host, and the host is a
+                // player id, not a connection: the next packet sent asks Epic
+                // for a new one. The host may just not be listening yet (it is
+                // still loading the region after START), so the address stays.
+                NetLog.Info($"eos: connection to the host closed ({info.Reason}); the next packet asks for a new one");
+                PeerDisconnected?.Invoke(id);
+                return;
+            }
+            _partial.Remove(id);
             lock (_lock)
             {
                 _peers.Remove(id);
@@ -54,6 +93,18 @@ public sealed class EosTransport : ISessionTransport
             }
             NetLog.Info($"eos: peer {id} connection closed ({info.Reason})");
             PeerDisconnected?.Invoke(id);
+        });
+        var upOpts = new AddNotifyPeerConnectionEstablishedOptions { LocalUserId = _local, SocketId = MakeSocket() };
+        _connUpNotify = _p2p.AddNotifyPeerConnectionEstablished(ref upOpts, null, (ref OnPeerConnectionEstablishedInfo info) =>
+        {
+            if (!_isHost && _hostPuid is not null && PeerIdFor(info.RemoteUserId) == 0)
+            {
+                _hostUp = true;
+                _heardOnThisConnection = false;
+                _upAtMs = Environment.TickCount64;
+                _askAgainMs = FirstAskAgainMs;
+            }
+            NetLog.Info($"eos: connection to {Short(info.RemoteUserId)} up ({info.NetworkType}, {info.ConnectionType})");
         });
     }
 
@@ -90,15 +141,16 @@ public sealed class EosTransport : ISessionTransport
     public Task<bool> ConnectAsync(string hostAddress, CancellationToken ct)
     {
         // For EOS the "address" is the host's ProductUserId string (handed
-        // out by the lobby). Sending the first packet opens the connection;
-        // the host auto-accepts.
+        // out by the lobby). The first packet sent (the game's JoinRequest,
+        // right after this) opens the connection; the host auto-accepts. No
+        // empty "hello" goes first: 0.5.2's test builds sent one, and a host
+        // that never read it past (see Pump) never read anything after it.
         _hostPuid = ProductUserId.FromString(hostAddress);
         if (_hostPuid == null || !_hostPuid.IsValid())
         { NetLog.Error($"eos: bad host product-user-id '{hostAddress}'"); return Task.FromResult(false); }
         lock (_lock) { _peers[0] = _hostPuid; _puidToId[hostAddress] = 0; }
-        // A tiny hello nudges the connection open (the game's JoinRequest
-        // follows immediately via Send).
-        SendRaw(_hostPuid, Array.Empty<byte>());
+        _hostUp = false;
+        _askedAtMs = Environment.TickCount64;
         NetLog.Info($"eos: connecting to host {Short(_hostPuid)}");
         return Task.FromResult(true);
     }
@@ -120,18 +172,32 @@ public sealed class EosTransport : ISessionTransport
 
     void SendRaw(ProductUserId to, ReadOnlySpan<byte> payload)
     {
+        if (payload.Length <= PieceBytes) { SendPacket(to, TagWhole, payload); return; }
+        for (int off = 0; off < payload.Length; off += PieceBytes)
+        {
+            int n = Math.Min(PieceBytes, payload.Length - off);
+            if (!SendPacket(to, off + n >= payload.Length ? TagLast : TagMore, payload.Slice(off, n))) return;
+        }
+    }
+
+    bool SendPacket(ProductUserId to, byte tag, ReadOnlySpan<byte> body)
+    {
+        var packet = new byte[body.Length + 1];
+        packet[0] = tag;
+        body.CopyTo(packet.AsSpan(1));
         var opts = new SendPacketOptions
         {
             LocalUserId = _local,
             RemoteUserId = to,
             SocketId = MakeSocket(),
             Channel = Channel,
-            Data = new ArraySegment<byte>(payload.ToArray()),
+            Data = new ArraySegment<byte>(packet),
             AllowDelayedDelivery = true,
             Reliability = PacketReliability.ReliableOrdered,
         };
         var r = _p2p.SendPacket(ref opts);
-        if (r != Result.Success) NetLog.Warn($"eos: SendPacket {r}");
+        if (r != Result.Success) { NetLog.Warn($"eos: SendPacket {r} ({packet.Length} B)"); return false; }
+        return true;
     }
 
     public void Send(int peerId, ReadOnlySpan<byte> payload)
@@ -146,23 +212,67 @@ public sealed class EosTransport : ISessionTransport
     /// the engine tick (after EosPlatform.Tick).</summary>
     public void Pump()
     {
+        if (!_isHost && _hostPuid is not null)
+        {
+            long now = Environment.TickCount64;
+            string? why = !_hostUp
+                ? now - _askedAtMs > _askAgainMs ? $"no connection to the host after {_askAgainMs / 1000} s (not listening yet?)" : null
+                : !_heardOnThisConnection && now - _upAtMs > SilentHostMs
+                    ? $"the connection is up but nothing came from the host in {SilentHostMs / 1000} s" : null;
+            if (why is not null)
+            {
+                var close = new CloseConnectionOptions { LocalUserId = _local, RemoteUserId = _hostPuid, SocketId = MakeSocket() };
+                _p2p.CloseConnection(ref close);
+                NetLog.Info($"eos: {why}; asking again");
+                _hostUp = false;
+                _askedAtMs = now;
+                _askAgainMs = Math.Min(_askAgainMs * 2, 40_000);
+            }
+        }
         while (true)
         {
+            // Success means a packet is waiting, even an EMPTY one (size 0).
+            // An empty packet has to be received like any other: left in place
+            // it stays at the head of the queue and every packet behind it,
+            // JoinRequest and READY included, waits forever.
             var sizeOpts = new GetNextReceivedPacketSizeOptions { LocalUserId = _local, RequestedChannel = Channel };
-            if (_p2p.GetNextReceivedPacketSize(ref sizeOpts, out uint size) != Result.Success || size == 0)
+            if (_p2p.GetNextReceivedPacketSize(ref sizeOpts, out uint size) != Result.Success)
                 break;
-            var buf = new byte[size];
-            var recvOpts = new ReceivePacketOptions { LocalUserId = _local, MaxDataSizeBytes = size, RequestedChannel = Channel };
+            var buf = new byte[Math.Max(size, 1u)];
+            var recvOpts = new ReceivePacketOptions { LocalUserId = _local, MaxDataSizeBytes = (uint)buf.Length, RequestedChannel = Channel };
             ProductUserId from = default!;
             SocketId sock = default;
             var r = _p2p.ReceivePacket(ref recvOpts, ref from, ref sock, out _, new ArraySegment<byte>(buf), out uint written);
-            if (r != Result.Success) break;
+            if (r != Result.Success) { NetLog.Warn($"eos: ReceivePacket {r} (packet of {size} B left in the queue)"); break; }
             int peer = _isHost ? MapPeer(from) : 0;
-            if (written == 0) continue; // connection-open nudge
-            var data = written == buf.Length ? buf : buf.AsSpan(0, (int)written).ToArray();
-            lock (_lock) _rx.Enqueue((peer, data));
+            if (!_isHost) _heardOnThisConnection = true;
+            if (written == 0) continue;   // an empty packet: nothing for the game (0.5.2-test's opening hello)
+            var body = buf.AsSpan(1, (int)written - 1);
+            switch (buf[0])
+            {
+                case TagWhole:
+                    if (_partial.Remove(peer)) NetLog.Warn($"eos: an unfinished frame from peer {peer} was dropped");
+                    Deliver(peer, body.ToArray());
+                    break;
+                case TagMore:
+                case TagLast:
+                    if (!_partial.TryGetValue(peer, out var frame)) _partial[peer] = frame = new MemoryStream();
+                    if (frame.Length + body.Length > MaxFrameBytes)
+                    { _partial.Remove(peer); NetLog.Warn($"eos: a frame from peer {peer} passed {MaxFrameBytes} B — dropped"); break; }
+                    frame.Write(body);
+                    if (buf[0] == TagLast) { _partial.Remove(peer); Deliver(peer, frame.ToArray()); }
+                    break;
+                default:
+                    // No tag: a build from before the pieces (0.5.2-test). Its
+                    // frame goes up whole, so its JoinRequest is answered with
+                    // the "different SiegeFX version" refusal.
+                    Deliver(peer, buf.AsSpan(0, (int)written).ToArray());
+                    break;
+            }
         }
     }
+
+    void Deliver(int peer, byte[] frame) { lock (_lock) _rx.Enqueue((peer, frame)); }
 
     public bool TryReceive(out int peerId, out byte[] payload)
     {
@@ -178,6 +288,7 @@ public sealed class EosTransport : ISessionTransport
     {
         if (_connReqNotify != 0) _p2p.RemoveNotifyPeerConnectionRequest(_connReqNotify);
         if (_connClosedNotify != 0) _p2p.RemoveNotifyPeerConnectionClosed(_connClosedNotify);
+        if (_connUpNotify != 0) _p2p.RemoveNotifyPeerConnectionEstablished(_connUpNotify);
         var close = new CloseConnectionsOptions { LocalUserId = _local, SocketId = MakeSocket() };
         _p2p.CloseConnections(ref close);
         NetLog.Info("eos: transport closed");

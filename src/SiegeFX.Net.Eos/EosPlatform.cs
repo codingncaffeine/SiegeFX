@@ -16,6 +16,17 @@ public sealed class EosPlatform : IDisposable
 {
     public PlatformInterface? Platform { get; private set; }
     public ProductUserId? LocalUser { get; private set; }
+
+    /// <summary>This player's product user id as text (what a joiner dials), or "".</summary>
+    public string LocalUserIdText
+    {
+        get
+        {
+            if (LocalUser is null) return "";
+            LocalUser.ToString(out var b);
+            return b?.ToString() ?? "";
+        }
+    }
     public bool LoggedIn => LocalUser != null;
     /// <summary>The last login attempt failed (no retry runs on its own; the
     /// Internet screen calls <see cref="RetryLogin"/> when it opens).</summary>
@@ -72,6 +83,9 @@ public sealed class EosPlatform : IDisposable
     static string Unwrap(string v) =>
         v.Length >= 2 && (v[0] == '<' && v[^1] == '>' || v[0] == '"' && v[^1] == '"') ? v[1..^1].Trim() : v;
 
+    // Held so the collector cannot free the callback Epic calls into.
+    static Epic.OnlineServices.Logging.LogMessageFunc? _logSink;
+
     public bool Init(Config cfg, string cacheDir)
     {
         try
@@ -84,6 +98,16 @@ public sealed class EosPlatform : IDisposable
                 if (ir != Result.Success && ir != Result.AlreadyConfigured)
                 { NetLog.Error($"EOS Initialize failed: {ir}"); return false; }
                 _initialized = true;
+                // Epic's own log goes to the session log: warnings and worse
+                // always (what a player's report needs), everything when
+                // SIEGEFX_EOS_LOG=verbose (local debugging only: it is long).
+                bool verbose = string.Equals(Environment.GetEnvironmentVariable("SIEGEFX_EOS_LOG"), "verbose",
+                                             StringComparison.OrdinalIgnoreCase);
+                _logSink = (ref Epic.OnlineServices.Logging.LogMessage m) =>
+                    NetLog.Info($"epic {m.Category}: {m.Message}");
+                Epic.OnlineServices.Logging.LoggingInterface.SetCallback(_logSink);
+                Epic.OnlineServices.Logging.LoggingInterface.SetLogLevel(Epic.OnlineServices.Logging.LogCategory.AllCategories,
+                    verbose ? Epic.OnlineServices.Logging.LogLevel.VeryVerbose : Epic.OnlineServices.Logging.LogLevel.Warning);
                 AppDomain.CurrentDomain.ProcessExit += (_, _) =>
                 {
                     _live?.Dispose();
@@ -141,7 +165,9 @@ public sealed class EosPlatform : IDisposable
                 if (li.ResultCode == Result.Success)
                 {
                     LocalUser = li.LocalUserId;
-                    NetLog.Info("EOS device-id login ok (anonymous, no Epic account)");
+                    // The player id is no secret (the staging screen shows it as
+                    // the invite id); in the log it ties a report to a player.
+                    NetLog.Info($"EOS device-id login ok (anonymous, no Epic account), player id {LocalUserIdText}");
                     Finish(true);
                 }
                 else { NetLog.Error($"EOS Connect.Login: {li.ResultCode}"); Finish(false); }
@@ -176,6 +202,11 @@ public sealed class EosPlatform : IDisposable
 
     public void Dispose()
     {
+        // Let Epic send what is still queued (a closed connection's "leaving"
+        // note to the other player) before the platform goes: a fifth of a
+        // second, so the other side sees the player leave at once instead of
+        // waiting out a connection timeout.
+        for (int i = 0; i < 10 && Platform is not null; i++) { Platform.Tick(); Thread.Sleep(20); }
         Platform?.Release();
         Platform = null;
         if (ReferenceEquals(_live, this)) _live = null;
