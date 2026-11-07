@@ -21,6 +21,7 @@ public enum MpMsg : byte
                        // actor (friend-trust: the client owns its own damage roll): [scid u32][damage f32]
     ClientInfo  = 7,   // client→host (host stores + relays as PlayerInfo): this player's
                        // character card — appearance axes + name/class/stats. See MpPlayerInfo.
+    Ready       = 8,   // client→host: this player's mark in the staging area: [ready u8]
     // host → client
     JoinAccept  = 10,  // [assignedPlayer u8][worldSnapshotLen u32][snapshot bytes]
     JoinReject  = 11,  // [reasonLen u8][reason utf8]
@@ -46,6 +47,8 @@ public enum MpMsg : byte
     PropBreak      = 27, // any→host→others: a breakable prop shattered [scid u32]
     ActorSpawn     = 28, // host→client: a runtime-spawned (generator) actor the host owns
                          // [scid u32][templateLen u8][template][x f32][y f32][z f32]
+    Roster         = 29, // host→client: everyone in the game, host first, as the host knows it:
+                         // [count u8][ (player u8, ready u8, nameLen u8, name utf8) * ]
 }
 
 /// <summary>Wire-protocol identity. Bump <see cref="Version"/> whenever a
@@ -56,8 +59,9 @@ public enum MpMsg : byte
 /// human-readable reason.</summary>
 public static class MpProtocol
 {
-    public const ushort Version = 5;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
-                                        // v4: PlayerHit, PropBreak, ActorSpawn; v5: chores in the pose frames
+    public const ushort Version = 6;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
+                                        // v4: PlayerHit, PropBreak, ActorSpawn; v5: chores in the pose frames;
+                                        // v6: Ready + Roster (the staging area's ready marks)
 }
 
 /// <summary>The JoinAccept world snapshot is the save JSON, indented: 130 kB

@@ -267,6 +267,11 @@ else if (args.Length >= 1 && args[0] == "--selftest-eos")
     // device-id login and a lobby round trip through Epic. Needs the network.
     return SiegeFX.Runtime.EosSelfTest.Run() ? 0 : 1;
 }
+else if (args.Length >= 3 && args[0] == SiegeFX.Runtime.EosSelfTest.PeerArg)
+{
+    // The joining half of --selftest-eos, started by it as a second copy.
+    return SiegeFX.Runtime.EosSelfTest.RunPeer(args[1], args[2]);
+}
 else if (args.Length >= 1 && args[0] == "--selftest-dialogue")
 {
     // Phase 20a self-test. Parses a synthetic conversations.gas (mirroring

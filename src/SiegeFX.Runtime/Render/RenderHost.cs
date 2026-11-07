@@ -6461,10 +6461,14 @@ public sealed class RenderHost : IDisposable
     // host re-hosts on its game port (retrying past the frontend socket-release
     // race); the client reconnects to the same host address it joined in staging
     // (raising the connect budget because the host is loading a region too).
-    private void MpInRegionInit()
+    // Seconds this region process has waited for its Epic sign-in.
+    private double _mpInRegionWaited;
+
+    /// <returns>True once the session is up, or will not be (nothing to retry).</returns>
+    private bool MpInRegionInit()
     {
         var role = _mpInRegionRole;
-        if (role is null) return;
+        if (role is null) return true;
         string provider = Environment.GetEnvironmentVariable("SIEGEFX_MP_PROVIDER") ?? "lan";
         string host = Environment.GetEnvironmentVariable("SIEGEFX_MP_HOST") ?? "";
         int port = int.TryParse(Environment.GetEnvironmentVariable("SIEGEFX_MP_PORT"), out var pv)
@@ -6472,9 +6476,33 @@ public sealed class RenderHost : IDisposable
         string name = Environment.GetEnvironmentVariable("SIEGEFX_MP_NAME") is { Length: > 0 } n
             ? n : (_heroName.Length > 0 ? _heroName : "Player");
         bool asHost = string.Equals(role, "host", StringComparison.OrdinalIgnoreCase);
-        SiegeFX.Core.Net.NetLog.Info($"in-region MP init: role={role} provider={provider} host='{host}' port={port} name='{name}' region={_regionPath}");
 
         MpInitProvider(name); // reflection-load EOS if present (idempotent, fresh process)
+        bool eos = string.Equals(provider, "eos", StringComparison.OrdinalIgnoreCase);
+        if (eos)
+        {
+            // A fresh process: its Epic sign-in started a moment ago. An
+            // internet game must not fall back to LAN (nobody reaches a LAN
+            // host over the internet), so wait for it, ticking EOS here
+            // (TickMpInRegion runs only once the session exists).
+            var state = MpInternet();
+            if (state == MpInternetState.SigningIn && _mpInRegionWaited < 30)
+            {
+                if (_mpInRegionWaited == 0) { SiegeFX.Core.Net.NetLog.Info("in-region: waiting for the Epic sign-in"); MpToast("Signing in to Epic..."); }
+                _eosTick?.Invoke();
+                _mpInRegionWaited += _frameDtSeconds;
+                return false;
+            }
+            if (state != MpInternetState.Ready)
+            {
+                SiegeFX.Core.Net.NetLog.Error(state == MpInternetState.SigningIn
+                    ? "in-region: the Epic sign-in did not finish in 30 s; no internet co-op in this session"
+                    : $"in-region: no internet co-op in this session (Epic: {state})");
+                MpToast("Could not sign in to Epic: internet co-op is unavailable");
+                return true;
+            }
+        }
+        SiegeFX.Core.Net.NetLog.Info($"in-region MP init: role={role} provider={provider} host='{host}' port={port} name='{name}' region={_regionPath}");
 
         var (lobby, rawTransport) = SiegeFX.Core.Net.MpProviderFactory.Create(provider);
         // Tune the connect budget on the raw UDP transport BEFORE the AEAD wrap
@@ -6492,7 +6520,11 @@ public sealed class RenderHost : IDisposable
         if (_triggerRuntime is not null) _triggerRuntime.IsMultiplayerSession = true;
         session.BuildLocalPlayerState = BuildLocalMpPlayerState;
         session.ApplyPlayerStates = MpApplyPlayerStates;   // P2 — remote avatars
-        session.OnPlayerLeft = id => { MpRemoveRemoteAvatar(id); _mpPlayerInfos.Remove(id); MpToast($"Player {id} left the game"); };
+        session.OnPlayerLeft = id =>
+        {
+            string who = _mpPlayerNames.TryGetValue(id, out var left) ? left : $"Player {id}";
+            MpRemoveRemoteAvatar(id); _mpPlayerInfos.Remove(id); MpToast($"{who} left the game");
+        };
         session.OnPlayerJoined = (id, nm) =>
         {
             _mpPlayerNames[id] = nm;
@@ -6545,7 +6577,7 @@ public sealed class RenderHost : IDisposable
         if (!asHost) session.ApplyDelta = MpApplyWorldDelta; // P3 — host-owned enemies
         if (!asHost) session.OnJoinAccepted = id =>
         {
-            MpRemoveRemoteAvatar(id); // never draw ourselves as a remote player
+            MpRemoveRemoteAvatar(id, "it is this machine's own player"); // never draw ourselves as a remote player
             _mpPlayerNames[id] = name;
             _mpLastSentInfo = null;   // (re)announce our card to the host
             MpToast("Joined — playing with the host");
@@ -6560,6 +6592,15 @@ public sealed class RenderHost : IDisposable
             session.ApplyClientHit = MpApplyClientHit; // F3 — client hits resolve here
             transport.PeerConnected += id => SiegeFX.Core.Net.NetLog.Info($"in-region: peer {id} joined ({transport.Peers.Count} in world)");
             transport.PeerDisconnected += id => SiegeFX.Core.Net.NetLog.Info($"in-region: peer {id} left");
+            if (eos)
+            {
+                // EOS listens at once (no port to bind) and, like every EOS
+                // call, on this thread, the one that ticks it.
+                transport.ListenAsync(port, default).GetAwaiter().GetResult();
+                SiegeFX.Core.Net.NetLog.Info("in-region host listening on Epic P2P");
+                MpToast("Hosting: waiting for players to join");
+                return true;
+            }
             _ = Task.Run(async () =>
             {
                 for (int i = 0; i < 20; i++)
@@ -6576,16 +6617,30 @@ public sealed class RenderHost : IDisposable
         else
         {
             MpMarkClientWorldActors(); // host drives the mobs; suppress local AI
-            transport.PeerDisconnected += _ => { SiegeFX.Core.Net.NetLog.Warn("in-region: lost connection to host"); MpToast("Lost connection to the host"); };
+            transport.PeerDisconnected += _ =>
+            {
+                if (!session.Joined) return;   // still joining: the JoinRequest keeps trying
+                SiegeFX.Core.Net.NetLog.Warn("in-region: lost connection to host"); MpToast("Lost connection to the host");
+            };
             if (string.IsNullOrWhiteSpace(host))
-            { SiegeFX.Core.Net.NetLog.Error("in-region client has no host address — cannot connect"); MpToast("No host address — cannot connect"); return; }
+            { SiegeFX.Core.Net.NetLog.Error("in-region client has no host address — cannot connect"); MpToast("No host address — cannot connect"); return true; }
             MpToast($"Connecting to host {host}...");
+            if (eos)
+            {
+                // Same thread as the EOS tick; the JoinRequest repeats until the
+                // host (which may still be loading) answers.
+                if (transport.ConnectAsync(host, default).GetAwaiter().GetResult())
+                { SiegeFX.Core.Net.NetLog.Info($"in-region: dialing host {host} over Epic P2P — sending JoinRequest"); session.SendJoinRequest(); }
+                else MpToast("Could not connect to the host — see session log");
+                return true;
+            }
             _ = transport.ConnectAsync(host, default).ContinueWith(t =>
             {
                 if (t.Result) { SiegeFX.Core.Net.NetLog.Info($"in-region: connected to host {host} — sending JoinRequest"); session.SendJoinRequest(); }
                 else { SiegeFX.Core.Net.NetLog.Error($"in-region: could NOT connect to host {host}. See [net] lines."); MpToast("Could not connect to the host — see session log"); }
             }, TaskScheduler.Default);
         }
+        return true;
     }
 
     // SC-MP-INGAME — pump the in-region session each frame. EOS needs an explicit
@@ -6661,7 +6716,7 @@ public sealed class RenderHost : IDisposable
         if (avatar is null) return;
         bool wantGirl = info.Gender == 1;
         bool isGirl = avatar.Actor.Template.Name.Contains("farmgirl", StringComparison.OrdinalIgnoreCase);
-        if (wantGirl != isGirl) MpRemoveRemoteAvatar(info.Player);
+        if (wantGirl != isGirl) MpRemoveRemoteAvatar(info.Player, "rebuilt to match the player's character card");
         else _netPickers[avatar.Actor] = MpPickerFromInfo(info);
     }
 
@@ -8034,14 +8089,14 @@ public sealed class RenderHost : IDisposable
 
     // Cull a remote avatar when its player leaves (wired to MpSession.OnPlayerLeft,
     // which fires on both PlayerLeft messages and host-side disconnects).
-    private void MpRemoveRemoteAvatar(int playerId)
+    private void MpRemoveRemoteAvatar(int playerId, string why = "player left")
     {
         for (int i = _actors.Count - 1; i >= 0; i--)
             if (_actors[i].IsRemotePlayer && _actors[i].NetPlayerId == playerId)
             {
                 _netPickers.Remove(_actors[i].Actor);
                 _actors.RemoveAt(i);
-                SiegeFX.Core.Net.NetLog.Info($"remote avatar removed: player {playerId} left");
+                SiegeFX.Core.Net.NetLog.Info($"remote avatar removed: player {playerId} ({why})");
             }
     }
 
@@ -8326,21 +8381,16 @@ public sealed class RenderHost : IDisposable
         // forward); for direct providers it's the LAN endpoint. The PUID may
         // still be minting (CreateAsync is async) — FlushMpStaging refreshes it.
         _mpStaging.HostIp = asHost ? MpHostInviteAddress() : "";
-        _mpStaging.Status = asHost ? "Waiting for players to join and ready up." : "Waiting for the host to start.";
-        _mpNetSession.OnPlayerJoined = (id, name) =>
-        {
-            if (!_mpStaging.Players.Any(p => p.Name == name && !p.Host))
-                _mpStaging.Players.Add((name, false, false));
-            _mpStaging.Chat.Add($"* {name} joined.");
-        };
-        _mpNetSession.OnPlayerLeft = id =>
-        {
-            _mpStaging.Chat.Add($"* Player {id} left.");
-        };
+        _mpStaging.Status = asHost ? "Waiting for players to join and ready up." : MpJoiningStatus;
+        _mpStagingSeconds = 0;
+        // The roster (names + ready marks) is the host's; every machine shows
+        // the copy the session hands over, and the chat notes what changed.
+        _mpLastRoster = asHost ? _mpNetSession.Roster.ToList() : new();
+        _mpNetSession.OnRoster = MpApplyRoster;
         _mpNetSession.OnChat += line => _mpStaging.Chat.Add(line);
         if (!asHost)
         {
-            _mpNetSession.OnJoinAccepted = id => _mpStaging.Status = $"Joined as player {id}. Waiting for the host to start.";
+            _mpNetSession.OnJoinAccepted = _ => _mpStaging.Status = "Joined. Click READY, then wait for the host to start.";
             _mpNetSession.OnJoinRejected = reason => { _mpStaging.Status = $"Join rejected: {reason}"; };
             // Client receives the host's world snapshot; parked for the
             // in-game apply (SC-MP-INGAME) — verifying it arrives + parses.
@@ -8385,6 +8435,54 @@ public sealed class RenderHost : IDisposable
             };
         }
         _frontendScene?.SetState(Hud.FrontendScene.ScreenState.MpStaging);
+    }
+
+    private const string MpJoiningStatus = "Joining the host's game...";
+    private double _mpStagingSeconds;
+    private List<SiegeFX.Core.Net.MpRosterEntry> _mpLastRoster = new();
+
+    // The host's roster arrived (or changed on the host): note joins, leaves
+    // and ready marks in the chat, then redraw the player list from it.
+    private void MpApplyRoster(IReadOnlyList<SiegeFX.Core.Net.MpRosterEntry> roster)
+    {
+        var before = _mpLastRoster;
+        if (before.Count > 0)   // a client's first copy is the starting point, not news
+        {
+            foreach (var e in roster)
+            {
+                int i = before.FindIndex(o => o.Player == e.Player);
+                if (i < 0) _mpStaging.Chat.Add($"* {e.Name} joined.");
+                else if (before[i].Ready != e.Ready && e.Player != 0)
+                    _mpStaging.Chat.Add(e.Ready ? $"* {e.Name} is ready." : $"* {e.Name} is not ready.");
+            }
+            foreach (var o in before)
+                if (!roster.Any(e => e.Player == o.Player)) _mpStaging.Chat.Add($"* {o.Name} left.");
+        }
+        _mpLastRoster = roster.ToList();
+        MpRebuildStagingPlayers();
+        if (_mpStaging.IsHost && _mpStartCountdown <= 0)
+            _mpStaging.Status = roster.Count > 1 && roster.All(e => e.Ready)
+                ? "Everyone is ready. Click START GAME."
+                : "Waiting for players to join and ready up.";
+    }
+
+    // The staging list: the host's roster, with this player's own mark shown
+    // the moment READY is clicked (the host's copy follows within a second).
+    private void MpRebuildStagingPlayers()
+    {
+        _mpStaging.Players.Clear();
+        if (_mpLastRoster.Count == 0)
+        {
+            _mpStaging.Players.Add((_mpSession.PlayerName, _mpStaging.IsHost, _mpStaging.IsHost || _mpStaging.LocalReady));
+            return;
+        }
+        int me = _mpNetSession?.LocalPlayerId ?? 0;
+        foreach (var e in _mpLastRoster)
+        {
+            bool host = e.Player == 0;
+            bool ready = host || (!_mpStaging.IsHost && e.Player == me ? _mpStaging.LocalReady : e.Ready);
+            _mpStaging.Players.Add((e.Name, host, ready));
+        }
     }
 
     // SC-MP-EOS P4 — optional EOS platform handle (loaded by reflection so
@@ -8455,9 +8553,10 @@ public sealed class RenderHost : IDisposable
                     string userCfg = Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_config.txt");
                     string cfg = File.Exists(userCfg) ? userCfg : (MpAppFile("eos_config.txt") ?? userCfg);
                     Console.WriteLine($"[mp] EOS config: {(File.Exists(cfg) ? cfg : "(none found — LAN only)")}");
-                    // SIEGEFX_EOS_CACHE overrides the device-id cache dir so two
-                    // instances on one box get DISTINCT anonymous EOS identities
-                    // (same cache dir = same device id = same ProductUserId = collision).
+                    // SIEGEFX_EOS_CACHE moves Epic's cache folder. It does NOT
+                    // give a second copy its own identity: Epic keeps the device
+                    // id per user profile (on Linux in $XDG_DATA_HOME/.eos_sdk),
+                    // so two copies need separate XDG_DATA_HOME folders.
                     string cache = Environment.GetEnvironmentVariable("SIEGEFX_EOS_CACHE") is { Length: > 0 } cc
                         ? cc : Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "eos_cache");
                     _eosPlatform = reg.Invoke(null, new object[] { cfg, cache, playerName });
@@ -8544,7 +8643,13 @@ public sealed class RenderHost : IDisposable
         var transport = MpSecure(rawTransport);
         _mpLobby = lobby; _mpTransport = transport;
         transport.PeerDisconnected += _ =>
-            _mpSession.Status = "Disconnected from host (timeout). See session log [net] lines.";
+        {
+            // Before the host answers, a dropped connection is retried by the
+            // JoinRequest itself; only a joined player has lost the host.
+            if (_mpNetSession is not { Joined: true }) return;
+            _mpSession.Status = "Disconnected from host. See session log [net] lines.";
+            _mpStaging.Status = "Lost the connection to the host.";
+        };
         SiegeFX.Core.Net.MpDiag.WriteSession("client", provider, transport.ProviderId,
             address, SiegeFX.Core.Net.UdpTransport.DefaultGamePort,
             SiegeFX.Core.Net.LanLobbyService.BeaconPort, MpIsEncrypted(transport));
@@ -8576,6 +8681,11 @@ public sealed class RenderHost : IDisposable
         bool active = _bootMode && st == Hud.FrontendScene.ScreenState.MpStaging;
         _mpStaging.IsActive = active;
         if (!active) return;
+        // A join the host has not answered: say so instead of looking joined.
+        _mpStagingSeconds += _frameDtSeconds;
+        if (!_mpStaging.IsHost && _mpNetSession is { Joined: false } && _mpStagingSeconds > 15
+            && _mpStaging.Status == MpJoiningStatus)
+            _mpStaging.Status = "No answer from the host yet. Still trying... (both players need the same SiegeFX version)";
         // F1 — the EOS invite PUID mints asynchronously after CreateAsync; adopt
         // it the moment it arrives so the host's shown join id stops reading as
         // the (useless-over-internet) LAN address.
@@ -8594,13 +8704,25 @@ public sealed class RenderHost : IDisposable
                 _frontendScene?.SetState(Hud.FrontendScene.ScreenState.Multiplayer);
                 break;
             case Hud.MpStagingScreen.Action.ToggleReady:
+                if (_mpStaging.IsHost) break;   // the host is always ready
                 _mpStaging.LocalReady = !_mpStaging.LocalReady;
-                _mpNetSession?.SendChat(_mpStaging.LocalReady ? "ready" : "not ready");
+                _mpNetSession?.SetReady(_mpStaging.LocalReady);
+                MpRebuildStagingPlayers();
+                if (_mpNetSession is { Joined: true })
+                    _mpStaging.Status = _mpStaging.LocalReady
+                        ? "Ready. Waiting for the host to start."
+                        : "Joined. Click READY, then wait for the host to start.";
                 break;
             case Hud.MpStagingScreen.Action.Start:
                 // Host launches the co-op game. GameStart is an unreliable
                 // packet, so start a short repeat-broadcast window before we
                 // tear down and relaunch into the region (SC-MP-INGAME).
+                // Everyone who joined has to be ready first.
+                if (_mpStartCountdown <= 0 && _mpNetSession?.NotReady is { Count: > 0 } waiting)
+                {
+                    _mpStaging.Status = $"Waiting for {string.Join(", ", waiting)} to click READY.";
+                    break;
+                }
                 if (_mpStartCountdown <= 0)
                 {
                     _mpStaging.Status = "Starting game — signaling players...";
@@ -24410,8 +24532,7 @@ void main()
         if (_mpInRegionRole is not null && !_mpInRegionDone && _player is not null
             && !_bootMode && !string.IsNullOrEmpty(_regionPath))
         {
-            _mpInRegionDone = true;
-            MpInRegionInit();
+            _mpInRegionDone = MpInRegionInit();
         }
         if (_mpNetSession is not null && !_bootMode) TickMpInRegion();
         // Phase 22-A SC-HUD-DATABAR — pause gate. Zero the dt the rest of the

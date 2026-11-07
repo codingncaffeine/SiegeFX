@@ -202,6 +202,48 @@ public static class NetSelfTest
             hs.Dispose(); cs.Dispose(); h2.Dispose();
         }
 
+        // ---- Staging: the host's roster, READY, and who counts as having left ----
+        {
+            var (h3, c3raw) = LoopbackTransport.CreatePair();
+            var c3 = new DropNextSends(c3raw);
+            var hs = new MpSession(h3, isHost: true, "Host");
+            var cs = new MpSession(c3, isHost: false, "Joiner");
+            IReadOnlyList<MpRosterEntry>? hostRoster = null, clientRoster = null;
+            hs.OnRoster = r => hostRoster = r;
+            cs.OnRoster = r => clientRoster = r;
+            cs.SetReady(true);                     // clicked while the join is still unanswered
+            cs.SendJoinRequest(); Pump(hs, cs);
+            Assert(clientRoster is { Count: 2 } && clientRoster[0] is { Player: 0, Name: "Host", Ready: true }
+                   && clientRoster[1].Name == "Joiner",
+                "staging: the joiner gets the host's roster, host first");
+            Assert(hostRoster is not null && hostRoster.Any(e => e.Name == "Joiner" && e.Ready) && hs.NotReady.Count == 0,
+                "staging: a READY clicked while joining reaches the host once the join is answered");
+            cs.SetReady(false); Pump(hs, cs);
+            Assert(hs.NotReady.SequenceEqual(new[] { "Joiner" }) && clientRoster!.Any(e => e.Name == "Joiner" && !e.Ready),
+                "staging: taking READY back reaches the host and comes back in its roster");
+            c3.Drop = 1;                           // the next READY is lost on the way
+            cs.SetReady(true); Pump(hs, cs);
+            Assert(hs.NotReady.Count == 1, "staging: (control) the lost READY did not reach the host");
+            cs.Tick(1.1); Pump(hs, cs);
+            Assert(hs.NotReady.Count == 0, "staging: a lost READY is sent again until the host's roster shows it");
+            string? leftName = null;
+            hs.OnPlayerLeft = id => leftName = hostRoster?.FirstOrDefault(e => e.Player == id).Name;
+            var before = hostRoster;
+            c3.Dispose();
+            Assert(hostRoster is { Count: 1 } && before!.Count == 2 && hs.Roster.Count == 1 && leftName == "Joiner",
+                $"staging: a player who leaves drops out of the host's roster (left: '{leftName}')");
+            hs.Dispose(); cs.Dispose(); h3.Dispose();
+
+            var (h4, c4) = LoopbackTransport.CreatePair();
+            var hs4 = new MpSession(h4, isHost: true, "Host");
+            int leftCalls = 0;
+            hs4.OnPlayerLeft = _ => leftCalls++;
+            c4.Dispose();                          // connected, never sent a JoinRequest
+            Assert(leftCalls == 0 && hs4.Roster.Count == 1,
+                "staging: a connection that closes before it joins is not announced as a player leaving");
+            hs4.Dispose(); h4.Dispose();
+        }
+
         // ---- P5: join rules + spawn-town gates ----
         var vet = new MpSessionInfo("Bob", "Utraea", MpDifficulty.Veteran, 2, 8, false, "Lang", 50, 60);
         Assert(!MpJoinRules.CanJoin(vet, 40, false).Ok, "level-40 char refused from a Veteran game (needs 54+)");
@@ -291,4 +333,22 @@ public static class NetSelfTest
         // Drain both directions a few times (deltas may cascade).
         for (int i = 0; i < 4; i++) { host.Tick(0.0); client.Tick(0.0); }
     }
+}
+
+/// <summary>A transport that loses its next <see cref="Drop"/> sends, for the
+/// re-send checks.</summary>
+sealed class DropNextSends : ISessionTransport
+{
+    readonly ISessionTransport _inner;
+    public int Drop;
+    public DropNextSends(ISessionTransport inner) => _inner = inner;
+    public string ProviderId => _inner.ProviderId;
+    public IReadOnlyList<int> Peers => _inner.Peers;
+    public event Action<int>? PeerConnected { add => _inner.PeerConnected += value; remove => _inner.PeerConnected -= value; }
+    public event Action<int>? PeerDisconnected { add => _inner.PeerDisconnected += value; remove => _inner.PeerDisconnected -= value; }
+    public Task<bool> ListenAsync(int port, CancellationToken ct) => _inner.ListenAsync(port, ct);
+    public Task<bool> ConnectAsync(string hostAddress, CancellationToken ct) => _inner.ConnectAsync(hostAddress, ct);
+    public void Send(int peerId, ReadOnlySpan<byte> payload) { if (Drop > 0) { Drop--; return; } _inner.Send(peerId, payload); }
+    public bool TryReceive(out int peerId, out byte[] payload) => _inner.TryReceive(out peerId, out payload);
+    public void Dispose() => _inner.Dispose();
 }
