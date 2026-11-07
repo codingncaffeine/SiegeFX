@@ -28,6 +28,15 @@ public sealed class SkinnedMesh : IDisposable
     private readonly uint _vbo;
     private readonly uint _ebo;
     private readonly int _indexCount;
+    // A second index buffer in which the triangles on one bone are collapsed
+    // to nothing (same layout, so subset offsets still hold); 0 = none built.
+    private uint _eboHidden;
+    private int _hiddenBone = -1;
+
+    /// <summary>Draw with the triangles marked by <see cref="HideBoneTriangles"/>
+    /// left out. The GL mesh is shared by every actor using the model, so a
+    /// caller sets this for its own draws and clears it after.</summary>
+    public bool HideMarked { get; set; }
 
     public Vector3 Min { get; }
     public Vector3 Max { get; }
@@ -125,10 +134,88 @@ public sealed class SkinnedMesh : IDisposable
         _gl.BindBuffer(GLEnum.ElementArrayBuffer, 0);
     }
 
+    /// <summary>Mark the triangles that hang on <paramref name="boneIndex"/> or
+    /// a bone below it (at least two corners weighted mostly to them) for
+    /// <see cref="HideMarked"/>: the hero's own head with anything hung off it
+    /// (the farm girl's ponytail), left out while a separate head mesh is
+    /// drawn in its place. Built once per mesh and bone.</summary>
+    public void HideBoneTriangles(AspMesh mesh, int boneIndex)
+    {
+        if (boneIndex < 0 || _hiddenBone == boneIndex) return;
+        var hidden = BoneAndBelow(mesh, boneIndex);
+        var indices = new uint[mesh.TriangleIndices.Length];
+        for (int t = 0; t + 2 < indices.Length; t += 3)
+        {
+            int onBone = 0;
+            for (int k = 0; k < 3; k++)
+            {
+                int b = PrimaryBone(mesh, mesh.TriangleIndices[t + k]);
+                if (b >= 0 && b < hidden.Length && hidden[b]) onBone++;
+            }
+            for (int k = 0; k < 3; k++)
+                indices[t + k] = onBone >= 2 ? (uint)mesh.TriangleIndices[t] : (uint)mesh.TriangleIndices[t + k];
+        }
+        if (_eboHidden == 0) _eboHidden = _gl.GenBuffer();
+        _gl.BindVertexArray(0);
+        _gl.BindBuffer(GLEnum.ElementArrayBuffer, _eboHidden);
+        unsafe
+        {
+            fixed (uint* p = indices)
+                _gl.BufferData(GLEnum.ElementArrayBuffer, (nuint)(indices.Length * sizeof(uint)), p, GLEnum.StaticDraw);
+        }
+        _gl.BindBuffer(GLEnum.ElementArrayBuffer, 0);
+        _hiddenBone = boneIndex;
+    }
+
+    /// <summary>A bone and every bone parented below it, as flags by index.</summary>
+    public static bool[] BoneAndBelow(AspMesh mesh, int boneIndex)
+    {
+        var set = new bool[Math.Max(mesh.BoneCount, boneIndex + 1)];
+        set[boneIndex] = true;
+        var parents = mesh.BoneParents;
+        for (bool grew = true; grew;)
+        {
+            grew = false;
+            for (int i = 0; i < parents.Length && i < set.Length; i++)
+                if (!set[i] && parents[i] >= 0 && parents[i] < set.Length && set[parents[i]])
+                    set[i] = grew = true;
+        }
+        return set;
+    }
+
+    /// <summary>The bone a corner is weighted to most.</summary>
+    public static int PrimaryBone(AspMesh mesh, int corner)
+    {
+        if (!mesh.HasSkin || corner >= mesh.SkinWeights.Length) return 0;
+        var w = mesh.SkinWeights[corner];
+        uint b = mesh.SkinBones[corner];
+        int primary = (int)(b & 0xFF);
+        float pw = w.X;
+        if (w.Y > pw) { primary = (int)((b >> 8) & 0xFF); pw = w.Y; }
+        if (w.Z > pw) { primary = (int)((b >> 16) & 0xFF); pw = w.Z; }
+        if (w.W > pw) { primary = (int)((b >> 24) & 0xFF); }
+        return primary;
+    }
+
+    // Swap the VAO's element buffer for the hidden-triangle one while drawing.
+    private bool BeginHidden()
+    {
+        if (!HideMarked || _eboHidden == 0) return false;
+        _gl.BindBuffer(GLEnum.ElementArrayBuffer, _eboHidden);
+        return true;
+    }
+
+    private void EndHidden(bool swapped)
+    {
+        if (swapped) _gl.BindBuffer(GLEnum.ElementArrayBuffer, _ebo);
+    }
+
     public void Draw()
     {
         _gl.BindVertexArray(_vao);
+        bool swapped = BeginHidden();
         unsafe { _gl.DrawElements(GLEnum.Triangles, (uint)_indexCount, GLEnum.UnsignedInt, (void*)0); }
+        EndHidden(swapped);
         _gl.BindVertexArray(0);
     }
 
@@ -141,11 +228,13 @@ public sealed class SkinnedMesh : IDisposable
     {
         if (triangleCount <= 0) return;
         _gl.BindVertexArray(_vao);
+        bool swapped = BeginHidden();
         unsafe
         {
             var byteOffset = (nint)(firstTriangle * 3 * sizeof(uint));
             _gl.DrawElements(GLEnum.Triangles, (uint)(triangleCount * 3), GLEnum.UnsignedInt, (void*)byteOffset);
         }
+        EndHidden(swapped);
         _gl.BindVertexArray(0);
     }
 
@@ -153,6 +242,7 @@ public sealed class SkinnedMesh : IDisposable
     {
         _gl.DeleteBuffer(_vbo);
         _gl.DeleteBuffer(_ebo);
+        if (_eboHidden != 0) _gl.DeleteBuffer(_eboHidden);
         _gl.DeleteVertexArray(_vao);
     }
 }

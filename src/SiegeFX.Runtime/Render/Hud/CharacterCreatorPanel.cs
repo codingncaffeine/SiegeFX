@@ -56,6 +56,28 @@ internal sealed class CharacterCreatorPanel
     /// through to env-var defaults.</summary>
     public bool Cancelled { get; set; }
 
+    /// <summary>How many choices the Head button has (the head meshes plus
+    /// the body's own, bald head); 0 = not known yet, no wrap.</summary>
+    public int HeadCount { get; set; }
+
+    /// <summary>The starting hair index for a gender (its hair list on the
+    /// first head); null = the first.</summary>
+    public Func<HeroGender, int>? DefaultHair { get; set; }
+
+    int StartHair(HeroGender g) => DefaultHair?.Invoke(g) ?? 0;
+
+    /// <summary>The hair index on a new head for the hair worn on the old
+    /// one: (old picker, new picker) → index in the new head's list.</summary>
+    public Func<HeroVariantPicker, HeroVariantPicker, int>? HairOnNewHead { get; set; }
+
+    HeroVariantPicker ChangeHead(int head)
+    {
+        var next = With(head: head);
+        return With(head: head, style: HairOnNewHead?.Invoke(Picker, next) ?? 0);
+    }
+
+    int WrapHead(int idx) => HeadCount > 0 ? ((idx % HeadCount) + HeadCount) % HeadCount : Math.Max(0, idx);
+
     public HeroVariantPicker Picker { get; private set; } = new()
     {
         Gender = HeroGender.Boy,
@@ -129,6 +151,7 @@ internal sealed class CharacterCreatorPanel
             HairSuffix = "001",
             ShirtIdx = 0,
             PantsSuffix = "001",
+            StyleIdx = StartHair(HeroGender.Boy),
         };
         HeroName = "";
         _hovered = Action.None;
@@ -255,21 +278,33 @@ internal sealed class CharacterCreatorPanel
     /// release lands on the same rect the press did.</summary>
     void ApplyCycle(Action act)
     {
-        // SC-CD-COMPOSITE — each lever now drives its real, label-matching axis
-        // (Head=hairstyle, Hair=color, Face=skin, Shirt/Pants=clothing). Indices
-        // cycle unbounded; the renderer wraps each by the shipped-variant count.
+        // Each lever drives the original's axis: Head picks the head mesh,
+        // Skin the skin texture, Hair the hair overlay, Shirt/Pants the
+        // clothing. Indices cycle unbounded; the renderer wraps each by the
+        // shipped-variant count. (Hair used to recolor one overlay with an
+        // invented palette, and Head to pick the overlay; the original has no
+        // recolor, and its Head swaps a whole head mesh: the mohawk is geometry.)
         switch (act)
         {
             case Action.GenderLeft:
             case Action.GenderRight:
+                // The genders' hair lists differ; start on the new one's default.
                 Picker = With(g: Toggle(Picker.Gender));
+                Picker = With(style: StartHair(Picker.Gender));
                 break;
-            case Action.HeadLeft:   Picker = With(style: Picker.StyleIdx - 1); break;
-            case Action.HeadRight:  Picker = With(style: Picker.StyleIdx + 1); break;
+            // Each head has its own hair set, so a new head starts on the
+            // first hair of its set, as in the original.
+            // Head cycles its choices both ways. The original's left button
+            // never reaches bald (the last); ours walks the same list in
+            // reverse so left always undoes right. The hair stays when the
+            // new head offers it, else the new head's first, as in the
+            // original (the farm girl stays red through every head).
+            case Action.HeadLeft:   Picker = ChangeHead(WrapHead(Picker.HeadIdx - 1)); break;
+            case Action.HeadRight:  Picker = ChangeHead(WrapHead(Picker.HeadIdx + 1)); break;
             case Action.FaceLeft:   Picker = With(face:  Picker.FaceIdx  - 1); break;
             case Action.FaceRight:  Picker = With(face:  Picker.FaceIdx  + 1); break;
-            case Action.HairLeft:   Picker = With(color: Picker.ColorIdx - 1); break;
-            case Action.HairRight:  Picker = With(color: Picker.ColorIdx + 1); break;
+            case Action.HairLeft:   Picker = With(style: Picker.StyleIdx - 1); break;
+            case Action.HairRight:  Picker = With(style: Picker.StyleIdx + 1); break;
             case Action.ShirtLeft:  Picker = With(shirt: Picker.ShirtIdx - 1); break;
             case Action.ShirtRight: Picker = With(shirt: Picker.ShirtIdx + 1); break;
             case Action.PantsLeft:  Picker = With(pants: Picker.PantsIdx - 1); break;
@@ -321,8 +356,8 @@ internal sealed class CharacterCreatorPanel
         => n.ToString(System.Globalization.CultureInfo.InvariantCulture).PadLeft(width, '0');
 
     HeroVariantPicker With(
-        HeroGender? g = null, int? style = null, int? color = null,
-        int? face = null, int? shirt = null, int? pants = null)
+        HeroGender? g = null, int? style = null,
+        int? face = null, int? shirt = null, int? pants = null, int? head = null)
         => new()
         {
             Gender      = g ?? Picker.Gender,
@@ -332,8 +367,8 @@ internal sealed class CharacterCreatorPanel
             SkinSuffix  = Picker.SkinSuffix,
             HairSuffix  = Picker.HairSuffix,
             PantsSuffix = Picker.PantsSuffix,
+            HeadIdx     = head  ?? Picker.HeadIdx,
             StyleIdx    = style ?? Picker.StyleIdx,
-            ColorIdx    = color ?? Picker.ColorIdx,
             FaceIdx     = face  ?? Picker.FaceIdx,
             ShirtIdx    = shirt ?? Picker.ShirtIdx,
             PantsIdx    = pants ?? Picker.PantsIdx,
