@@ -5475,6 +5475,10 @@ public sealed class RenderHost : IDisposable
         double.TryParse(Environment.GetEnvironmentVariable("SIEGEFX_DEV_DIE_AFTER"),
             System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var dda) ? dda : -1;
     private bool _devDied;
+    // Test hook: SIEGEFX_DEV_EQUIP=<weapon template>[,<shield template>] puts
+    // gear in the hero's hands at start (scratch recipes, never players).
+    private readonly string? _devEquip = Environment.GetEnvironmentVariable("SIEGEFX_DEV_EQUIP");
+    private bool _devEquipped;
     private bool _camTracking = true;
     private bool _altComboFired;
     // SC-FREE-LOOK — authored camera_free_look hold state (default D).
@@ -6583,6 +6587,13 @@ public sealed class RenderHost : IDisposable
         };
         // SC-MP-PLAYERS — character cards + in-game chat overlay.
         session.OnPlayerInfo = MpApplyPlayerInfo;
+        // Everyone's name, from the host's roster (the joiner otherwise never
+        // learns the host's: chat and notices read "Player 0").
+        session.OnRoster = roster =>
+        {
+            foreach (var e in roster)
+                if (e.Player != session.LocalPlayerId && e.Name.Length > 0) _mpPlayerNames[e.Player] = e.Name;
+        };
         session.OnChatFrom += MpOnChatLine;
         _mpPlayerNames[asHost ? 0 : -1] = name;
         // SC-MP-LOOT / GIVE / RECRUIT — host-authoritative piles, item
@@ -6706,6 +6717,8 @@ public sealed class RenderHost : IDisposable
     {
         var a = FindRemoteAvatar(playerId);
         if (a is null || a.IsDead || _window is null) return false;
+        // A cutscene points the camera elsewhere: no judging distance by it then.
+        if (_nisPhase != NisPhase.Off) return false;
         var size = _window.FramebufferSize;
         if (size.X <= 0 || size.Y <= 0) return false;
         var vp = _camera.GetViewProjection((float)size.X / size.Y);
@@ -6882,7 +6895,7 @@ public sealed class RenderHost : IDisposable
         bool wantGirl = info.Gender == 1;
         bool isGirl = avatar.Actor.Template.Name.Contains("farmgirl", StringComparison.OrdinalIgnoreCase);
         if (wantGirl != isGirl) MpRemoveRemoteAvatar(info.Player, "rebuilt to match the player's character card");
-        else _netPickers[avatar.Actor] = MpPickerFromInfo(info);
+        else { _netPickers[avatar.Actor] = MpPickerFromInfo(info); MpApplyRemoteGear(avatar, info); }
     }
 
     /// <summary>The local player's card, from the same fields the HUD shows.</summary>
@@ -6900,7 +6913,52 @@ public sealed class RenderHost : IDisposable
             string.IsNullOrEmpty(_heroName) ? "Adventurer" : _heroName,
             _playerStartingClass,
             U(st.Strength), U(st.Dexterity), U(st.Intelligence),
-            B(st.MeleeSkill), B(st.RangedSkill), B(st.NatureMagicSkill), B(st.CombatMagicSkill));
+            B(st.MeleeSkill), B(st.RangedSkill), B(st.NatureMagicSkill), B(st.CombatMagicSkill),
+            PlayerWieldRef() is { Length: > 0 } wieldRef ? ResolveItemRef(wieldRef) : "",
+            _playerEquipment.TryGetValue("es_shield_hand", out var shieldRef) && !string.IsNullOrWhiteSpace(shieldRef)
+                ? ResolveItemRef(shieldRef) : "",
+            ComputePreferredPlayerStance(_playerEquipment) is int stance ? (byte)Math.Clamp(stance, 0, 254) : (byte)255);
+    }
+
+    // The gear last put on each remote avatar, so a card resent unchanged
+    // (or a rebuilt avatar) does not reload it needlessly.
+    private readonly Dictionary<ActorRenderState, (string Weapon, string Shield, byte Stance)> _mpAvatarGear = new();
+
+    /// <summary>Dress a remote player's stand-in in the gear its owner holds:
+    /// weapon and shield on the template's grip bones (the companion recipe),
+    /// and the owner's stance, so a replayed swing is the sword swing, not
+    /// the bare-handed one.</summary>
+    private void MpApplyRemoteGear(ActorRenderState avatar, in SiegeFX.Core.Net.MpPlayerInfo info)
+    {
+        if (_templateStore is null) return;
+        var want = (info.Weapon ?? "", info.Shield ?? "", info.Stance);
+        if (_mpAvatarGear.TryGetValue(avatar, out var had) && had == want) return;
+        _mpAvatarGear[avatar] = want;
+        avatar.WeaponMesh = null; avatar.WeaponTexture = null; avatar.WeaponBoneIdx = -1; avatar.WieldedWeaponRef = null;
+        avatar.ShieldMesh = null; avatar.ShieldTexture = null; avatar.ShieldBoneIdx = -1;
+        int FindBone(string name)
+        {
+            var bones = avatar.Actor.Mesh.BoneNames;
+            for (int i = 0; i < bones.Count; i++)
+                if (string.Equals(bones[i], name, StringComparison.OrdinalIgnoreCase)) return i;
+            return -1;
+        }
+        var weaponBone = _templateStore.GetAttribute(avatar.Actor.Template, "body", "bone_translator", "weapon_bone")?.Trim();
+        var shieldBone = _templateStore.GetAttribute(avatar.Actor.Template, "body", "bone_translator", "shield_bone")?.Trim();
+        if (want.Item1.Length > 0 && TryGetGearVisual(want.Item1, out var wVis))
+        {
+            int idx = FindBone(string.IsNullOrEmpty(weaponBone) ? "weapon_grip" : weaponBone!);
+            if (idx >= 0) { avatar.WeaponMesh = wVis.Mesh; avatar.WeaponTexture = wVis.Tex; avatar.WeaponBoneIdx = idx; avatar.WieldedWeaponRef = want.Item1; }
+        }
+        if (want.Item2.Length > 0 && TryGetGearVisual(want.Item2, out var sVis))
+        {
+            int idx = FindBone(string.IsNullOrEmpty(shieldBone) ? "shield_grip" : shieldBone!);
+            if (idx >= 0) { avatar.ShieldMesh = sVis.Mesh; avatar.ShieldTexture = sVis.Tex; avatar.ShieldBoneIdx = idx; }
+        }
+        _actorSpawner?.RefreshMotionClips(avatar.Actor, info.Stance == 255 ? null : info.Stance);
+        SiegeFX.Core.Net.NetLog.Info($"remote avatar {info.Player}: holds '{(want.Item1.Length > 0 ? want.Item1 : "nothing")}'" +
+            $"{(want.Item2.Length > 0 ? $" + '{want.Item2}'" : "")}, stance {(info.Stance == 255 ? "default" : info.Stance.ToString())}" +
+            $"{(want.Item1.Length > 0 && avatar.WeaponMesh is null ? " (weapon model not found)" : "")}");
     }
 
     private void MpOnChatLine(int player, string text)
@@ -6909,6 +6967,7 @@ public sealed class RenderHost : IDisposable
             ? n : $"Player {player}";
         _mpChatLog.Add(($"{name}: {text}", _playSeconds + 12.0));
         while (_mpChatLog.Count > 8) _mpChatLog.RemoveAt(0);
+        SiegeFX.Core.Net.NetLog.Info($"[chat] {name}: {text}");
     }
 
     // ── SC-MP-LOOT — host-authoritative loot piles ───────────────────────
@@ -8265,6 +8324,7 @@ public sealed class RenderHost : IDisposable
             if (_actors[i].IsRemotePlayer && _actors[i].NetPlayerId == playerId)
             {
                 _netPickers.Remove(_actors[i].Actor);
+                _mpAvatarGear.Remove(_actors[i]);
                 _actors.RemoveAt(i);
                 SiegeFX.Core.Net.NetLog.Info($"remote avatar removed: player {playerId} ({why})");
             }
@@ -8322,6 +8382,7 @@ public sealed class RenderHost : IDisposable
         };
         _actors.Add(state);
         _netPickers[actor] = pick;   // composite textures per the owner's card
+        if (_mpPlayerInfos.TryGetValue(playerId, out var gearCard)) MpApplyRemoteGear(state, gearCard);
         SiegeFX.Core.Net.NetLog.Info($"remote avatar spawned: player {playerId} ({template}) at ({pos.X:F1},{pos.Y:F1},{pos.Z:F1})");
         return state;
     }
@@ -24778,6 +24839,16 @@ void main()
         // SC-DEVMODE — god mode tops the hero's pools back up every tick.
         TickDevGodMode();
         // SC-DEFEAT — hero death edge + party-wipe presentation.
+        if (!string.IsNullOrWhiteSpace(_devEquip) && !_devEquipped && _player is not null && _templateStore is not null)
+        {
+            _devEquipped = true;
+            var parts = _devEquip.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length > 0) _playerEquipment["es_weapon_hand"] = parts[0];
+            if (parts.Length > 1) _playerEquipment["es_shield_hand"] = parts[1];
+            TryLoadPlayerWeapon();
+            RefreshPlayerStance();
+            Console.WriteLine($"[dev] SIEGEFX_DEV_EQUIP: hero holds {string.Join(" + ", parts)}");
+        }
         if (_devDieAfter >= 0 && !_devDied && _player is { IsDead: false } && _playSeconds >= _devDieAfter)
         {
             _devDied = true;
@@ -40702,6 +40773,7 @@ void main()
             {
                 if (s.IsPlayer || s.Hidden) continue;
                 if (s.WeaponMesh is null && s.ShieldMesh is null) continue;
+                if (s.IsGhost) continue;   // a ghost holds nothing
                 // SC-REGION-LAYER-HIDE-ACTORS (follow-up) — no region stamp on
                 // actors yet; gear hides with the faded-snode gate below.
                 if (IsPosInFadedSnode(s.CurrentTransform.Translation)) continue;
