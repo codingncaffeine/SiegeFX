@@ -102,7 +102,11 @@ public static class MpSnapshot
 public enum MpInputCmd : byte { Move = 0, Attack = 1, CastPrimary = 2, CastSecondary = 3, Pickup = 4, Stop = 5 }
 
 /// <summary>Flag bits in a player-state frame (<see cref="MpPlayerState.Flags"/>).</summary>
-[Flags] public enum MpPlayerFlags : byte { None = 0, Moving = 1, Dead = 2 }
+/// <summary>OutOfHostView: set by the host on a player its camera cannot see
+/// (the co-op leash: "if the host can't see the player, it's too far").
+/// Ghost: the player chose "Respawn as Ghost" after dying (drawn pale and
+/// see-through; enemies ignore it).</summary>
+[Flags] public enum MpPlayerFlags : byte { None = 0, Moving = 1, Dead = 2, OutOfHostView = 4, Ghost = 8 }
 
 /// <summary>Bounds-checked writer — grows a pooled buffer; never throws on
 /// caller data.</summary>

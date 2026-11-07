@@ -23,6 +23,10 @@ public sealed class PauseMenu
     /// over the dimmed menu (user ref withoutsaving.bmp). While true, the five
     /// menu buttons are inert/dimmed and only Yes / No respond.</summary>
     public bool ConfirmingExit { get; private set; }
+    /// <summary>A multiplayer game: SAVE GAME and LOAD GAME show grayed and do
+    /// nothing (the world is the host's, and a load would leave the session).</summary>
+    public bool SaveLoadDisabled { get; set; }
+    bool Disabled(int i) => SaveLoadDisabled && Buttons[i].A is Action.SaveGame or Action.LoadGame;
 
     public enum Action { None, Resume, Options, SaveGame, LoadGame, ExitGame, ExitConfirmed }
 
@@ -134,7 +138,8 @@ public sealed class PauseMenu
             _noBtn.TryPress(px, py);
             return true;
         }
-        foreach (var b in _buttons) b.TryPress(px, py);
+        for (int i = 0; i < _buttons.Length; i++)
+            if (!Disabled(i)) _buttons[i].TryPress(px, py);
         return true;
     }
 
@@ -151,7 +156,7 @@ public sealed class PauseMenu
             return Action.None;
         }
         for (int i = 0; i < _buttons.Length; i++)
-            if (_buttons[i].Release(px, py)) return Buttons[i].A;
+            if (!Disabled(i) && _buttons[i].Release(px, py)) return Buttons[i].A;
         return Action.None;
     }
 
@@ -168,10 +173,12 @@ public sealed class PauseMenu
         // SC-HUD-MATCH — label size rides the same shared HUD scale as the
         // buttons (was raw viewportH/480 = oversized vs the rest of the UI).
         int fontScale = System.Math.Max(1, (int)MathF.Round(HudScale.Hud(viewportH)));
-        foreach (var b in _buttons)
+        for (int bi = 0; bi < _buttons.Length; bi++)
         {
-            var state = b.Pressed ? ButtonChrome.State.Down
-                      : b.Hovered && !ConfirmingExit ? ButtonChrome.State.Hover
+            var b = _buttons[bi];
+            bool off = Disabled(bi);
+            var state = b.Pressed && !off ? ButtonChrome.State.Down
+                      : b.Hovered && !ConfirmingExit && !off ? ButtonChrome.State.Hover
                                   : ButtonChrome.State.Up;
             // Authentic button_5 push-button chrome; fall back to the flat fill
             // if the raws don't resolve (headless / missing art).
@@ -181,7 +188,7 @@ public sealed class PauseMenu
 
             // SC-EXIT-CONFIRM — the menu dims to ~half ink behind the confirm
             // dialog (retail grays the column out; only Yes/No are live).
-            var ink = ConfirmingExit ? new Vector4(0.45f, 0.42f, 0.36f, 1f)
+            var ink = ConfirmingExit || off ? new Vector4(0.45f, 0.42f, 0.36f, 1f)
                     : b.Hovered      ? new Vector4(1f, 0.96f, 0.85f, 1f)
                                      : new Vector4(0.88f, 0.82f, 0.70f, 1f);
             int lw = text.MeasureWidth(b.Label, fontScale);
