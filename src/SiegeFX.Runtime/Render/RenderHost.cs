@@ -6726,8 +6726,13 @@ public sealed class RenderHost : IDisposable
         var c = Vector4.Transform(new Vector4(p, 1f), vp);
         if (c.W <= 1e-4f) return true;
         float x = c.X / c.W, y = c.Y / c.W;
-        return x < -1f || x > 1f || y < -1f || y > 1f;
+        return x < -LeashViewMargin || x > LeashViewMargin || y < -LeashViewMargin || y > LeashViewMargin;
     }
+
+    /// <summary>How far past the host's screen edge a player may go before it
+    /// counts as out of view: 1 = the edge itself, 1.2 = a fifth of the screen
+    /// beyond it (playtest 2026-11-07: the edge felt a little short).</summary>
+    private const float LeashViewMargin = 1.2f;
 
     // The host's co-op world saves itself (manual saves are off in a
     // multiplayer game): every few minutes and on close, into a slot of its
