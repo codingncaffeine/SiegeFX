@@ -3,7 +3,48 @@ using SiegeFX.Core.Assets;
 
 namespace SiegeFX.Runtime;
 
-internal enum HeroGender { Boy, Girl }
+/// <summary>The hero's body: the farm boy and farm girl of the single-player
+/// game, and the dwarf and skeleton the original also offered in multiplayer
+/// (multiplayer.gas [characters]: farmboy, farmgirl, dwarf, skeleton_good).
+/// The values travel on the co-op character card, so their order is fixed.</summary>
+internal enum HeroGender { Boy, Girl, Dwarf, Skeleton }
+
+/// <summary>The template, save word and look rules of each hero body.</summary>
+internal static class HeroBodies
+{
+    /// <summary>The original's template for the body.</summary>
+    public static string Template(HeroGender g) => g switch
+    {
+        HeroGender.Girl => "farmgirl",
+        HeroGender.Dwarf => "dwarf",
+        HeroGender.Skeleton => "skeleton_good",
+        _ => "farmboy",
+    };
+
+    /// <summary>The word saves and SIEGEFX_HERO_GENDER carry.</summary>
+    public static string Word(HeroGender g) => g switch
+    {
+        HeroGender.Girl => "girl",
+        HeroGender.Dwarf => "dwarf",
+        HeroGender.Skeleton => "skeleton",
+        _ => "boy",
+    };
+
+    public static HeroGender Parse(string? word) => word?.Trim().ToLowerInvariant() switch
+    {
+        "girl" => HeroGender.Girl,
+        "dwarf" => HeroGender.Dwarf,
+        "skeleton" => HeroGender.Skeleton,
+        _ => HeroGender.Boy,
+    };
+
+    /// <summary>The farm heroes take the face, hair and clothes choices; the
+    /// dwarf and the skeleton wear their template's own look.</summary>
+    public static bool IsFarm(HeroGender g) => g is HeroGender.Boy or HeroGender.Girl;
+
+    /// <summary>The co-op card's byte (unknown values read as the farm boy).</summary>
+    public static HeroGender FromCard(byte b) => b <= (byte)HeroGender.Skeleton ? (HeroGender)b : HeroGender.Boy;
+}
 
 /// <summary>SC-DIFF Phase A — chosen game difficulty. Set by the
 /// Difficulty screen Easy/Normal/Hard button click; consumed by future
@@ -69,9 +110,7 @@ internal sealed class HeroVariantPicker
     public static HeroVariantPicker FromEnv()
     {
         var genderRaw = Environment.GetEnvironmentVariable("SIEGEFX_HERO_GENDER");
-        var gender = string.Equals(genderRaw, "girl", StringComparison.OrdinalIgnoreCase)
-            ? HeroGender.Girl
-            : HeroGender.Boy;
+        var gender = HeroBodies.Parse(genderRaw);
 
         int bodyIdx = -1;
         var bodyRaw = Environment.GetEnvironmentVariable("SIEGEFX_HERO_BODY");
@@ -122,6 +161,7 @@ internal sealed class HeroVariantPicker
     /// attribute, keeping a single source of truth.</summary>
     public TemplateOverride? BuildOverride(TemplateStore store, Template template)
     {
+        if (!HeroBodies.IsFarm(Gender)) return null;   // the dwarf and skeleton keep their own look
         if (BodyTypeIdx < 0 && SkinSuffix is null && HairSuffix is null
             && PantsSuffix is null && ShirtIdx == 0) return null;
 

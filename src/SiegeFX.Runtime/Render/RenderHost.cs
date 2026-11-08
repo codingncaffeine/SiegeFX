@@ -5765,7 +5765,9 @@ public sealed class RenderHost : IDisposable
     /// single-player region dial the old host.</summary>
     private static void DropMultiplayerEnv(IDictionary<string, string?> env)
     {
-        foreach (var k in new[] { "SIEGEFX_MP_ROLE", "SIEGEFX_MP_PROVIDER", "SIEGEFX_MP_HOST", "SIEGEFX_MP_PORT", "SIEGEFX_MP_NAME", "SIEGEFX_MP_CHARACTER" })
+        foreach (var k in new[] { "SIEGEFX_MP_ROLE", "SIEGEFX_MP_PROVIDER", "SIEGEFX_MP_HOST", "SIEGEFX_MP_PORT", "SIEGEFX_MP_NAME", "SIEGEFX_MP_CHARACTER",
+                                  "SIEGEFX_MP_SETTINGS", "SIEGEFX_MP_PASSWORD", "SIEGEFX_MP_JOINPASS", "SIEGEFX_MP_PARTY", "SIEGEFX_MP_START",
+                                  "SIEGEFX_MP_GAMENAME", "SIEGEFX_MP_TEAM" })
             env.Remove(k);
     }
 
@@ -6405,14 +6407,27 @@ public sealed class RenderHost : IDisposable
     // with the frame cap instead.
     private bool MpPacesWithoutVSync => _mpInRegionRole is not null;
     private double _mpStartCountdown;          // host: >0 = broadcasting GameStart before relaunch
+    private string _mpStartingParty = "";      // host: the players in the staging area at START (tab-separated)
+    private string _mpLastRosterLine = "";
     private MpRelaunch? _mpClientStartPending; // client: latched on GameStart, relaunched next frame
     private string? _mpJoinedHostAddress;      // client: the address we connected to (reused in-region)
     private const string MpRegionPath = "/world/maps/map_world/regions/fh_r1";
-    private sealed record MpRelaunch(string Role, string Provider, string HostAddr, int Port, string Name);
+    /// <summary>A co-op relaunch into the region: the role and where to reach
+    /// the host, plus the host's rules (hex, MpGameSettings.ToEnv), the
+    /// password (the host's own, or the one this joiner typed), the players who
+    /// started the game (host) and the start location.</summary>
+    private sealed record MpRelaunch(string Role, string Provider, string HostAddr, int Port, string Name,
+                                     string Region = MpRegionPath, int Difficulty = -1, string SettingsEnv = "",
+                                     string Password = "", string Party = "", string StartGroup = "", int Team = 0);
+
+    /// <summary>A region path the host may send: one region of one map, nothing else.</summary>
+    private static string MpSafeRegion(string region) =>
+        System.Text.RegularExpressions.Regex.IsMatch(region, "^/world/maps/[a-z0-9_]+/regions/[a-z0-9_]+$")
+            ? region : MpRegionPath;
     // Client: authored SCID -> the local actor the host drives (built once at
     // in-region init since the region is static for a co-op session).
     private readonly Dictionary<uint, ActorRenderState> _mpScidIndex = new();
-    private volatile List<(string Row, string Addr)>? _mpLanScanResult;
+    private volatile List<Hud.MpSessionScreen.GameRow>? _mpLanScanResult;
     private bool _mpLanScanBusy;
     // SC-MP-EOS F1 — the Internet screen's lobby browser. A persistent EOS
     // browse lobby (search only, no transport) polls ListAsync ~2.5s and fills
@@ -6428,7 +6443,7 @@ public sealed class RenderHost : IDisposable
     // The screen state FlushMpSession saw last frame: opening a game list
     // searches at once.
     private Hud.FrontendScene.ScreenState _mpPrevSessionState = Hud.FrontendScene.ScreenState.Multiplayer;
-    private volatile List<(string Row, string Addr)>? _mpEosScanResult;
+    private volatile List<Hud.MpSessionScreen.GameRow>? _mpEosScanResult;
     private volatile string? _mpHostInvite;
     // The Internet and Network browsers share LanGames/LanGameAddresses; track
     // which one last filled it so we can clear stale rows on a screen switch.
@@ -6554,6 +6569,34 @@ public sealed class RenderHost : IDisposable
             SiegeFX.Core.Net.LanLobbyService.BeaconPort, MpIsEncrypted(transport));
         var session = new SiegeFX.Core.Net.MpSession(transport, asHost, name);
         _mpNetSession = session;
+        // The host's rules came along from the staging area; the joiner's
+        // password too (the host checks it again here).
+        var rules = SiegeFX.Core.Net.MpGameSettings.FromEnv(Environment.GetEnvironmentVariable("SIEGEFX_MP_SETTINGS"))
+                    ?? new SiegeFX.Core.Net.MpGameSettings();
+        if (asHost)
+        {
+            session.SetSettings(rules, Environment.GetEnvironmentVariable("SIEGEFX_MP_PASSWORD") ?? "");
+            foreach (var who in (Environment.GetEnvironmentVariable("SIEGEFX_MP_PARTY") ?? "").Split('\t', StringSplitOptions.RemoveEmptyEntries))
+                session.StartingParty.Add(who);
+        }
+        else
+        {
+            session.JoinPassword = Environment.GetEnvironmentVariable("SIEGEFX_MP_JOINPASS") ?? "";
+            session.AdoptSettings(rules);
+        }
+        session.OnSettings = MpOnGameSettings;
+        session.OnPause = MpOnPause;
+        session.OnTeamChat = (from, text) =>
+        {
+            string who = _mpPlayerNames.TryGetValue(from, out var tn) && tn.Length > 0 ? tn : $"Player {from}";
+            _mpChatLog.Add(($"{who} tells your team: {text}", _playSeconds + 12.0));
+            while (_mpChatLog.Count > 8) _mpChatLog.RemoveAt(0);
+            SiegeFX.Core.Net.NetLog.Info($"[team chat] {who}: {text}");
+        };
+        if (int.TryParse(Environment.GetEnvironmentVariable("SIEGEFX_MP_TEAM"), out var myTeam) && myTeam > 0) session.SetTeam(myTeam);
+        _charLabelsVisible = true;   // co-op: everyone's name over their head (L hides them)
+        SiegeFX.Core.Net.NetLog.Info($"in-region rules: {string.Join(", ", rules.Summary(1))}" +
+            (asHost ? $"; starting party: {string.Join(", ", session.StartingParty)}" : ""));
         // SC-SP-MP-ROWS — authored MP-only trigger rows go live with the session.
         if (_triggerRuntime is not null) _triggerRuntime.IsMultiplayerSession = true;
         session.BuildLocalPlayerState = BuildLocalMpPlayerState;
@@ -6562,11 +6605,13 @@ public sealed class RenderHost : IDisposable
         {
             string who = _mpPlayerNames.TryGetValue(id, out var left) ? left : $"Player {id}";
             MpRemoveRemoteAvatar(id); _mpPlayerInfos.Remove(id); MpToast($"{who} left the game");
+            if (session.IsHost) MpUpdateListing();
         };
         session.OnPlayerJoined = (id, nm) =>
         {
             _mpPlayerNames[id] = nm;
             MpToast($"{nm} joined the game");
+            if (session.IsHost) MpUpdateListing();
             // SC-MP-LOOT — catch the joiner up on every live pile (piles
             // created before the session got no id yet; stamp lazily).
             if (session.IsHost)
@@ -6594,6 +6639,8 @@ public sealed class RenderHost : IDisposable
         {
             foreach (var e in roster)
                 if (e.Player != session.LocalPlayerId && e.Name.Length > 0) _mpPlayerNames[e.Player] = e.Name;
+            string line = string.Join(", ", roster.Select(e => e.Team > 0 ? $"{e.Name} (team {e.Team})" : e.Name));
+            if (line != _mpLastRosterLine) { _mpLastRosterLine = line; SiegeFX.Core.Net.NetLog.Info($"in-region: players: {line}"); }
         };
         session.OnChatFrom += MpOnChatLine;
         _mpPlayerNames[asHost ? 0 : -1] = name;
@@ -6603,11 +6650,8 @@ public sealed class RenderHost : IDisposable
         session.OnItemGive = (from, _, slot, itemRef) => MpOnItemGive(from, slot, itemRef);
         session.OnRecruitGrant = MpOnRecruitGrant;
         session.OnPropBreak = MpOnPropBreak;
-        if (!asHost)
-        {
-            session.OnPlayerHit = MpOnPlayerHit;
-            session.OnActorSpawn = MpOnActorSpawn;
-        }
+        session.OnPlayerHit = MpOnPlayerHit;   // monsters (host-run) and, with player-vs-player on, other players
+        if (!asHost) session.OnActorSpawn = MpOnActorSpawn;
         if (asHost)
         {
             session.OnLootTake = MpOnLootTakeHost;
@@ -6620,7 +6664,9 @@ public sealed class RenderHost : IDisposable
             session.OnLootGone = MpOnLootGoneClient;
         }
         if (!asHost) { session.ApplyDelta = MpApplyWorldDelta; session.OnActorsLeft = MpOnActorsLeft; } // host-owned enemies
-        if (!asHost) session.OnGameEnded = () => MpGameOver("THE HOST HAS ENDED THE GAME.", "the host ended the game");
+        if (!asHost) session.OnGameEnded = reason => MpGameOver(
+            reason == SiegeFX.Core.Net.MpGameEndReason.TimeLimit ? "THE TIME LIMIT HAS RUN OUT." : "THE HOST HAS ENDED THE GAME.",
+            reason == SiegeFX.Core.Net.MpGameEndReason.TimeLimit ? "the time limit ran out" : "the host ended the game");
         if (!asHost) session.OnJoinAccepted = id =>
         {
             MpRemoveRemoteAvatar(id, "it is this machine's own player"); // never draw ourselves as a remote player
@@ -6650,7 +6696,7 @@ public sealed class RenderHost : IDisposable
                 transport.ListenAsync(port, default).GetAwaiter().GetResult();
                 SiegeFX.Core.Net.NetLog.Info("in-region host listening on Epic P2P");
                 MpToast("Hosting: waiting for players to join");
-                MpListGameInProgress(lobby, name, port);
+                if (session.Settings.AllowJoinInProgress) MpListGameInProgress(lobby, name, port);
                 return true;
             }
             _ = Task.Run(async () =>
@@ -6658,7 +6704,7 @@ public sealed class RenderHost : IDisposable
                 for (int i = 0; i < 20; i++)
                 {
                     if (await transport.ListenAsync(port, default).ConfigureAwait(false))
-                    { SiegeFX.Core.Net.NetLog.Info($"in-region host listening on :{port}"); MpToast("Hosting — waiting for players to join"); MpListGameInProgress(lobby, name, port); return; }
+                    { SiegeFX.Core.Net.NetLog.Info($"in-region host listening on :{port}"); MpToast("Hosting — waiting for players to join"); if (session.Settings.AllowJoinInProgress) MpListGameInProgress(lobby, name, port); return; }
                     SiegeFX.Core.Net.NetLog.Warn($"in-region host bind :{port} busy (attempt {i + 1}/20) — frontend socket not released yet?");
                     await Task.Delay(500).ConfigureAwait(false);
                 }
@@ -6699,14 +6745,12 @@ public sealed class RenderHost : IDisposable
     /// always on): the staging host's listing ended when it relaunched.</summary>
     private void MpListGameInProgress(SiegeFX.Core.Net.ILobbyService lobby, string hostName, int port)
     {
-        var attrs = new Dictionary<string, string>
-        {
-            ["port"] = port.ToString(),
-            ["map"] = "Kingdom of Ehb",
-            ["host"] = hostName,
-            ["state"] = "in progress",
-        };
-        _ = lobby.CreateAsync($"{hostName}'s Game", attrs, default).ContinueWith(t =>
+        var s = _mpNetSession;
+        var attrs = MpListingAttributes(s?.Settings ?? new SiegeFX.Core.Net.MpGameSettings(), s?.PlayerCount ?? 1,
+                                        (s?.Password.Length ?? 0) > 0, inProgress: true);
+        attrs["port"] = port.ToString();
+        string gameName = Environment.GetEnvironmentVariable("SIEGEFX_MP_GAMENAME") is { Length: > 0 } gn ? gn : $"{hostName}'s Game";
+        _ = lobby.CreateAsync(gameName, attrs, default).ContinueWith(t =>
             SiegeFX.Core.Net.NetLog.Info(t.Status == TaskStatus.RanToCompletion && t.Result is not null
                 ? "in-region: game listed as in progress (others can join)"
                 : "in-region: could not list the game (joins by address still work)"), TaskScheduler.Default);
@@ -7014,6 +7058,13 @@ public sealed class RenderHost : IDisposable
         MpPumpEos(_mpTransport);
         _mpNetSession?.Tick(_frameDtSeconds);
         MpClientLeash();
+        // The time limit (Game Settings): the host ends the game for everyone.
+        if (_mpNetSession is { IsHost: true } th && !_mpGameOver && th.Settings.TimeLimitMinutes > 0
+            && th.GameSeconds >= th.Settings.TimeLimitMinutes * 60.0)
+        {
+            th.EndGame(SiegeFX.Core.Net.MpGameEndReason.TimeLimit);
+            MpGameOver("THE TIME LIMIT HAS RUN OUT.", "the time limit ran out");
+        }
         if (_mpNetSession is { IsHost: true })
         {
             _mpAutoSaveTimer += _frameDtSeconds;
@@ -7069,11 +7120,12 @@ public sealed class RenderHost : IDisposable
     private readonly Dictionary<SiegeFX.Core.Actors.Actor, HeroVariantPicker> _netPickers = new();
     private bool _mpChatOpen;
     private string _mpChatBuffer = "";
+    private bool _mpChatTeam;   // the open line goes to the team ([toggle_gui_edit_box_team], Shift+Enter)
     private readonly List<(string Line, double Expires)> _mpChatLog = new();
 
     private static HeroVariantPicker MpPickerFromInfo(in SiegeFX.Core.Net.MpPlayerInfo i) => new()
     {
-        Gender   = i.Gender == 1 ? HeroGender.Girl : HeroGender.Boy,
+        Gender   = HeroBodies.FromCard(i.Gender),
         FaceIdx  = i.Face,  StyleIdx = i.Style, ColorIdx = i.Color,
         ShirtIdx = i.Shirt, PantsIdx = i.Pants,
     };
@@ -7087,9 +7139,9 @@ public sealed class RenderHost : IDisposable
         if (_mpNetSession is not null && info.Player == _mpNetSession.LocalPlayerId) return;
         var avatar = FindRemoteAvatar(info.Player);
         if (avatar is null) return;
-        bool wantGirl = info.Gender == 1;
-        bool isGirl = avatar.Actor.Template.Name.Contains("farmgirl", StringComparison.OrdinalIgnoreCase);
-        if (wantGirl != isGirl) MpRemoveRemoteAvatar(info.Player, "rebuilt to match the player's character card");
+        string want = HeroBodies.Template(HeroBodies.FromCard(info.Gender));
+        if (!avatar.Actor.Template.Name.Equals(want, StringComparison.OrdinalIgnoreCase))
+            MpRemoveRemoteAvatar(info.Player, "rebuilt to match the player's character card");
         else { _netPickers[avatar.Actor] = MpPickerFromInfo(info); MpApplyRemoteGear(avatar, info); }
     }
 
@@ -7114,7 +7166,7 @@ public sealed class RenderHost : IDisposable
         static ushort U(double v) => (ushort)Math.Clamp((int)Math.Round(v), 0, ushort.MaxValue);
         return new SiegeFX.Core.Net.MpPlayerInfo(
             (byte)(_mpNetSession?.LocalPlayerId ?? 0),
-            (byte)(pick?.Gender == HeroGender.Girl ? 1 : 0),
+            (byte)(pick?.Gender ?? HeroGender.Boy),
             B(pick?.FaceIdx ?? 0), B(pick?.StyleIdx ?? 0), B(pick?.ColorIdx ?? 0),
             B(pick?.ShirtIdx ?? 0), B(pick?.PantsIdx ?? 0),
             string.IsNullOrEmpty(_heroName) ? "Adventurer" : _heroName,
@@ -7233,6 +7285,7 @@ public sealed class RenderHost : IDisposable
         foreach (var (slot, rf) in entries)
             items.Add(new SiegeFX.Core.Actors.LootEntry(slot, rf));
         AddLootPile(new LootPile(new Vector3(x, y, z), items));
+        SiegeFX.Core.Net.NetLog.Info($"mp: a player left {items.Count} item(s) on the ground");
     }
 
     private void MpOnLootSpawnClient(uint id, float x, float y, float z, List<(string Slot, string Ref)> entries)
@@ -8573,7 +8626,7 @@ public sealed class RenderHost : IDisposable
         var pick = _mpPlayerInfos.TryGetValue(playerId, out var pinfo)
             ? MpPickerFromInfo(pinfo)
             : new HeroVariantPicker { Gender = (playerId % 2 == 0) ? HeroGender.Boy : HeroGender.Girl };
-        string template = pick.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
+        string template = HeroBodies.Template(pick.Gender);
         // Out-of-band scid, clear of region scids (0x01xxxxxx) and the local
         // player (0xffffff00): 0xffff00NN keyed by player id.
         uint scid = 0xffff0000u | (uint)(playerId & 0xffff);
@@ -8711,6 +8764,37 @@ public sealed class RenderHost : IDisposable
     // delta is authoritative) rather than applied locally where the next delta
     // would just overwrite it. False in single-player and on the host, so those
     // combat paths are completely unchanged.
+    /// <summary>Player vs. player (Game Settings): another player's avatar is
+    /// a foe when the host enables it, unless that player is on this player's
+    /// team. Ghosts are never targets.</summary>
+    private bool MpPvpFoe(ActorRenderState s)
+    {
+        if (!s.IsRemotePlayer || s.IsGhost || s.IsDead || !InMultiplayerGame
+            || _mpNetSession is not { Settings.PlayerVsPlayer: true } mp) return false;
+        if (!mp.Settings.TeamPlay) return true;
+        int mine = 0, theirs = 0;
+        foreach (var e in mp.Roster)
+        {
+            if (e.Player == mp.LocalPlayerId) mine = e.Team;
+            if (e.Player == s.NetPlayerId) theirs = e.Team;
+        }
+        return mine == 0 || theirs != mine;
+    }
+
+    /// <summary>What the player may attack: evil-aligned actors, and other
+    /// players in player-vs-player combat.</summary>
+    private bool HostileToPlayer(ActorRenderState s) => s.IsEvilAligned || MpPvpFoe(s);
+
+    /// <summary>A hit this player landed on another player's avatar: its owner
+    /// takes it (player-vs-player hits travel as PvpHit). True when it was one.</summary>
+    private bool MpPvpStrike(ActorRenderState target, float damage)
+    {
+        if (!MpPvpFoe(target) || _mpNetSession is not { } s) return false;
+        s.SendPvpHit(target.NetPlayerId, damage);
+        SiegeFX.Core.Net.NetLog.Info($"pvp: hit player {target.NetPlayerId} for {damage:F0}");
+        return true;
+    }
+
     private bool MpIsClientHitOnNetworkActor(ActorRenderState target) =>
         _mpNetSession is not null
         && string.Equals(_mpInRegionRole, "client", StringComparison.OrdinalIgnoreCase)
@@ -8811,14 +8895,19 @@ public sealed class RenderHost : IDisposable
     }
 
     // Client: a host-run enemy hit our player.
-    private void MpOnPlayerHit(float damage)
+    private void MpOnPlayerHit(float damage, int attacker)
     {
-        if (_player is null || _player.IsDead) return;
+        if (_player is null || _player.IsDead || _player.IsGhost) return;
         float dealt = _player.Actor.Combat.ApplyDamage(damage);
         if (dealt <= 0f) return;
         SpawnBloodHit(_player);
         AddFloatingText($"-{dealt:F0}", _player.CurrentTransform.Translation + new Vector3(0f, 1.8f, 0f),
                         new Vector4(1f, 0.35f, 0.2f, 1f));
+        if (attacker != SiegeFX.Core.Net.MpSession.MonsterAttacker)
+        {
+            string who = _mpPlayerNames.TryGetValue(attacker, out var n) ? n : $"Player {attacker}";
+            SiegeFX.Core.Net.NetLog.Info($"pvp: {who} hit this player for {dealt:F0}{(_player.Actor.Combat.IsDead ? " (killed)" : "")}");
+        }
     }
 
     // Both: another machine shattered a breakable. Visuals only: whoever broke
@@ -8861,8 +8950,19 @@ public sealed class RenderHost : IDisposable
         _mpStagingCards.Clear();
         _mpEnterPending = null;
         MpLoadChosenCharacter();
-        _mpStaging.Map = "Kingdom of Ehb";
-        _mpStaging.Difficulty = _difficulty.ToString();
+        _mpStaging.Settings.Close();
+        _mpStaging.Password.Close();
+        MpLoadMapCatalog();
+        if (asHost)
+        {
+            // Read off the frame when hosting began (MpStartHost).
+            var rules = _mpHostRulesLoaded ?? new SiegeFX.Core.Net.MpGameSettings();
+            if (_mpMapInfo is { } map) rules = MpRulesForMap(rules, map);
+            _mpNetSession.SetSettings(rules, _mpHostPassword);
+        }
+        _mpStaging.Rules = _mpNetSession.Settings;
+        _mpStaging.Starts = _mpMapInfo?.Starts ?? (IReadOnlyList<SiegeFX.Core.Assets.MpStartLocation>)Array.Empty<SiegeFX.Core.Assets.MpStartLocation>();
+        _mpNetSession.OnSettings = MpOnStagingSettings;
         // F1 — for EOS the join id is the host ProductUserId (relayed, no port
         // forward); for direct providers it's the LAN endpoint. The PUID may
         // still be minting (CreateAsync is async) — FlushMpStaging refreshes it.
@@ -8896,7 +8996,14 @@ public sealed class RenderHost : IDisposable
                 MpRebuildStagingPlayers();
                 MpSendStagingCard();
             };
-            _mpNetSession.OnJoinRejected = reason => { _mpStaging.Status = $"Join rejected: {reason}"; };
+            _mpNetSession.OnJoinRejected = reason =>
+            {
+                _mpStaging.Status = $"Join rejected: {reason}";
+                // The original asked for the password when a protected game
+                // turned the join away (enter_password.gas).
+                if (reason == "The password you entered was invalid.")
+                    _mpStaging.Password.Open(Hud.MpEditDialog.Kind.EnterPassword);
+            };
             // Client receives the host's world snapshot; parked for the
             // in-game apply (SC-MP-INGAME) — verifying it arrives + parses.
             _mpNetSession.ApplySnapshot = bytes =>
@@ -8911,7 +9018,8 @@ public sealed class RenderHost : IDisposable
             _mpNetSession.OnGameStart = (region, diff) =>
             {
                 if (_mpClientStartPending is not null || _mpEnterPending is not null) return;
-                var relaunch = new MpRelaunch("client", _mpSessionProvider, _mpJoinedHostAddress ?? "", 0, _mpSession.PlayerName);
+                var relaunch = new MpRelaunch("client", _mpSessionProvider, _mpJoinedHostAddress ?? "", 0, _mpSession.PlayerName,
+                    MpSafeRegion(region), diff, _mpNetSession?.Settings.ToEnv() ?? "", _mpJoinPassword, Team: MpLocalTeam());
                 if (!_mpStaging.LocalReady)
                 {
                     // A game already under way (the host starts only when
@@ -8945,6 +9053,168 @@ public sealed class RenderHost : IDisposable
         _frontendScene?.SetState(Hud.FrontendScene.ScreenState.MpStaging);
     }
 
+    // ---- the host's rules in the staging area ----------------------------
+    // Map Settings and Game Settings (the host's), the Team and Start Location
+    // columns, and the rules every machine checks before it may ready up.
+    private SiegeFX.Core.Assets.MpMapInfo? _mpMapInfo;
+    private bool _mpMapInfoBusy;
+
+    /// <summary>The co-op map's worlds and start locations (read once, off the frame).</summary>
+    private void MpLoadMapCatalog()
+    {
+        if (_mpMapInfo is not null || _mpMapInfoBusy || _ds1ResourcesDir is null) return;
+        _mpMapInfoBusy = true;
+        string installRoot = Path.GetDirectoryName(_ds1ResourcesDir.TrimEnd('\\', '/')) ?? _ds1ResourcesDir;
+        string mapTank = Path.Combine(installRoot, "Maps", "World.dsmap");
+        MpInBackground(() =>
+        {
+            try
+            {
+                using var tank = SiegeFX.Core.Tank.TankFile.Open(mapTank);
+                return SiegeFX.Core.Assets.MpMapCatalog.Load(new SiegeFX.Core.Tank.TankReader(tank), "map_world");
+            }
+            catch (Exception ex)
+            {
+                SiegeFX.Core.Net.NetLog.Warn($"staging: the map's start locations were not read: {ex.Message}");
+                return null;
+            }
+        }, info =>
+        {
+            _mpMapInfoBusy = false;   // a failed read is tried again when the staging area next opens
+            if (info is null) return;
+            _mpMapInfo = info;
+            _mpStaging.Starts = info.Starts;
+            SiegeFX.Core.Net.NetLog.Info($"staging: map '{info.ScreenName}': {info.Worlds.Count} world(s), {info.Starts.Count} start location(s): " +
+                string.Join(", ", info.Starts.Select(st => $"{st.ScreenName}@{(st.Region.Length > 0 ? st.Region : "?")}" +
+                    (st.RequiredLevel("normal") > 0 ? $" (level {st.RequiredLevel("normal")})" : ""))));
+            if (_mpNetSession is { IsHost: true } host) host.SetSettings(MpRulesForMap(host.Settings, info));
+        }, "read the map's start locations");
+    }
+
+    /// <summary>The rules made consistent with the map: its name, a world it
+    /// has, a start location it has (its default when none or an unknown one).</summary>
+    private static SiegeFX.Core.Net.MpGameSettings MpRulesForMap(SiegeFX.Core.Net.MpGameSettings rules, SiegeFX.Core.Assets.MpMapInfo map)
+    {
+        var world = map.Worlds.FirstOrDefault(w => w.Name == rules.World) ?? map.Worlds[0];
+        var start = rules.AllowStartChoice ? map.Starts.FirstOrDefault(st => st.Group == rules.StartGroup) : null;
+        start ??= map.Starts.FirstOrDefault(st => st.IsDefault) ?? map.Starts.FirstOrDefault();
+        return rules with
+        {
+            Map = map.Name, MapName = map.ScreenName, World = world.Name, WorldName = world.ScreenName,
+            StartGroup = start?.Group ?? "", StartName = start?.ScreenName ?? "", StartLevel = start?.RequiredLevel(world.Name) ?? 0,
+        };
+    }
+
+    /// <summary>The region the party starts in (the start location's), else the farm.</summary>
+    private string MpStartRegion()
+    {
+        var rules = _mpNetSession?.Settings;
+        if (rules is not null && _mpMapInfo?.Starts.FirstOrDefault(st => st.Group == rules.StartGroup) is { Region.Length: > 0 } st)
+            return $"/world/maps/{rules.Map}/regions/{st.Region}";
+        return MpRegionPath;
+    }
+
+    /// <summary>Both roles: the host's rules changed. The chat says what
+    /// changed in the original's words; a ready player whose character no
+    /// longer qualifies is unmarked; the host keeps its choices and relists.</summary>
+    private void MpOnStagingSettings(SiegeFX.Core.Net.MpGameSettings before, SiegeFX.Core.Net.MpGameSettings after)
+    {
+        _mpStaging.Rules = after;
+        foreach (var line in SiegeFX.Core.Net.MpGameSettings.Describe(before, after))
+        {
+            _mpStaging.Chat.Add($"* {line}");
+            SiegeFX.Core.Net.NetLog.Info($"staging: {line}");
+        }
+        if (_mpNetSession is { IsHost: true } host)
+        {
+            MpSaveHostSettings(after);
+            MpUpdateListing();
+        }
+        else if (_mpStaging.LocalReady && MpCharacterProblem() is { } why)
+        {
+            _mpStaging.LocalReady = false;
+            _mpNetSession?.SetReady(false);
+            _mpStaging.Status = why;
+            MpRebuildStagingPlayers();
+        }
+        if (before.TeamPlay && !after.TeamPlay) _mpNetSession?.SetTeam(0);
+    }
+
+    /// <summary>This player's team sign in the host's roster (0 = none).</summary>
+    private int MpLocalTeam()
+    {
+        if (_mpNetSession is not { } s) return 0;
+        foreach (var e in s.Roster) if (e.Player == s.LocalPlayerId) return e.Team;
+        return 0;
+    }
+
+    /// <summary>Host: what the game list shows of this game now.</summary>
+    private void MpUpdateListing()
+    {
+        if (_mpNetSession is not { IsHost: true } s || _mpLobby is null) return;
+        try { _mpLobby.UpdateAttributes(MpListingAttributes(s.Settings, s.PlayerCount, s.Password.Length > 0, inProgress: InMultiplayerGame)); }
+        catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"listing update: {ex.Message}"); }
+    }
+
+    /// <summary>Why this player's chosen character may not play under the
+    /// host's rules (null = it may): none chosen, not new when only new
+    /// characters are allowed, below the start location's level.</summary>
+    private string? MpCharacterProblem()
+    {
+        if (_mpChosen is not { } c) return MpChooseFirst;
+        var rules = _mpNetSession?.Settings ?? new SiegeFX.Core.Net.MpGameSettings();
+        if (rules.NewCharactersOnly && !c.New)
+            return "The host has chosen to only allow new characters. You must create a new character before you can join this game.";
+        int level = c.New ? 0 : c.Level;
+        if (rules.StartLevel > 0 && level < rules.StartLevel)
+            return $"Your character needs to be at least level {rules.StartLevel} to start at {rules.StartName}.";
+        return null;
+    }
+
+    /// <summary>The settings screens' and the staging area's own requests.</summary>
+    private void MpSettingsActions(Hud.MpStagingScreen.Action act)
+    {
+        var panel = _mpStaging.Settings;
+        switch (act)
+        {
+            case Hud.MpStagingScreen.Action.OpenGameSettings when _mpNetSession is { IsHost: true } gs:
+                _mpStaging.Characters.Close();
+                panel.Players = gs.PlayerCount;
+                panel.OpenGame(gs.Settings, gs.Password);
+                break;
+            case Hud.MpStagingScreen.Action.OpenMapSettings when _mpNetSession is { IsHost: true } ms:
+                _mpStaging.Characters.Close();
+                panel.OpenMap(ms.Settings, _mpMapInfo is { } m ? new[] { m } : Array.Empty<SiegeFX.Core.Assets.MpMapInfo>());
+                break;
+            case Hud.MpStagingScreen.Action.PickTeam:
+                _mpNetSession?.SetTeam(_mpStaging.PickedTeam);
+                SiegeFX.Core.Net.NetLog.Info($"staging: team {_mpStaging.PickedTeam} picked");
+                break;
+            case Hud.MpStagingScreen.Action.PickStart when _mpNetSession is { IsHost: true } ss && _mpStaging.PickedStart is { } pick:
+                ss.SetSettings(ss.Settings with
+                {
+                    StartGroup = pick.Group, StartName = pick.ScreenName, StartLevel = pick.RequiredLevel(ss.Settings.World),
+                });
+                break;
+        }
+        var pa = panel.ConsumeAction();
+        if (pa == Hud.MpSettingsPanel.Action.None) return;
+        _audio?.Play(SfxFrontendBigButton);
+        if (pa == Hud.MpSettingsPanel.Action.Accept && _mpNetSession is { IsHost: true } host)
+        {
+            var next = panel.Draft;
+            if (_mpMapInfo is { } map) next = MpRulesForMap(next, map);
+            bool pwChanged = panel.PasswordDraft is { } pw && pw != host.Password;
+            host.SetSettings(next, panel.PasswordDraft);
+            if (pwChanged)
+            {
+                _mpStaging.Chat.Add("* The game password has been changed.");
+                MpUpdateListing();
+            }
+        }
+        panel.Close();
+    }
+
     // ---- co-op characters in the staging area ---------------------------
     // The original's staging area: each player picks a co-op character (or
     // creates one, or imports a single-player hero) before marking ready, and
@@ -8956,7 +9226,7 @@ public sealed class RenderHost : IDisposable
     private MpRelaunch? _mpEnterPending;          // a game under way: waits for Enter Game
     private SiegeFX.Core.Save.SaveFile? _mpImportSave;
     private SiegeFX.Core.Assets.FormulasStore? _mpFormulas;
-    private readonly Dictionary<bool, GlTexture?> _mpPortraits = new();
+    private readonly Dictionary<HeroGender, GlTexture?> _mpPortraits = new();
     private const string MpChooseFirst = "You must select a character before you can start the game.";
 
     private void MpInBackground<T>(Func<T> work, Action<T> done, string what)
@@ -9005,21 +9275,32 @@ public sealed class RenderHost : IDisposable
     {
         if (_mpChosen is not { } c || _mpNetSession is not { Joined: true } s) return;
         static byte B(int v) => (byte)Math.Clamp(v, 0, 255);
-        s.SendClientInfo(new SiegeFX.Core.Net.MpPlayerInfo((byte)s.LocalPlayerId, (byte)(c.Girl ? 1 : 0), 0, 0, 0, 0, 0,
+        s.SendClientInfo(new SiegeFX.Core.Net.MpPlayerInfo((byte)s.LocalPlayerId, (byte)HeroBodies.Parse(c.Body), 0, 0, 0, 0, 0,
             c.Name, c.New ? "New" : $"level {c.Level} {c.ClassName}", 0, 0, 0,
             B(c.Melee), B(c.Ranged), B(c.NatureMagic), B(c.CombatMagic)));
     }
 
-    /// <summary>The hero template's portrait (farmboy / farmgirl portrait_icon).</summary>
-    private GlTexture? MpHeroPortrait(bool girl)
+    /// <summary>The hero template's portrait (its [actor] portrait_icon) for a body word.</summary>
+    private GlTexture? MpHeroPortrait(string body)
     {
-        if (_mpPortraits.TryGetValue(girl, out var t)) return t;
+        var g = HeroBodies.Parse(body);
+        if (_mpPortraits.TryGetValue(g, out var t)) return t;
         string name = "";
-        if (_templateStore is not null && _templateStore.TryGet(girl ? "farmgirl" : "farmboy", out var tpl))
+        if (_templateStore is not null && _templateStore.TryGet(HeroBodies.Template(g), out var tpl))
             name = (_templateStore.GetAttribute(tpl, "actor", "portrait_icon") ?? "").Trim().Trim('"');
         t = name.Length > 0 ? TryGetGuiTexture(name) : null;
-        if (t is not null || _templateStore is not null) _mpPortraits[girl] = t;
+        if (t is not null || _templateStore is not null) _mpPortraits[g] = t;
         return t;
+    }
+
+    /// <summary>The class a new hero of this body starts as (its template's
+    /// [actor] screen_class: Farmer, Miner, ...).</summary>
+    private string MpStartingClass(HeroGender g)
+    {
+        if (_templateStore is not null && _templateStore.TryGet(HeroBodies.Template(g), out var tpl)
+            && (_templateStore.GetAttribute(tpl, "actor", "screen_class") ?? "").Trim().Trim('"') is { Length: > 0 } cls)
+            return cls;
+        return "Farmer";
     }
 
     private void MpOpenCharacterSelect(string? selectPath = null)
@@ -9036,8 +9317,9 @@ public sealed class RenderHost : IDisposable
     /// original: "You must select a character before you can start the game.").</summary>
     private bool MpHaveCharacter()
     {
-        if (_mpChosen is not null) return true;
-        _mpStaging.Status = MpChooseFirst;
+        if (MpCharacterProblem() is not { } why) return true;
+        _mpStaging.Status = why;
+        SiegeFX.Core.Net.NetLog.Info($"staging: not yet: {why}");
         MpOpenCharacterSelect();
         return false;
     }
@@ -9083,12 +9365,13 @@ public sealed class RenderHost : IDisposable
                 var pk = panel.Picker;
                 var look = new SiegeFX.Core.Save.HeroVariantSnapshot
                 {
-                    Gender = pk.Gender == HeroGender.Girl ? "girl" : "boy",
+                    Gender = HeroBodies.Word(pk.Gender),
                     BodyTypeIdx = pk.BodyTypeIdx, SkinSuffix = pk.SkinSuffix, PantsSuffix = pk.PantsSuffix,
                     FaceIdx = pk.FaceIdx, StyleIdx = pk.StyleIdx, ColorIdx = pk.ColorIdx, ShirtIdx = pk.ShirtIdx, PantsIdx = pk.PantsIdx,
                 };
                 string name = panel.NewName.Trim();
-                MpInBackground(() => SiegeFX.Core.Save.CoopCharacters.Create(name, look, _playerStartingClass),
+                string startClass = MpStartingClass(pk.Gender);
+                MpInBackground(() => SiegeFX.Core.Save.CoopCharacters.Create(name, look, startClass),
                     path => { SiegeFX.Core.Net.NetLog.Info($"staging: created co-op character '{name}' -> {path}"); MpOpenCharacterSelect(path); },
                     "create the character");
                 break;
@@ -9182,6 +9465,7 @@ public sealed class RenderHost : IDisposable
         }
         _mpLastRoster = roster.ToList();
         MpRebuildStagingPlayers();
+        if (_mpStaging.IsHost && before.Count != roster.Count) MpUpdateListing();
         if (_mpStaging.IsHost && _mpStartCountdown <= 0)
             _mpStaging.Status = roster.Count > 1 && roster.All(e => e.Ready)
                 ? "Everyone is ready. Click Start Game."
@@ -9208,7 +9492,7 @@ public sealed class RenderHost : IDisposable
             bool ready = host || (!_mpStaging.IsHost && e.Player == me ? _mpStaging.LocalReady : e.Ready);
             string character = local ? _mpStaging.LocalCharacter
                 : _mpStagingCards.TryGetValue(e.Player, out var card) ? $"{card.HeroName}, {card.ClassName}" : "";
-            _mpStaging.Players.Add(new(e.Name, host, ready, character, local));
+            _mpStaging.Players.Add(new(e.Name, host, ready, character, local, e.Team));
         }
     }
 
@@ -9308,6 +9592,49 @@ public sealed class RenderHost : IDisposable
     /// "lan" (the local list, and direct joins by IP).</param>
     /// <param name="hostingNote">replaces the status line once hosting, when
     /// the player must know something about how friends reach this game.</param>
+    // The host's last rules, read by the hosting worker before the staging area opens.
+    private volatile SiegeFX.Core.Net.MpGameSettings? _mpHostRulesLoaded;
+    // The HOST GAME box's game name and password, and the password typed to join.
+    private string _mpHostGameName = "";
+    private string _mpHostPassword = "";
+    private string _mpJoinPassword = "";
+
+    /// <summary>What the game list shows of a hosted game.</summary>
+    private Dictionary<string, string> MpListingAttributes(SiegeFX.Core.Net.MpGameSettings rules, int players, bool password, bool inProgress)
+    {
+        var a = new Dictionary<string, string>
+        {
+            ["map"] = rules.MapName,
+            ["players"] = $"{players}/{rules.PlayerLimit}",
+            ["host"] = _mpSession.PlayerName.Length > 0 ? _mpSession.PlayerName : _mpLocalName,
+            ["difficulty"] = rules.DifficultyName,
+            ["password"] = password ? "1" : "0",
+        };
+        if (inProgress) a["state"] = "in progress";
+        return a;
+    }
+
+    private static string MpHostSettingsPath =>
+        Path.Combine(SiegeFX.Core.Save.SaveStore.DefaultSaveDirectory(), "mp_host_settings.txt");
+
+    /// <summary>The host's last game rules (Game Settings), kept between games.</summary>
+    private static SiegeFX.Core.Net.MpGameSettings MpLoadHostSettings()
+    {
+        try { if (File.Exists(MpHostSettingsPath)) return SiegeFX.Core.Net.MpGameSettings.FromPrefs(File.ReadAllText(MpHostSettingsPath)); }
+        catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"host settings not read: {ex.Message}"); }
+        return new SiegeFX.Core.Net.MpGameSettings();
+    }
+
+    private static void MpSaveHostSettings(SiegeFX.Core.Net.MpGameSettings rules)
+    {
+        var text = rules.ToPrefs();
+        Task.Run(() =>
+        {
+            try { Directory.CreateDirectory(Path.GetDirectoryName(MpHostSettingsPath)!); File.WriteAllText(MpHostSettingsPath, text); }
+            catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"host settings not saved: {ex.Message}"); }
+        });
+    }
+
     private void MpStartHost(string provider, string? hostingNote = null)
     {
         MpTearDownSession();
@@ -9328,14 +9655,13 @@ public sealed class RenderHost : IDisposable
             if (t.Result)
             {
                 _mpSession.Status = hostingNote
-                    ?? $"HOSTING '{_mpSession.PlayerName}'s Game' ({transport.ProviderId}) — waiting for players...";
-                _ = lobby.CreateAsync($"{_mpSession.PlayerName}'s Game",
-                    new Dictionary<string, string>
+                    ?? $"HOSTING '{_mpHostGameName}' ({transport.ProviderId}) — waiting for players...";
+                var hostRules = MpLoadHostSettings();   // a worker thread: the listen continuation
+                _mpHostRulesLoaded = hostRules;
+                _ = lobby.CreateAsync(_mpHostGameName,
+                    new Dictionary<string, string>(MpListingAttributes(hostRules, 1, _mpHostPassword.Length > 0, inProgress: false))
                     {
                         ["port"] = port.ToString(),
-                        ["map"] = "Kingdom of Ehb",
-                        ["players"] = "1/8",
-                        ["host"] = _mpSession.PlayerName,
                     }, default).ContinueWith(ct =>
                     {
                         // F1 — capture the invite id a friend uses to join: the
@@ -9423,8 +9749,23 @@ public sealed class RenderHost : IDisposable
         }
         while (_mpUiQueue.TryDequeue(out var done)) done();
         MpCharacterPanelActions();
+        switch (_mpStaging.Password.Consume())
+        {
+            case Hud.MpEditDialog.Result.Ok when _mpNetSession is { IsHost: false, Joined: false } retry:
+                _mpJoinPassword = _mpStaging.Password.Text;
+                _mpStaging.Password.Close();
+                retry.JoinPassword = _mpJoinPassword;
+                retry.SendJoinRequest();
+                _mpStaging.Status = MpJoiningStatus;
+                break;
+            case Hud.MpEditDialog.Result.Ok:
+            case Hud.MpEditDialog.Result.Cancel:
+                _mpStaging.Password.Close();
+                break;
+        }
         var act = _mpStaging.ConsumeAction();
         if (act != Hud.MpStagingScreen.Action.None && act != Hud.MpStagingScreen.Action.SendChat) _audio?.Play(SfxFrontendBigButton);
+        MpSettingsActions(act);
         switch (act)
         {
             case Hud.MpStagingScreen.Action.Leave:
@@ -9470,6 +9811,9 @@ public sealed class RenderHost : IDisposable
                 {
                     _mpStaging.Status = "Starting game — signaling players...";
                     _mpStartCountdown = 0.6;
+                    // Who started the game, taken now: the joiners relaunch (and
+                    // leave this roster) before the host does.
+                    _mpStartingParty = string.Join('\t', _mpLastRoster.Select(e => e.Name));
                     SiegeFX.Core.Net.NetLog.Info("staging: host START — broadcasting GameStart, then relaunching into region");
                 }
                 break;
@@ -9480,12 +9824,15 @@ public sealed class RenderHost : IDisposable
         // the host into the region carrying its MP role.
         if (_mpStartCountdown > 0)
         {
-            _mpNetSession?.SendGameStart(MpRegionPath, (int)_difficulty);
+            _mpNetSession?.SendGameStart(MpStartRegion(), _mpNetSession.Settings.Difficulty);
             _mpStartCountdown -= _frameDtSeconds;
             if (_mpStartCountdown <= 0 && _ds1ResourcesDir is not null)
             {
+                var rules = _mpNetSession?.Settings ?? new SiegeFX.Core.Net.MpGameSettings();
                 var ctx = new MpRelaunch("host", _mpSessionProvider, "",
-                    SiegeFX.Core.Net.UdpTransport.DefaultGamePort, _mpSession.PlayerName);
+                    SiegeFX.Core.Net.UdpTransport.DefaultGamePort, _mpSession.PlayerName,
+                    MpStartRegion(), rules.Difficulty, rules.ToEnv(), _mpNetSession?.Password ?? "",
+                    _mpStartingParty, rules.StartGroup, MpLocalTeam());
                 MpTearDownSession();
                 LaunchRegionViaRelaunch(_ds1ResourcesDir, ctx);
             }
@@ -11127,7 +11474,17 @@ void main()
                         var msg = _mpChatBuffer.Trim();
                         if (msg.Length > 0)
                         {
-                            if (_mpNetSession is not null) _mpNetSession.SendChat(msg);
+                            if (_mpNetSession is not null && _mpChatTeam)
+                            {
+                                if (_mpNetSession.SendTeamChat(msg))
+                                {
+                                    _mpChatLog.Add(($"You tell your team: {msg}", _playSeconds + 12.0));
+                                    while (_mpChatLog.Count > 8) _mpChatLog.RemoveAt(0);
+                                    SiegeFX.Core.Net.NetLog.Info($"[team chat] you: {msg}");
+                                }
+                                else MpToast("You are not on a team.");
+                            }
+                            else if (_mpNetSession is not null) _mpNetSession.SendChat(msg);
                             // SC-SP-CHAT — solo sessions echo to the message
                             // strip (retail's game_console behavior).
                             else AddGameMessage(msg);
@@ -11155,6 +11512,7 @@ void main()
                     && !_pauseMenu.IsOpen && !_optionsMenu.IsOpen && !_dialogue.IsOpen)
                 {
                     _mpChatOpen = true; _mpChatBuffer = "";
+                    _mpChatTeam = Is("toggle_gui_edit_box_team") && _mpNetSession is { Settings.TeamPlay: true };
                     return;
                 }
                 // Authored [toggle_player_ranks] (backslash) — the in-game
@@ -13687,6 +14045,7 @@ void main()
                 // camera doesn't also zoom behind the modal.
                 if (_saveDialog.IsOpen) { _saveDialog.OnScroll(wheel.Y); return; }
                 if (_mpStaging.IsActive) { _mpStaging.OnWheel(wheel.Y > 0 ? 1 : wheel.Y < 0 ? -1 : 0); return; }
+                if (_mpSession.IsActive) { _mpSession.OnWheel(wheel.Y > 0 ? 1 : wheel.Y < 0 ? -1 : 0); return; }
                 if (_loadDialog.IsOpen) { _loadDialog.OnScroll(wheel.Y); return; }
                 // SC-OPTIONS-REBIND — the Hotkeys bindings list scrolls
                 // with the wheel while the Options menu is up.
@@ -15407,6 +15766,16 @@ void main()
                 var (groups, spDiags) = SiegeFX.Core.Assets.StartPositionsStore.Load(mapReader, infoPath);
                 foreach (var d in spDiags) Console.WriteLine("  " + d);
                 var def = SiegeFX.Core.Assets.StartPositionsStore.FindDefault(groups);
+                // A co-op game starts where the host chose (Start Location);
+                // that group's first position, when it lies in this region.
+                if (_mpInRegionRole is not null && Environment.GetEnvironmentVariable("SIEGEFX_MP_START") is { Length: > 0 } startGroup
+                    && groups.FirstOrDefault(g => g.Name.Equals(startGroup, StringComparison.OrdinalIgnoreCase)) is { Positions.Count: > 0 } chosen
+                    && chosen.Positions.OrderBy(p => p.Id).First() is var first
+                    && _regionLayout is not null && _regionLayout.TryGetTransform(first.NodeGuid, out _))
+                {
+                    def = first;
+                    Console.WriteLine($"  start position: co-op start location '{chosen.ScreenName}'");
+                }
                 if (def is not null && _regionLayout is not null
                     && _regionLayout.TryGetTransform(def.NodeGuid, out var nodeWorld))
                 {
@@ -16517,7 +16886,7 @@ void main()
     // through to the mesh's authored texture.
     private GlTexture? ResolveCreatorTexture(HeroVariantPicker picker, int slot)
     {
-        if (_gl is null || _playResolver is null) return null;
+        if (_gl is null || _playResolver is null || !HeroBodies.IsFarm(picker.Gender)) return null;
         EnsureCreatorOptions(picker.Gender);
         if (slot == 0)
         {
@@ -26882,6 +27251,26 @@ void main()
     /// remembers the address (the authored recent-IP list) and, like HOST
     /// GAME / JOIN, reports that the online service arrives with the
     /// SC-MP-EOS phases; CLOSE returns to the provider menu.</summary>
+    /// <summary>One game-list row from a listing's details (LAN beacon or
+    /// internet lobby): name, players, the measured ping, password, under way.</summary>
+    private static Hud.MpSessionScreen.GameRow MpGameRow(SiegeFX.Core.Net.LobbyInfo l)
+    {
+        l.Attributes.TryGetValue("players", out var players);
+        l.Attributes.TryGetValue("ping", out var ping);
+        bool running = l.Attributes.TryGetValue("state", out var gs) && gs == "in progress";
+        bool locked = l.Attributes.TryGetValue("password", out var pw) && pw == "1";
+        return new Hud.MpSessionScreen.GameRow(l.Name, players ?? "", ping ?? "", locked, running, l.HostAddress);
+    }
+
+    /// <summary>A refreshed list keeps the selected game selected (by address).</summary>
+    private void MpReplaceGameRows(List<Hud.MpSessionScreen.GameRow> rows)
+    {
+        string? keep = _mpSession.Selected?.Address;
+        _mpSession.Games.Clear();
+        _mpSession.Games.AddRange(rows);
+        _mpSession.SelectedGame = keep is null ? -1 : _mpSession.Games.FindIndex(g => g.Address == keep);
+    }
+
     private void FlushMpSession()
     {
         if (_frontendScene is null) return;
@@ -26899,9 +27288,9 @@ void main()
         if ((st == Hud.FrontendScene.ScreenState.MpInternet || st == Hud.FrontendScene.ScreenState.MpNetwork)
             && st != _mpLastListScreen)
         {
-            _mpSession.LanGames.Clear();
-            _mpSession.LanGameAddresses.Clear();
+            _mpSession.Games.Clear();
             _mpSession.SelectedGame = -1;
+            _mpSession.ResetDialogs();
             _mpLanScanResult = null; _mpEosScanResult = null;
             _mpLastListScreen = st;
         }
@@ -26934,7 +27323,7 @@ void main()
         {
             _mpPendingStagingClient = false;
             MpEnterStaging(asHost: false);
-            _mpNetSession?.SendJoinRequest();
+            if (_mpNetSession is { } joining) { joining.JoinPassword = _mpJoinPassword; joining.SendJoinRequest(); }
         }
         _mpNetSession?.Tick(_frameDtSeconds);
         FlushMpStaging(st);
@@ -26971,14 +27360,7 @@ void main()
             if (_mpLanScanResult is { } scan)
             {
                 _mpLanScanResult = null;
-                _mpSession.LanGames.Clear();
-                _mpSession.LanGameAddresses.Clear();
-                foreach (var (row, addr) in scan)
-                {
-                    _mpSession.LanGames.Add(row);
-                    _mpSession.LanGameAddresses.Add(addr);
-                }
-                if (_mpSession.SelectedGame >= _mpSession.LanGames.Count) _mpSession.SelectedGame = -1;
+                MpReplaceGameRows(scan);
             }
             double now = SiegeFX.Core.Net.MpRefreshTimer.MonotonicSeconds();
             if (_mpLanScanBusy && now - _mpLanScanStartedAt > MpListSearchGiveUpSeconds)
@@ -26993,13 +27375,7 @@ void main()
                     {
                         using var scanner = new SiegeFX.Core.Net.LanLobbyService();
                         var lobbies = await scanner.ListAsync(default).ConfigureAwait(false);
-                        _mpLanScanResult = lobbies.Select(l =>
-                        {
-                            l.Attributes.TryGetValue("map", out var map);
-                            l.Attributes.TryGetValue("players", out var players);
-                            bool running = l.Attributes.TryGetValue("state", out var gs) && gs == "in progress";
-                            return ($"{l.Name}{(running ? " (in progress)" : "")}   {map ?? ""}   {players ?? ""}   {l.HostAddress}", l.HostAddress);
-                        }).ToList();
+                        _mpLanScanResult = lobbies.Select(MpGameRow).ToList();
                     }
                     catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"lan scan loop: {ex.Message}"); }
                     finally { _mpLanScanBusy = false; }
@@ -27026,14 +27402,7 @@ void main()
             if (_mpEosScanResult is { } escan)
             {
                 _mpEosScanResult = null;
-                _mpSession.LanGames.Clear();
-                _mpSession.LanGameAddresses.Clear();
-                foreach (var (row, addr) in escan)
-                {
-                    _mpSession.LanGames.Add(row);
-                    _mpSession.LanGameAddresses.Add(addr);
-                }
-                if (_mpSession.SelectedGame >= _mpSession.LanGames.Count) _mpSession.SelectedGame = -1;
+                MpReplaceGameRows(escan);
             }
             double now = SiegeFX.Core.Net.MpRefreshTimer.MonotonicSeconds();
             if (_mpEosScanBusy && now - _mpEosScanStartedAt > MpListSearchGiveUpSeconds)
@@ -27064,13 +27433,7 @@ void main()
                                 _mpEosScanResult = lobbies
                                     .GroupBy(l => l.HostAddress)
                                     .Select(g => g.OrderByDescending(l => l.Attributes.TryGetValue("state", out var st) && st == "in progress").First())
-                                    .Select(l =>
-                                {
-                                    l.Attributes.TryGetValue("map", out var map);
-                                    l.Attributes.TryGetValue("players", out var players);
-                                    bool running = l.Attributes.TryGetValue("state", out var gs) && gs == "in progress";
-                                    return ($"{l.Name}{(running ? " (in progress)" : "")}   {map ?? ""}   {players ?? ""}", l.HostAddress);
-                                }).ToList();
+                                    .Select(MpGameRow).ToList();
                         }
                         catch (Exception ex) { SiegeFX.Core.Net.NetLog.Warn($"eos browse loop: {ex.Message}"); }
                         finally { _mpEosScanBusy = false; }
@@ -27129,6 +27492,7 @@ void main()
                         _mpSession.RecentAddresses.RemoveAt(_mpSession.RecentAddresses.Count - 1);
                     SaveMpSessionPrefs();
                 }
+                _mpJoinPassword = _mpSession.JoinPassword;
                 MpStartConnect(addr, via);
                 break;
             case Hud.MpSessionScreen.Action.Remove:
@@ -27140,6 +27504,8 @@ void main()
                 break;
             case Hud.MpSessionScreen.Action.Host:
                 if (!HasName()) break;
+                _mpHostGameName = _mpSession.HostGameName.Length > 0 ? _mpSession.HostGameName : $"{_mpSession.PlayerName}'s Game";
+                _mpHostPassword = _mpSession.HostPassword;
                 if (_mpSession.ScreenMode != Hud.MpSessionScreen.Mode.Internet)
                     MpStartHost("lan");
                 else if (internet == MpInternetState.Ready)
@@ -27156,9 +27522,11 @@ void main()
                 break;
             case Hud.MpSessionScreen.Action.Join:
                 if (!HasName()) break;
-                if (_mpSession.SelectedGame >= 0
-                    && _mpSession.SelectedGame < _mpSession.LanGameAddresses.Count)
-                    MpStartConnect(_mpSession.LanGameAddresses[_mpSession.SelectedGame], "lan");
+                if (_mpSession.Selected is { } picked)
+                {
+                    _mpJoinPassword = _mpSession.JoinPassword;
+                    MpStartConnect(picked.Address, "lan");
+                }
                 else
                     _mpSession.Status = "Select a game in the list first.";
                 break;
@@ -27302,7 +27670,7 @@ void main()
             string terrain   = System.IO.Path.Combine(ds1ResourcesDir, "Terrain.dsres");
             string logic     = System.IO.Path.Combine(ds1ResourcesDir, "Logic.dsres");
             string objects   = System.IO.Path.Combine(ds1ResourcesDir, "Objects.dsres");
-            const string regionPath = "/world/maps/map_world/regions/fh_r1";
+            string regionPath = mp is null ? "/world/maps/map_world/regions/fh_r1" : MpSafeRegion(mp.Region);
 
             // Resolve the right command. Two cases:
             //   (1) Self-contained published exe: ProcessPath is our
@@ -27346,7 +27714,7 @@ void main()
 
             // Forward picker via env vars. HeroVariantPicker.FromEnv
             // reads these on the new process boot.
-            psi.Environment["SIEGEFX_HERO_GENDER"] = _creator.Picker.Gender == HeroGender.Girl ? "girl" : "boy";
+            psi.Environment["SIEGEFX_HERO_GENDER"] = HeroBodies.Word(_creator.Picker.Gender);
             if (_creator.Picker.BodyTypeIdx >= 0)
                 psi.Environment["SIEGEFX_HERO_BODY"] = (_creator.Picker.BodyTypeIdx + 1).ToString();
             if (_creator.Picker.SkinSuffix is not null)
@@ -27375,7 +27743,8 @@ void main()
             // one made for a single-player game.
             if (mp is null && _creator.Confirmed) SaveLastHeroEnv(psi.Environment);
             else if (mp is not null && !CoopCharacterLookEnv(psi.Environment, _mpChosen?.Path) && !_creator.Confirmed) LoadLastHeroEnv(psi.Environment);
-            psi.Environment["SIEGEFX_DIFFICULTY"] = _difficulty.ToString();
+            psi.Environment["SIEGEFX_DIFFICULTY"] = mp is { Difficulty: >= 0 and <= 2 }
+                ? ((GameDifficulty)mp.Difficulty).ToString() : _difficulty.ToString();
             // Skip the splash on relaunch — we already saw it.
             psi.Environment["SIEGEFX_NOVIDEO"] = "1";
             // Null SIEGEFX_CREATOR so the new process doesn't pop the
@@ -27391,6 +27760,12 @@ void main()
                 psi.Environment["SIEGEFX_MP_HOST"] = mp.HostAddr;
                 psi.Environment["SIEGEFX_MP_PORT"] = mp.Port.ToString();
                 psi.Environment["SIEGEFX_MP_NAME"] = mp.Name;
+                psi.Environment["SIEGEFX_MP_SETTINGS"] = mp.SettingsEnv;
+                psi.Environment[mp.Role == "host" ? "SIEGEFX_MP_PASSWORD" : "SIEGEFX_MP_JOINPASS"] = mp.Password;
+                psi.Environment["SIEGEFX_MP_PARTY"] = mp.Party;
+                psi.Environment["SIEGEFX_MP_START"] = mp.StartGroup;
+                psi.Environment["SIEGEFX_MP_TEAM"] = mp.Team.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (mp.Role == "host") psi.Environment["SIEGEFX_MP_GAMENAME"] = _mpHostGameName;
                 Console.WriteLine($"SC-MP-INGAME: relaunch carries MP context role={mp.Role} provider={mp.Provider} host='{mp.HostAddr}' port={mp.Port}");
             }
 
@@ -27656,6 +28031,7 @@ void main()
                     PlayDeathSfx(_player.Actor.Template, _player.CurrentTransform.Translation);
                 if (_cursorScroll is not null) ClearScrollDrag();
                 Console.WriteLine("[defeat] the hero has fallen");
+                MpDropOnDeath();
             }
         }
         TickDownedRecovery();
@@ -29539,7 +29915,7 @@ void main()
                 if (_iconRenderer is not null && _barRenderer is not null && _textRenderer is not null)
                     _mpSession.Draw(viewportW, viewportH,
                         _iconRenderer, _barRenderer, _textRenderer,
-                        TryGetGuiTexture, _mpLocalIp ??= LocalIpBestEffort());
+                        TryGetGuiTexture, GetCommonTexture, _mpLocalIp ??= LocalIpBestEffort());
             }
             else if (_frontendScene.State == Hud.FrontendScene.ScreenState.MpStaging)
             {
@@ -30006,7 +30382,7 @@ void main()
         if (!string.IsNullOrEmpty(heroName)) _heroName = heroName;
         _heroVariant = pick;
 
-        string playerTemplate = pick.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
+        string playerTemplate = HeroBodies.Template(pick.Gender);
         // Scid 0xffffff00 is well clear of region actor.gas scids (region scids are
         // 0x01xxxxxx); any stable out-of-band value works, this one is easy to spot
         // in the combat log.
@@ -32022,8 +32398,9 @@ void main()
             if (s.IsDead || s.IsPlayer || s.IsPartyMember || s.Hidden) continue;
             if (!s.Actor.Stats.IsCombatant) continue;
             // SC-ALIGNMENT — the attack cursor only ever offers evil-chain,
-            // selectable actors (no sword cursor on Norick or the narrator).
-            if (!s.IsEvilAligned || !s.IsSelectable) continue;
+            // selectable actors (no sword cursor on Norick or the narrator),
+            // and, with player-vs-player on, the other teams' players.
+            if (!HostileToPlayer(s) || !s.IsSelectable) continue;
             if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-FADED + SC-PICK-YBAND
             var self = s;
             Consider(s.CurrentTransform.Translation + new Vector3(0f, 1.0f, 0f), 34f,
@@ -32198,7 +32575,7 @@ void main()
         bool forceAtk = _forceAttackArmed;
         ActorRenderState? best = PickActorAtCursor(cursorPx, s =>
             !s.IsDead && !s.IsPlayer && (forceAtk || !s.IsPartyMember)
-            && s.Actor.Stats.IsCombatant && (forceAtk || s.IsEvilAligned) && s.IsSelectable);
+            && s.Actor.Stats.IsCombatant && (forceAtk || HostileToPlayer(s)) && s.IsSelectable);
         if (best is null)
         {
             float bestDist = ClickAttackFallbackRadius;
@@ -32208,7 +32585,7 @@ void main()
                 if (s.IsPlayer) continue;
                 if (!forceAtk && s.IsPartyMember) continue;   // Phase 26b — no friendly fire on recruits
                 if (!s.Actor.Stats.IsCombatant) continue;
-                if ((!forceAtk && !s.IsEvilAligned) || !s.IsSelectable) continue; // SC-ALIGNMENT
+                if ((!forceAtk && !HostileToPlayer(s)) || !s.IsSelectable) continue; // SC-ALIGNMENT
                 if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-FADED + SC-PICK-YBAND
                 var pos = s.CurrentTransform.Translation;
                 float dx = pos.X - groundHit.X;
@@ -33045,6 +33422,12 @@ void main()
     /// the Space key.</summary>
     private void TogglePause()
     {
+        // Co-op: a pause is everyone's, and only when the host allows it.
+        if (InMultiplayerGame && _mpNetSession is { } mp)
+        {
+            if (!mp.RequestPause(!mp.Paused)) MpToast("The host has not allowed pausing in this game.");
+            return;
+        }
         _isPaused = !_isPaused;
         Console.WriteLine($"[pause] world tick {(_isPaused ? "PAUSED" : "RESUMED")}");
     }
@@ -33414,12 +33797,49 @@ void main()
             if (m.IsDead) continue;
             var head = m.CurrentTransform.Translation + new Vector3(0f, 2.2f, 0f);
             if (!ProjectToScreen(head, viewportW, viewportH, out int sx, out int sy)) continue;
-            var name = ScreenNameOf(m.Actor.Template);
+            // The hero is labeled with the hero's own name, a companion with its screen name.
+            var name = ReferenceEquals(m, _player) && !string.IsNullOrEmpty(_heroName) ? _heroName : ScreenNameOf(m.Actor.Template);
             if (string.IsNullOrEmpty(name)) continue;
             int lw = _textRenderer.MeasureWidth(name);
             _barRenderer.DrawRect(viewportW, viewportH, sx - lw / 2 - 2, sy - 1, lw + 4, 13,
                 new Vector4(0f, 0f, 0f, 0.55f));
             _textRenderer.DrawString(viewportW, viewportH, name, sx - lw / 2, sy, ink);
+        }
+    }
+
+    /// <summary>The other players' names over their heads, colored as the
+    /// original's manual tells (Viewing team information): team play and
+    /// player-vs-player off, green; team play on, teammates green and the
+    /// other teams blue, with every player's team sign over the head; player
+    /// vs. player on, other players red (teammates stay green). The L
+    /// "Character Labels" binding hides them.</summary>
+    private void DrawMpPlayerLabels(int vw, int vh)
+    {
+        if (!_charLabelsVisible || !InMultiplayerGame || _mpNetSession is not { } s
+            || _barRenderer is null || _textRenderer is null || _nisPhase != NisPhase.Off) return;
+        var teams = new Dictionary<int, int>();
+        foreach (var e in s.Roster) teams[e.Player] = e.Team;
+        int mine = teams.TryGetValue(s.LocalPlayerId, out var mt) ? mt : 0;
+        var rules = s.Settings;
+        var green = new Vector4(0.25f, 1f, 0.25f, 1f);
+        var blue = new Vector4(0.45f, 0.65f, 1f, 1f);
+        var red = new Vector4(1f, 0.3f, 0.25f, 1f);
+        foreach (var a in _actors)
+        {
+            if (!a.IsRemotePlayer || a.IsDead) continue;
+            int team = teams.TryGetValue(a.NetPlayerId, out var t) ? t : 0;
+            bool mate = rules.TeamPlay && mine > 0 && team == mine;
+            var ink = mate ? green : rules.PlayerVsPlayer ? red : rules.TeamPlay ? blue : green;
+            if (a.IsGhost) ink = ink with { W = 0.55f };
+            var head = a.CurrentTransform.Translation + new Vector3(0f, 2.2f, 0f);
+            if (!ProjectToScreen(head, vw, vh, out int sx, out int sy)) continue;
+            string name = _mpPlayerNames.TryGetValue(a.NetPlayerId, out var n) && n.Length > 0 ? n : $"Player {a.NetPlayerId}";
+            int lw = _textRenderer.MeasureWidth(name);
+            _barRenderer.DrawRect(vw, vh, sx - lw / 2 - 2, sy - 1, lw + 4, 13, new Vector4(0f, 0f, 0f, 0.55f));
+            _textRenderer.DrawString(vw, vh, name, sx - lw / 2, sy, ink);
+            if (rules.TeamPlay && team > 0 && _iconRenderer is not null
+                && TryGetGuiTexture(SiegeFX.Core.Net.MpTeams.Sign(team)) is { } sign)
+                _iconRenderer.DrawIcon(vw, vh, sign, sx - 10, sy - 24, 20, 20, Vector4.One);
         }
     }
 
@@ -33670,6 +34090,86 @@ void main()
                                  GetCommonTexture, TryGetGuiTexture,
                                  viewportW, viewportH, MpBuildRosterRows());
         DrawMpChat(viewportW, viewportH);
+        DrawMpTimer(viewportW, viewportH);
+    }
+
+    /// <summary>multiplayer_timer.gas: "Time Remaining:" and the clock in a
+    /// cpbox near the top right, while the game has a time limit. Authored at
+    /// 800x600, right-anchored (x = the screen's right edge less the anchor).</summary>
+    private void DrawMpTimer(int vw, int vh)
+    {
+        if (!InMultiplayerGame || _mpNetSession is not { } s || s.Settings.TimeLimitMinutes <= 0) return;
+        if (_textRenderer is null || _iconRenderer is null) return;
+        float k = HudScale.Hud(vh) * 480f / 600f;
+        int fs = Math.Max(1, (int)MathF.Round(k));
+        int R(float v) => (int)MathF.Round(v * k);
+        double left = Math.Max(0, s.Settings.TimeLimitMinutes * 60.0 - s.GameSeconds);
+        var t = TimeSpan.FromSeconds(Math.Ceiling(left));
+        string clock = $"{(int)t.TotalHours:00}:{t.Minutes:00}:{t.Seconds:00}";
+        int bx = vw - R(122), by = R(110), bw = R(121), bh = R(31);
+        Hud.NinePatch.DrawCpbox(_iconRenderer, GetCommonTexture, vw, vh, bx, by, bw, bh, Vector4.One);
+        void Center(string text, float y0, float y1, Vector4 ink)
+        {
+            int w = _textRenderer.MeasureWidth(text, fs);
+            int x = vw - R(120) + (R(115) - w) / 2;
+            int y = R(y0) + (R(y1 - y0) - _textRenderer.LineHeight * fs) / 2;
+            _textRenderer.DrawString(vw, vh, text, x, y, ink, fs);
+        }
+        Center("Time Remaining:", 112, 125, Vector4.One);
+        Center(clock, 125, 138, left < 60 ? new Vector4(1f, 0.35f, 0.25f, 1f) : Vector4.One);
+    }
+
+    /// <summary>Drop on Death (Game Settings): a co-op hero who dies leaves
+    /// what the host's rule says on the ground where they fell: nothing, the
+    /// equipped items, the inventory, or all of it. The character is saved as
+    /// it now is ("you'll have to stay in the game and recover the items if
+    /// you want them saved on exit"). Gold stays with the hero.</summary>
+    private void MpDropOnDeath()
+    {
+        if (!InMultiplayerGame || _player is null || _mpNetSession is not { } s) return;
+        var mode = s.Settings.DropOnDeath;
+        if (mode == SiegeFX.Core.Net.MpDropOnDeath.Nothing) return;
+        ReleaseCommandHeldItem();
+        var items = new List<SiegeFX.Core.Actors.LootEntry>();
+        if (mode is SiegeFX.Core.Net.MpDropOnDeath.EquippedItems or SiegeFX.Core.Net.MpDropOnDeath.All)
+        {
+            foreach (var kv in _playerEquipment.OrderBy(k => k.Key, StringComparer.Ordinal))
+                if (!string.IsNullOrWhiteSpace(kv.Value)) items.Add(new(kv.Key, kv.Value));
+            _playerEquipment.Clear();
+            TryLoadPlayerWeapon();
+            TryLoadPlayerEquipment(_player.Actor.Template);
+        }
+        if (mode is SiegeFX.Core.Net.MpDropOnDeath.Inventory or SiegeFX.Core.Net.MpDropOnDeath.All)
+        {
+            items.AddRange(_playerInventory);
+            _playerInventory.Clear();
+        }
+        if (items.Count == 0) return;
+        AddLootPile(new LootPile(_player.CurrentTransform.Translation, items));
+        SiegeFX.Core.Net.NetLog.Info($"mp: drop on death ({s.Settings.DropName}): {items.Count} item(s) left where the hero fell: " +
+            string.Join(", ", items.Select(i => i.Reference)));
+    }
+
+    /// <summary>The host changed a rule while the game is under way: say so.</summary>
+    private void MpOnGameSettings(SiegeFX.Core.Net.MpGameSettings before, SiegeFX.Core.Net.MpGameSettings after)
+    {
+        foreach (var line in SiegeFX.Core.Net.MpGameSettings.Describe(before, after))
+        {
+            SiegeFX.Core.Net.NetLog.Info($"in-region: {line}");
+            MpToast(line);
+        }
+    }
+
+    /// <summary>Someone paused or resumed the game (the host allows pausing):
+    /// every machine stops its world, in the original's words.</summary>
+    private void MpOnPause(bool paused, int by)
+    {
+        _isPaused = paused;
+        int me = _mpNetSession?.LocalPlayerId ?? 0;
+        string who = by == me ? "You" : _mpPlayerNames.TryGetValue(by, out var n) && n.Length > 0 ? n : $"Player {by}";
+        string line = paused ? $"{who} paused the game" : $"{who} resumed the game";
+        SiegeFX.Core.Net.NetLog.Info($"in-region: {line}");
+        MpToast(line);
     }
 
     /// <summary>SC-MP-PLAYERS — roster rows: the local player first (live
@@ -33718,7 +34218,7 @@ void main()
             // Same authored dressing as the Save dialog's edit box: cpbox
             // chrome over a dark backing, parchment ink, blinking caret.
             var parch = new Vector4(0.88f, 0.82f, 0.70f, 1f);
-            string label = "Say:";
+            string label = _mpChatTeam ? "Team:" : "Say:";
             int labelW = _textRenderer.MeasureWidth(label, fs);
             int pad = 6 * fs;
             int boxH = lineH + 10;
@@ -36500,10 +37000,11 @@ void main()
     private void ApplyPlayerSpellImpact(RangedShot shot, ActorRenderState best)
     {
         if (best.IsDead || shot.Spell is not { } spell) return;
-        // MP co-op: a client's spell on a host-owned enemy resolves on the host.
-        if (MpIsClientHitOnNetworkActor(best))
+        // MP co-op: a client's spell on a host-owned enemy resolves on the host;
+        // one on another player (player vs. player) is that player's to take.
+        if (MpPvpStrike(best, shot.SpellDamage) || MpIsClientHitOnNetworkActor(best))
         {
-            _mpNetSession!.SendClientHit(best.Actor.Instance.Scid, shot.SpellDamage);
+            if (!best.IsRemotePlayer) _mpNetSession!.SendClientHit(best.Actor.Instance.Scid, shot.SpellDamage);
             AddFloatingText($"{spell.ScreenName.ToUpperInvariant()} -{(int)MathF.Round(shot.SpellDamage)}",
                 best.CurrentTransform.Translation + new Vector3(0f, 1.8f, 0f), SpellElementColor(spell.Element));
             SpawnBloodHit(best);
@@ -36544,10 +37045,11 @@ void main()
         float raw = SiegeFX.Core.Actors.CombatResolver.RollDamage(
             attacker, best.Actor.Stats, rng, attackerIsPlayer: true, ranged: true);
         var hitPos = AimPoint(best);
-        // MP co-op: a client's arrow on a host-owned enemy resolves on the host.
-        if (MpIsClientHitOnNetworkActor(best))
+        // MP co-op: a client's arrow on a host-owned enemy resolves on the host;
+        // one on another player (player vs. player) is that player's to take.
+        if (MpPvpStrike(best, raw) || MpIsClientHitOnNetworkActor(best))
         {
-            _mpNetSession!.SendClientHit(best.Actor.Instance.Scid, raw);
+            if (!best.IsRemotePlayer) _mpNetSession!.SendClientHit(best.Actor.Instance.Scid, raw);
             if (!RegisterAndPlayVoiceCue("s_e_hit_arrow_flesh", hitPos)) PlayMeleeHit(hitPos);
             SpawnBloodHit(best);
             AwardCombatXp(raw, best.Actor.Stats, SiegeFX.Core.Assets.SkillKind.Ranged);
@@ -37016,9 +37518,9 @@ void main()
         // MP co-op: a client's hit on a host-owned enemy is resolved by the HOST
         // (authoritative life). Send the rolled damage up, play local feedback,
         // credit our own XP, and let the host's delta drive the life bar + kill.
-        if (MpIsClientHitOnNetworkActor(best))
+        if (MpPvpStrike(best, raw) || MpIsClientHitOnNetworkActor(best))
         {
-            _mpNetSession!.SendClientHit(best.Actor.Instance.Scid, raw);
+            if (!best.IsRemotePlayer) _mpNetSession!.SendClientHit(best.Actor.Instance.Scid, raw);
             PlayMeleeHit(hitPos, best);
             SpawnBloodHit(best);
             AwardCombatXp(raw, best.Actor.Stats, SiegeFX.Core.Assets.SkillKind.Melee);
@@ -38901,7 +39403,7 @@ void main()
                 if (s.IsPlayer) continue;
                 if (!forceCast && s.IsPartyMember) continue;   // Phase 26b — don't cast offensive spells on recruits
                 if (!s.Actor.Stats.IsCombatant) continue;
-                if ((!forceCast && !s.IsEvilAligned) || !s.IsSelectable) continue; // SC-ALIGNMENT
+                if ((!forceCast && !HostileToPlayer(s)) || !s.IsSelectable) continue; // SC-ALIGNMENT
             if (!PickableFromPlayerFloor(s)) continue; // SC-PICK-FADED + SC-PICK-YBAND
                 var pos = s.CurrentTransform.Translation;
                 float dx = pos.X - groundHit.X;
@@ -39408,7 +39910,8 @@ void main()
                         // (its life delta is authoritative). Report the rolled
                         // damage and skip the LOCAL kill so the corpse follows the
                         // host, not a locally-computed death.
-                        if (MpIsClientHitOnNetworkActor(best))
+                        if (MpPvpStrike(best, result.Damage)) { }
+                        else if (MpIsClientHitOnNetworkActor(best))
                             _mpNetSession!.SendClientHit(best.Actor.Instance.Scid, result.Damage);
                         else if (result.TargetKilled && best.Actor.Combat.ConsumeJustDied())
                             HandleActorKilledByHit(best, result.Damage);
@@ -42249,6 +42752,7 @@ void main()
             // "Health/Mana Bars" toggle draws through the authored-art
             // DrawOverheadStatusBars pass below.
             DrawMemberLabels(size.X, size.Y);
+            DrawMpPlayerLabels(size.X, size.Y);
 
             // Phase 22-INFORAIL-B + anchor fold — gas-cited info-rail
             // layout. Per hud_character.gas / hud_inventory.gas /
@@ -44251,7 +44755,7 @@ void main()
         {
             p.Variant = new SiegeFX.Core.Save.HeroVariantSnapshot
             {
-                Gender      = snapPick.Gender == HeroGender.Girl ? "girl" : "boy",
+                Gender      = HeroBodies.Word(snapPick.Gender),
                 BodyTypeIdx = snapPick.BodyTypeIdx,
                 SkinSuffix  = snapPick.SkinSuffix,
                 PantsSuffix = snapPick.PantsSuffix,
@@ -44792,8 +45296,7 @@ void main()
         {
             var restored = new HeroVariantPicker
             {
-                Gender = string.Equals(ps.Variant!.Gender, "girl", StringComparison.OrdinalIgnoreCase)
-                         ? HeroGender.Girl : HeroGender.Boy,
+                Gender = HeroBodies.Parse(ps.Variant!.Gender),
                 BodyTypeIdx = ps.Variant.BodyTypeIdx,
                 SkinSuffix  = ps.Variant.SkinSuffix,
                 PantsSuffix = ps.Variant.PantsSuffix,
@@ -44814,7 +45317,7 @@ void main()
             // a mismatch only matters when the env-var spawn picker disagrees
             // with the saved one (cross-session load), in which case the warn
             // tells the user the model on screen doesn't match the bytes.
-            string playerTpl = restored.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
+            string playerTpl = HeroBodies.Template(restored.Gender);
             if (_templateStore is not null
                 && _templateStore.TryGet(playerTpl, out var pickTpl))
             {

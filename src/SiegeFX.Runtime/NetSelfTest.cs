@@ -277,8 +277,8 @@ public static class NetSelfTest
             hs.BuildLocalPlayerState = () => new MpPlayerState(0, 1f, 0f, 1f, 0f, 100, 0);
             var cs = new MpSession(c6, isHost: false, "Joiner") { StatsInterval = 0 };
             int ended = 0, hostEnded = 0;
-            cs.OnGameEnded = () => ended++;
-            hs.OnGameEnded = () => hostEnded++;
+            cs.OnGameEnded = _ => ended++;
+            hs.OnGameEnded = _ => hostEnded++;
             cs.SendJoinRequest(); Pump(hs, cs);
             for (int i = 0; i < 40; i++) cs.Tick(1.0);   // the host sends nothing for 40 s
             Assert(cs.Joined && cs.SecondsSinceHost >= 39.5,

@@ -490,7 +490,8 @@ public sealed class PlayerSnapshot
 /// Runtime-side picker can be rebuilt without a back-reference.</summary>
 public sealed class HeroVariantSnapshot
 {
-    /// <summary>"boy" or "girl" — matches <c>SIEGEFX_HERO_GENDER</c> values.</summary>
+    /// <summary>"boy", "girl", "dwarf" or "skeleton" (the last two are co-op
+    /// characters) — matches <c>SIEGEFX_HERO_GENDER</c> values.</summary>
     public string Gender { get; set; } = "boy";
 
     /// <summary>Body axis index 0..6 corresponding to pos_a1..pos_a7. -1 = no

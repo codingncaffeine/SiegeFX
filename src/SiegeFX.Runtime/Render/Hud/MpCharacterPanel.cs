@@ -55,8 +55,14 @@ internal sealed class MpCharacterPanel
     public string NewName { get; private set; } = "";
     public HeroVariantPicker Picker { get; private set; } = new() { Gender = HeroGender.Boy, BodyTypeIdx = -1 };
 
+    /// <summary>The host restricts players to new characters (Game Settings):
+    /// only a character not yet played can be chosen, and nothing is imported.</summary>
+    public bool NewOnly;
+    bool Allowed(CoopCharacterEntry e) => !NewOnly || e.New;
+    bool CanAccept => SelectedEntry is { } e && Allowed(e);
+
     /// <summary>Gender → the hero template's portrait texture (null: no portrait).</summary>
-    public Func<bool, GlTexture?>? Portrait;
+    public Func<string, GlTexture?>? Portrait;
 
     readonly AuthoredFrame _f = new();
     IconRenderer? _icons;
@@ -122,7 +128,7 @@ internal sealed class MpCharacterPanel
                 long now = Environment.TickCount64;
                 bool dbl = row == _lastClickRow && now - _lastClickMs < 450;
                 Selected = row; _lastClickRow = row; _lastClickMs = now;
-                if (dbl) _pending = Action.Accept;
+                if (dbl && CanAccept) _pending = Action.Accept;
             }
             _pressed = "";
         }
@@ -151,19 +157,20 @@ internal sealed class MpCharacterPanel
         switch (Mode, hit)
         {
             case (View.Select, "create"): _pending = Action.OpenCreate; break;
-            case (View.Select, "import"): _pending = Action.OpenImport; break;
+            case (View.Select, "import"): if (!NewOnly) _pending = Action.OpenImport; break;
             case (View.Select, "delete"): if (SelectedEntry is not null) AskingDelete = true; break;
-            case (View.Select, "accept"): if (SelectedEntry is not null) _pending = Action.Accept; break;
+            case (View.Select, "accept"): if (CanAccept) _pending = Action.Accept; break;
             case (View.Select, "cancel"): _pending = Action.Cancel; break;
             case (View.Select, "up"): Scroll(-1); break;
             case (View.Select, "down"): Scroll(+1); break;
             case (View.Import, "combo"): _comboOpen = !_comboOpen && Saves.Count > 0; break;
             case (View.Import, "accept"): if (ImportHero is not null) _pending = Action.ImportAccept; break;
             case (View.Import, "cancel"): _pending = Action.ImportCancel; break;
-            case (View.Create, "fromsp"): _pending = Action.OpenImport; break;
+            case (View.Create, "fromsp"): if (!NewOnly) _pending = Action.OpenImport; break;
             case (View.Create, "accept"): if (NewName.Trim().Length > 0) _pending = Action.CreateAccept; break;
             case (View.Create, "cancel"): _pending = Action.CreateCancel; break;
             case (View.Create, _) when hit.StartsWith("spin", StringComparison.Ordinal):
+                if (hit[4] != '0' && !HeroBodies.IsFarm(Picker.Gender)) break;   // the dwarf and skeleton keep their look
                 Spin(hit[4] - '0', hit[5] == 'r' ? +1 : -1); _pending = Action.PickerChanged; break;
         }
     }
@@ -203,7 +210,7 @@ internal sealed class MpCharacterPanel
             case View.Select:
                 if (key == Key.Up && Selected > 0) { Selected--; if (Selected < _scroll) _scroll = Selected; }
                 else if (key == Key.Down && Selected < Characters.Count - 1) { Selected++; if (Selected >= _scroll + Rows) _scroll = Selected - Rows + 1; }
-                else if (key is Key.Enter or Key.KeypadEnter && SelectedEntry is not null) _pending = Action.Accept;
+                else if (key is Key.Enter or Key.KeypadEnter && CanAccept) _pending = Action.Accept;
                 else if (key == Key.Escape) _pending = Action.Cancel;
                 else if (key == Key.Delete && SelectedEntry is not null) AskingDelete = true;
                 else return false;
@@ -230,7 +237,9 @@ internal sealed class MpCharacterPanel
         var p = Picker;
         Picker = new HeroVariantPicker
         {
-            Gender = row == 0 ? (p.Gender == HeroGender.Boy ? HeroGender.Girl : HeroGender.Boy) : p.Gender,
+            // Character: the original's multiplayer characters in turn
+            // (multiplayer.gas [characters]: farmboy, farmgirl, dwarf, skeleton_good).
+            Gender = row == 0 ? (HeroGender)(((int)p.Gender + d + 4) % 4) : p.Gender,
             BodyTypeIdx = p.BodyTypeIdx, SkinSuffix = p.SkinSuffix, HairSuffix = p.HairSuffix, PantsSuffix = p.PantsSuffix,
             StyleIdx = p.StyleIdx + (row == 1 ? d : 0),
             FaceIdx = p.FaceIdx + (row == 2 ? d : 0),
@@ -241,6 +250,7 @@ internal sealed class MpCharacterPanel
     }
 
     static readonly string[] SpinLabels = { "Character", "Head", "Skin", "Hair", "Shirt", "Pants" };
+    static readonly Vector4 WarningRed = new(1f, 0f, 0f, 1f);
 
     /// <summary>The Create screen's preview box (character_background) in
     /// reference coordinates.</summary>
@@ -320,7 +330,7 @@ internal sealed class MpCharacterPanel
     {
         _f.Label(44, 76, 200, 92, "Select Character", "14p");
         _f.Button(346, 76, 546, 92, "Create New Character...", State("create"));
-        _f.Button(556, 76, 756, 92, "Import Character...", State("import"));
+        _f.Button(556, 76, 756, 92, "Import Character...", State("import"), !NewOnly);
         _f.Box(44, 100, 756, 300);
         _f.Label(50, 108, 240, 124, "Character", "14p");
         _f.Label(245, 108, 370, 124, "Class", "14p");
@@ -336,14 +346,15 @@ internal sealed class MpCharacterPanel
             var c = Characters[idx];
             // character<n>_portrait: the hero template's portrait, cropped by
             // the authored uvcoords 0,0.28125,0.609375,1.0 (bottom-up).
-            if (Portrait?.Invoke(c.Girl) is { } portrait && _icons is not null)
+            if (Portrait?.Invoke(c.Body) is { } portrait && _icons is not null)
             {
                 var r = _f.S(59, y + 3, 86, y + 35);
                 _icons.DrawIcon(_f.Vw, _f.Vh, portrait, r.X, r.Y, r.W, r.H, Vector4.One, 0f, 0f, 0.609375f, 1f - 0.28125f);
             }
-            _f.Label(90, y + 11, 240, y + 27, c.Name);
-            _f.Label(250, y + 11, 370, y + 27, c.ClassName);
-            _f.Label(380, y + 11, 530, y + 27, c.New ? "New" : $"Level {c.Level}");
+            var ink = Allowed(c) ? AuthoredFrame.White : AuthoredFrame.Disabled;
+            _f.Label(90, y + 11, 240, y + 27, c.Name, "", ink);
+            _f.Label(250, y + 11, 370, y + 27, c.ClassName, "", ink);
+            _f.Label(380, y + 11, 530, y + 27, c.New ? "New" : $"Level {c.Level}", "", ink);
             Skill(530, y + 11, "b_gui_ig_mnu_combat", c.Melee);
             Skill(580, y + 11, "b_gui_ig_mnu_ranged", c.Ranged);
             Skill(630, y + 11, "b_gui_ig_mnu_nature-magic", c.NatureMagic);
@@ -362,8 +373,10 @@ internal sealed class MpCharacterPanel
             _f.Label(50, 191, 730, 210, "Create a new one, or import a hero from a single-player game.", "", AuthoredFrame.Faint, AuthoredFrame.Justify.Center);
         }
         if (Characters.Count > Rows) DrawSlider(_scroll, Characters.Count - Rows);
+        if (NewOnly)
+            _f.Label(44, 300, 756, 308, "The host has chosen to only allow new characters.", "", AuthoredFrame.Faint, AuthoredFrame.Justify.Center);
 
-        _f.Button(252, 308, 392, 324, "Accept", State("accept"), SelectedEntry is not null);
+        _f.Button(252, 308, 392, 324, "Accept", State("accept"), CanAccept);
         _f.Button(408, 308, 548, 324, "Cancel", State("cancel"));
     }
 
@@ -428,7 +441,14 @@ internal sealed class MpCharacterPanel
     void DrawCreate()
     {
         _f.Label(44, 76, 200, 92, "Create New Character", "14p");
-        _f.Button(500, 76, 740, 92, "Import From Single Player...", State("fromsp"));
+        _f.Button(500, 76, 740, 92, "Import From Single Player...", State("fromsp"), !NewOnly);
+        // create_new_character_warning (font_color 0x00FF0000): shown when the
+        // host requires new characters.
+        if (NewOnly)
+        {
+            _f.Label(220, 72, 490, 86, "Host requires new characters. If you want to play with", "", WarningRed, AuthoredFrame.Justify.Center);
+            _f.Label(220, 86, 490, 100, "an existing character, join a different game", "", WarningRed, AuthoredFrame.Justify.Center);
+        }
         _f.Label(60, 168, 234, 184, "Enter Hero Name", "", null, AuthoredFrame.Justify.Center);
         _f.Box(60, 188, 234, 212);
         bool caret = (Environment.TickCount64 / 500) % 2 == 0;
@@ -438,9 +458,12 @@ internal sealed class MpCharacterPanel
         for (int i = 0; i < 6; i++)
         {
             int y = 128 + 26 * i;
-            _f.Arrow(586, y, 602, y + 16, "left", State($"spin{i}l"));
-            _f.Label(602, y, 704, y + 16, SpinLabels[i], "", null, AuthoredFrame.Justify.Center);
-            _f.Arrow(704, y, 720, y + 16, "right", State($"spin{i}r"));
+            // disable_color 0x99555555: Head..Pants grey out for a body with
+            // no such choices (the dwarf, the skeleton).
+            bool on = i == 0 || HeroBodies.IsFarm(Picker.Gender);
+            _f.Arrow(586, y, 602, y + 16, "left", State($"spin{i}l"), on);
+            _f.Label(602, y, 704, y + 16, SpinLabels[i], "", on ? null : AuthoredFrame.Disabled, AuthoredFrame.Justify.Center);
+            _f.Arrow(704, y, 720, y + 16, "right", State($"spin{i}r"), on);
         }
         _f.Button(252, 308, 392, 324, "Accept", State("accept"), NewName.Trim().Length > 0);
         _f.Button(408, 308, 548, 324, "Cancel", State("cancel"));

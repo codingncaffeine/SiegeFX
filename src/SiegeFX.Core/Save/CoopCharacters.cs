@@ -9,7 +9,7 @@ namespace SiegeFX.Core.Save;
 public sealed record CoopCharacterEntry(
     string Path, string Name, int Level, string ClassName,
     int Melee, int Ranged, int NatureMagic, int CombatMagic,
-    bool Girl, bool New, DateTime SavedAt);
+    bool Girl, bool New, DateTime SavedAt, string Body = "boy");
 
 /// <summary>The player's co-op characters: one file each in the save folder's
 /// Multiplayer subfolder, kept on this machine and carried into every co-op
@@ -56,10 +56,11 @@ public static class CoopCharacters
                     : !string.IsNullOrWhiteSpace(f.HeroName) ? f.HeroName
                     : "Unnamed hero";
         bool girl = string.Equals(p?.Variant?.Gender, "girl", StringComparison.OrdinalIgnoreCase);
+        string body = p?.Variant?.Gender is { Length: > 0 } g ? g.Trim().ToLowerInvariant() : "boy";
         return new CoopCharacterEntry(path, name, Math.Max(0, p?.Level ?? 0),
             c?.ClassName is { Length: > 0 } cls ? cls : "Farmer",
             c?.Melee ?? 0, c?.Ranged ?? 0, c?.NatureMagic ?? 0, c?.CombatMagic ?? 0,
-            girl, IsNew(f), f.SavedAt);
+            girl, IsNew(f), f.SavedAt, body);
     }
 
     /// <summary>Created in the staging area and not played yet.</summary>

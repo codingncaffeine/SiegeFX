@@ -137,7 +137,7 @@ internal sealed class HeroPreviewRenderer : IDisposable
         _skinOverride = null;
         _pantsOverride = null;
 
-        string templateName = picker.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
+        string templateName = HeroBodies.Template(picker.Gender);
         if (!_store.TryGet(templateName, out var template)) return;
 
         // Synthetic instance at world origin. The character preview camera
@@ -454,7 +454,7 @@ internal sealed class HeroPreviewRenderer : IDisposable
         // 6-axis pack: gender(1) | bodyIdx(8) | skin(10) | hair(10) | shirt(8) |
         // pants(10). Each subfield is sized for its real range; long has 64 bits
         // total so this fits comfortably.
-        long h = (long)(p.Gender == HeroGender.Girl ? 1 : 0);
+        long h = (long)p.Gender;
         h = (h << 8) | (long)(byte)(p.BodyTypeIdx & 0xFF);
         h = (h << 10) | (ParseSuffixOrZero(p.SkinSuffix) & 0x3FF);
         h = (h << 10) | (ParseSuffixOrZero(p.HairSuffix) & 0x3FF);

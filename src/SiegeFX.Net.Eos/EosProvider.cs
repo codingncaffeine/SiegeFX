@@ -61,6 +61,14 @@ public sealed class EosLobbyService : ILobbyService
         return tcs.Task;
     }
 
+    /// <summary>Host: new details for the listed game (EOS calls stay on the
+    /// thread that ticks EOS, which is the game's frame thread).</summary>
+    public void UpdateAttributes(IReadOnlyDictionary<string, string> attributes)
+    {
+        if (_createdLobbyId is null) return;
+        ApplyAttributes(_createdLobbyId, attributes.Where(kv => kv.Key != "port").ToDictionary(kv => kv.Key, kv => kv.Value));
+    }
+
     void ApplyAttributes(string lobbyId, IReadOnlyDictionary<string, string> attrs)
     {
         var modOpts = new UpdateLobbyModificationOptions { LocalUserId = _local, LobbyId = lobbyId };
@@ -124,7 +132,7 @@ public sealed class EosLobbyService : ILobbyService
                     string hostPuid = ReadAttr(AttrHostPuid);
                     string name = ReadAttr(AttrName);
                     var attrs = new Dictionary<string, string>();
-                    foreach (var k in new[] { "map", "difficulty", "players", "host", "area", "levels", "state" })
+                    foreach (var k in new[] { "map", "difficulty", "players", "host", "area", "levels", "state", "password" })
                     { var val = ReadAttr(k); if (val.Length > 0) attrs[k] = val; }
                     if (hostPuid.Length > 0)
                         results.Add(new LobbyInfo(hostPuid, name.Length > 0 ? name : "SiegeFX Game", hostPuid, attrs));

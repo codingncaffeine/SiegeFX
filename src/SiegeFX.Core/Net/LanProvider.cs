@@ -24,25 +24,75 @@ public sealed class LanLobbyService : ILobbyService
 {
     public const int BeaconPort = 47777;
     const string Magic = "SFXMP1";
+    const string PingMagic = "SFXPING", PongMagic = "SFXPONG";
     UdpClient? _beaconTx;
     System.Threading.Timer? _beaconTimer;
     string _beaconPayload = "";
+    string _beaconName = "";
+    int _beaconGamePort;
+    volatile byte[] _beaconBytes = Array.Empty<byte>();
+    CancellationTokenSource? _pongCts;
     public string ProviderId => "lan";
+
+    static string Payload(string name, int gamePort, IReadOnlyDictionary<string, string> attributes) =>
+        $"{Magic}|{name.Replace('|', ' ')}|{gamePort}|" +
+        string.Join(';', attributes.Where(kv => kv.Key != "port").Select(kv => $"{kv.Key}={kv.Value.Replace(';', ',').Replace('|', ' ')}"));
+
+    /// <summary>Host: new listing details (player count, password mark, state);
+    /// the next beacon carries them.</summary>
+    public void UpdateAttributes(IReadOnlyDictionary<string, string> attributes)
+    {
+        if (_beaconTx is null) return;
+        _beaconPayload = Payload(_beaconName, _beaconGamePort, attributes);
+        _beaconBytes = Encoding.UTF8.GetBytes(_beaconPayload);
+    }
+
+    // Host: answer a game list's ping on the beacon socket (the scanner sends
+    // it to the address a beacon came from), so the list can show the round
+    // trip as the original's Ping column did.
+    async Task AnswerPings(UdpClient sock, CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            UdpReceiveResult res;
+            try { res = await sock.ReceiveAsync(ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
+            catch (ObjectDisposedException) { return; }
+            catch (SocketException) { continue; }
+            if (res.Buffer.Length > 64) continue;
+            var text = Encoding.UTF8.GetString(res.Buffer);
+            if (!text.StartsWith(PingMagic + "|", StringComparison.Ordinal)) continue;
+            var reply = Encoding.UTF8.GetBytes(PongMagic + text[PingMagic.Length..]);
+            try { await sock.SendAsync(reply, reply.Length, res.RemoteEndPoint).ConfigureAwait(false); }
+            catch (Exception) { }
+        }
+    }
 
     public Task<LobbyInfo?> CreateAsync(string name, IReadOnlyDictionary<string, string> attributes, CancellationToken ct)
     {
         try
         {
             int gamePort = attributes.TryGetValue("port", out var p) && int.TryParse(p, out var pv) ? pv : UdpTransport.DefaultGamePort;
-            var attrs = string.Join(';', attributes.Where(kv => kv.Key != "port").Select(kv => $"{kv.Key}={kv.Value}"));
-            _beaconPayload = $"{Magic}|{name.Replace('|', ' ')}|{gamePort}|{attrs}";
-            _beaconTx = new UdpClient { EnableBroadcast = true };
-            var bytes = Encoding.UTF8.GetBytes(_beaconPayload);
+            _beaconName = name;
+            _beaconGamePort = gamePort;
+            _beaconPayload = Payload(name, gamePort, attributes);
+            _beaconBytes = Encoding.UTF8.GetBytes(_beaconPayload);
+            _beaconTx = new UdpClient(new IPEndPoint(IPAddress.Any, 0)) { EnableBroadcast = true };
             var target = new IPEndPoint(IPAddress.Broadcast, BeaconPort);
+            _pongCts = new CancellationTokenSource();
+            var tx = _beaconTx;
+            _ = Task.Run(() => AnswerPings(tx, _pongCts.Token));
+            // Also to this computer's own loopback: a firewall that drops
+            // inbound broadcasts (firewalld's default) would otherwise hide a
+            // game from a second copy running on the same computer.
+            var self = new IPEndPoint(IPAddress.Loopback, BeaconPort);
             _beaconTimer = new System.Threading.Timer(_ =>
             {
+                var bytes = _beaconBytes;
                 try { _beaconTx?.Send(bytes, bytes.Length, target); }
                 catch (Exception ex) { NetLog.Warn($"beacon send failed: {ex.Message}"); }
+                try { _beaconTx?.Send(bytes, bytes.Length, self); }
+                catch (Exception) { }
             }, null, 0, 1000);
             NetLog.Info($"lan host beacon up: '{name}' game port {gamePort} (broadcast :{BeaconPort})");
             return Task.FromResult<LobbyInfo?>(new LobbyInfo("lan-self", name, $"127.0.0.1:{gamePort}",
@@ -58,6 +108,7 @@ public sealed class LanLobbyService : ILobbyService
     public async Task<IReadOnlyList<LobbyInfo>> ListAsync(CancellationToken ct)
     {
         var found = new Dictionary<string, LobbyInfo>();
+        var pinged = new Dictionary<string, (long Sent, string Host)>();   // nonce -> when, which game
         try
         {
             using var rx = new UdpClient();
@@ -72,6 +123,17 @@ public sealed class LanLobbyService : ILobbyService
                 if (done != recvTask) break;
                 var res = recvTask.Result;
                 var text = Encoding.UTF8.GetString(res.Buffer);
+                if (text.StartsWith(PongMagic + "|", StringComparison.Ordinal))
+                {
+                    string nonce = text[(PongMagic.Length + 1)..];
+                    if (pinged.Remove(nonce, out var sent) && found.TryGetValue(sent.Host, out var game))
+                    {
+                        long ms = (System.Diagnostics.Stopwatch.GetTimestamp() - sent.Sent) * 1000 / System.Diagnostics.Stopwatch.Frequency;
+                        var withPing = new Dictionary<string, string>(game.Attributes) { ["ping"] = ms.ToString(System.Globalization.CultureInfo.InvariantCulture) };
+                        found[sent.Host] = game with { Attributes = withPing };
+                    }
+                    continue;
+                }
                 var parts = text.Split('|');
                 if (parts.Length < 3 || parts[0] != Magic) continue;
                 string name = parts[1];
@@ -83,10 +145,25 @@ public sealed class LanLobbyService : ILobbyService
                         int eq = kv.IndexOf('=');
                         if (eq > 0) attrs[kv[..eq]] = kv[(eq + 1)..];
                     }
+                // The same game heard on loopback and on the network (a copy on
+                // the host's own computer): keep the network address.
+                bool loop = IPAddress.IsLoopback(res.RemoteEndPoint.Address);
+                string twin = found.Values.FirstOrDefault(g => g.Name == name && g.HostAddress.EndsWith($":{parts[2]}", StringComparison.Ordinal)
+                    && g.HostAddress != host)?.HostAddress ?? "";
+                if (twin.Length > 0)
+                {
+                    if (loop) continue;
+                    if (IPAddress.TryParse(twin.Split(':')[0], out var ta) && IPAddress.IsLoopback(ta)) found.Remove(twin);
+                }
                 if (!found.ContainsKey(host))
                 {
                     found[host] = new LobbyInfo(host, name, host, attrs);
                     NetLog.Info($"lan beacon: '{name}' at {host} ({attrs.Count} attr)");
+                    // Ping the beacon's own socket: it answers with the nonce.
+                    string nonce = Guid.NewGuid().ToString("N")[..12];
+                    pinged[nonce] = (System.Diagnostics.Stopwatch.GetTimestamp(), host);
+                    var ping = Encoding.UTF8.GetBytes($"{PingMagic}|{nonce}");
+                    try { rx.Send(ping, ping.Length, res.RemoteEndPoint); } catch (Exception) { }
                 }
             }
         }
@@ -98,9 +175,11 @@ public sealed class LanLobbyService : ILobbyService
 
     public Task LeaveAsync()
     {
+        bool wasUp = _beaconTx is not null;
         _beaconTimer?.Dispose(); _beaconTimer = null;
+        _pongCts?.Cancel(); _pongCts?.Dispose(); _pongCts = null;
         _beaconTx?.Dispose(); _beaconTx = null;
-        NetLog.Info("lan host beacon down");
+        if (wasUp) NetLog.Info("lan host beacon down");
         return Task.CompletedTask;
     }
 

@@ -121,11 +121,12 @@ public class MpJoinTests
         Pump(host, client);
         Assert.Equal(0x01C00DA4u, clientSawBreak);
 
-        float hit = 0;
-        client.OnPlayerHit = d => hit = d;
+        float hit = 0; int by = -1;
+        client.OnPlayerHit = (d, a) => { hit = d; by = a; };
         host.SendPlayerHit(client.LocalPlayerId, 7.5f);
         Pump(host, client);
         Assert.Equal(7.5f, hit);
+        Assert.Equal(MpSession.MonsterAttacker, by);
 
         (uint Scid, string Tpl, float X)? spawn = null;
         client.OnActorSpawn = (scid, tpl, x, _, _) => spawn = (scid, tpl, x);

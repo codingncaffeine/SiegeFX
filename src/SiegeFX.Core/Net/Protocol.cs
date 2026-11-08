@@ -12,7 +12,7 @@ namespace SiegeFX.Core.Net;
 public enum MpMsg : byte
 {
     // client → host
-    JoinRequest = 1,   // [nameLen u8][name utf8]
+    JoinRequest = 1,   // [version u16][nameLen u8][name utf8][passwordLen u8][password utf8]
     Input       = 2,   // [tick u32][cmd u8][x f32][z f32][targetScid u32]
     Chat        = 3,   // [textLen u16][text utf8]
     ClientState = 5,   // client→host, lossy lane, 15 a second: this player's pose (movement is client-owned in
@@ -43,17 +43,28 @@ public enum MpMsg : byte
     ItemGive    = 23,  // any→host→target: hand an item to another player [from u8][target u8][slotLen slot][refLen ref]
     RecruitRequest = 24, // client→host: hire NPC companion [scid u32]
     RecruitGrant   = 25, // host→all: NPC joined a player's party [scid u32][player u8]
-    PlayerHit      = 26, // host→one client: a host-run enemy hit that player [damage f32]
+    PlayerHit      = 26, // host→one client: something hit that player [damage f32][attacker u8]
+                         // (attacker: the player who struck in player-vs-player combat, 255 = a monster)
     PropBreak      = 27, // any→host→others: a breakable prop shattered [scid u32]
     ActorSpawn     = 28, // host→client: a runtime-spawned (generator) actor the host owns
                          // [scid u32][templateLen u8][template][x f32][y f32][z f32]
     Roster         = 29, // host→client: everyone in the game, host first, as the host knows it:
-                         // [count u8][ (player u8, ready u8, nameLen u8, name utf8) * ]
+                         // [count u8][ (player u8, ready u8, team u8, nameLen u8, name utf8) * ]
     Snapshot       = 30, // host→client, lossy lane, 15 a second: the players and the world actors near the
                          // receiver, written against the newest update it acknowledged. See MpWorldUpdate.
-    GameEnd        = 31, // host→client: the host is leaving and the game is over (no payload). A build that
-                         // does not know it drops it as unknown and notices the silence instead.
+    GameEnd        = 31, // host→client: the game is over: [reason u8] (MpGameEndReason)
+    Settings       = 32, // host→client: the host's game rules (MpGameSettings), on every change and now and then
+    TeamPick       = 33, // client→host: this player's team in the staging area: [team u8] (0 = none, 1..16 a team sign)
+    Pause          = 34, // client→host: [paused u8] asks to pause or resume (only when the host allows pausing);
+                         // host→client: [paused u8][player u8] the game is paused or resumed, by that player
+    PvpHit         = 35, // client→host: this player struck another one in player-vs-player combat:
+                         // [target u8][damage f32]; the host applies it to itself or passes it on as PlayerHit
+    TeamChat       = 36, // client→host: a line for this player's team: [textLen u16][text utf8];
+                         // host→client (the sender's teammates only): [player u8][textLen u16][text utf8]
 }
+
+/// <summary>Why the host ended the game (<see cref="MpMsg.GameEnd"/>).</summary>
+public enum MpGameEndReason : byte { HostLeft = 0, TimeLimit = 1 }
 
 /// <summary>Wire-protocol identity. Bump <see cref="Version"/> whenever a
 /// message layout changes so mismatched builds reject cleanly at the join
@@ -63,12 +74,15 @@ public enum MpMsg : byte
 /// human-readable reason.</summary>
 public static class MpProtocol
 {
-    public const ushort Version = 8;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
+    public const ushort Version = 9;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
                                         // v4: PlayerHit, PropBreak, ActorSpawn; v5: chores in the pose frames;
                                         // v6: Ready + Roster (the staging area's ready marks);
                                         // v7: weapon, shield and stance on the character card;
                                         // v8: Snapshot (acknowledged deltas, interest, 2 cm grid) on the lossy
                                         //     lane replaces StateDelta + PlayerDelta; ClientState acknowledges
+                                        // v9: the host's game rules (Settings), teams in the Roster, TeamPick,
+                                        //     a password in JoinRequest, Pause, PvpHit, GameEnd's reason,
+                                        //     PlayerHit's attacker, the hero's body on the character card
 }
 
 /// <summary>The JoinAccept world snapshot is the save JSON, indented: 130 kB

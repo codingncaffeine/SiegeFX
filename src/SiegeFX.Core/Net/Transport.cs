@@ -17,6 +17,9 @@ public interface ILobbyService : IDisposable
     Task LeaveAsync();
     /// <summary>Provider id for logs/config ("loopback", "lan", "eos").</summary>
     string ProviderId { get; }
+    /// <summary>Host: new details for the listed game (player count, password
+    /// mark, state). Replaces the game-authored attributes given to CreateAsync.</summary>
+    void UpdateAttributes(IReadOnlyDictionary<string, string> attributes) { }
 }
 
 public sealed record LobbyInfo(

@@ -24,7 +24,16 @@ public sealed class StartGroup
     public string Name { get; init; } = "";
     public string ScreenName { get; init; } = "";
     public bool IsDefault { get; init; }
+    /// <summary>A designers' jump point, never offered to players.</summary>
+    public bool DevOnly { get; init; }
+    public string Description { get; init; } = "";
+    /// <summary>[world_levels]: the character level each world requires to
+    /// start here (world name -> level; a world not listed requires none).</summary>
+    public IReadOnlyDictionary<string, int> RequiredLevels { get; init; } = new Dictionary<string, int>();
     public IReadOnlyList<StartPosition> Positions { get; init; } = Array.Empty<StartPosition>();
+
+    public int RequiredLevel(string world) =>
+        RequiredLevels.TryGetValue(world, out var lv) ? lv : 0;
 }
 
 /// <summary>
@@ -66,11 +75,24 @@ public static class StartPositionsStore
 
                 var name       = ExtractName(sg.Header);
                 var screenName = "";
-                bool isDefault = false;
+                var description = "";
+                bool isDefault = false, devOnly = false;
                 foreach (var attr in sg.Attributes)
                 {
                     if (NameEq(attr.Name, "screen_name")) screenName = StripQuotes(attr.Value);
                     else if (NameEq(attr.Name, "default")) isDefault = ParseBool(attr.Value);
+                    else if (NameEq(attr.Name, "dev_only")) devOnly = ParseBool(attr.Value);
+                    else if (NameEq(attr.Name, "description")) description = StripQuotes(attr.Value);
+                }
+                var levels = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                foreach (var wl in sg.Children)
+                {
+                    if (!wl.Header.Equals("world_levels", StringComparison.OrdinalIgnoreCase)) continue;
+                    foreach (var world in wl.Children)
+                        foreach (var attr in world.Attributes)
+                            if (NameEq(attr.Name, "required_level")
+                                && int.TryParse(attr.Value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var lv))
+                                levels[world.Header.Trim()] = lv;
                 }
 
                 var positions = new List<StartPosition>();
@@ -106,6 +128,9 @@ public static class StartPositionsStore
                     Name = name,
                     ScreenName = screenName,
                     IsDefault = isDefault,
+                    DevOnly = devOnly,
+                    Description = description,
+                    RequiredLevels = levels,
                     Positions = positions,
                 });
             }
