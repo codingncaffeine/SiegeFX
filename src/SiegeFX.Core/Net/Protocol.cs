@@ -75,7 +75,7 @@ public enum MpGameEndReason : byte { HostLeft = 0, TimeLimit = 1 }
 /// human-readable reason.</summary>
 public static class MpProtocol
 {
-    public const ushort Version = 10;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
+    public const ushort Version = 11;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
                                         // v4: PlayerHit, PropBreak, ActorSpawn; v5: chores in the pose frames;
                                         // v6: Ready + Roster (the staging area's ready marks);
                                         // v7: weapon, shield and stance on the character card;
@@ -84,7 +84,9 @@ public static class MpProtocol
                                         // v9: the host's game rules (Settings), teams in the Roster, TeamPick,
                                         //     a password in JoinRequest, Pause, PvpHit, GameEnd's reason,
                                         //     PlayerHit's attacker, the hero's body on the character card;
-                                        // v10: loot entries carry a potion's fill and a book's spells
+                                        // v10: loot entries carry a potion's fill and a book's spells;
+                                        // v11: the multiplayer world (the original's MP placements and
+                                        //      trigger rows) and [mp_scaling] monsters: every player must load the same world
 }
 
 /// <summary>The JoinAccept world snapshot is the save JSON, indented: 130 kB

@@ -113,6 +113,10 @@ public sealed class TriggerRow
     /// (29 shipped rows across 15 regions author it). A single-player
     /// session must skip those or MP mood/fade/quest dupes fire in SP.</summary>
     public bool SinglePlayer { get; }
+    /// <summary>Authored `multi_player` flag — FALSE marks a single-player-only
+    /// row (tutorial tips, moods whose multiplayer duplicate is authored
+    /// beside it); a multiplayer session skips those.</summary>
+    public bool MultiPlayer { get; }
     public float ResetDuration { get; }
     public float Delay { get; }
     /// <summary>Region-group filter for entered/left conditions; the empty string means
@@ -124,7 +128,7 @@ public sealed class TriggerRow
         IReadOnlyList<TriggerCall> actions,
         bool flipFlop, bool singleShot, bool startActive,
         float resetDuration, float delay,
-        string occupantsGroup, bool singlePlayer = true)
+        string occupantsGroup, bool singlePlayer = true, bool multiPlayer = true)
     {
         Conditions = conditions;
         Actions = actions;
@@ -135,13 +139,14 @@ public sealed class TriggerRow
         Delay = delay;
         OccupantsGroup = occupantsGroup;
         SinglePlayer = singlePlayer;
+        MultiPlayer = multiPlayer;
     }
 
     public static TriggerRow Parse(GasNode rowNode, string sourceLabel, List<string>? diagnostics)
     {
         var conditions = new List<TriggerCall>();
         var actions = new List<TriggerCall>();
-        bool flipFlop = false, singleShot = false, startActive = true, singlePlayer = true;
+        bool flipFlop = false, singleShot = false, startActive = true, singlePlayer = true, multiPlayer = true;
         float resetDuration = 0f, delay = 0f;
         string occupantsGroup = "";
 
@@ -175,13 +180,15 @@ public sealed class TriggerRow
                 // single_player=false marks MP-only rows — REAL gameplay
                 // state, not an editor hint (the old comment was wrong):
                 // shipped rows duplicate moods/fades/quest flips for MP and
-                // must not fire in SP. multi_player / can_self_destruct /
+                // must not fire in SP; multi_player=false rows (tutorial
+                // tips, SP moods) must not fire in MP. can_self_destruct /
                 // dev_instance_text stay runtime-ignored.
                 case "single_player": singlePlayer = ParseBool(attr.Value, singlePlayer); break;
+                case "multi_player":  multiPlayer = ParseBool(attr.Value, multiPlayer); break;
             }
         }
         return new TriggerRow(conditions, actions, flipFlop, singleShot, startActive,
-            resetDuration, delay, occupantsGroup, singlePlayer);
+            resetDuration, delay, occupantsGroup, singlePlayer, multiPlayer);
     }
 
     static bool ParseBool(string raw, bool fallback)

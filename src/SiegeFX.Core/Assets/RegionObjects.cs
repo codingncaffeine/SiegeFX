@@ -119,9 +119,14 @@ public static class RegionObjects
     static readonly string[] ProbeFiles =
         { "actor.gas", "non_interactive.gas", "special.gas", "generator.gas", "container.gas", "interactive.gas" };
 
+    /// <summary>The world loads as a multiplayer game: placements made for
+    /// single player only are left out instead of the multiplayer-only ones.
+    /// Set once per process (a co-op region is its own process).</summary>
+    public static bool MultiplayerWorld { get; set; }
+
     public static (IReadOnlyList<ActorInstance> Actors, IReadOnlyList<string> Diagnostics) LoadActors(
-        TankReader tank, string regionPath) =>
-        LoadPlacements(tank, regionPath, "actor.gas");
+        TankReader tank, string regionPath, bool? multiplayer = null) =>
+        LoadPlacements(tank, regionPath, "actor.gas", multiplayer);
 
     /// <summary>Generic placement loader. Reads <c>{regionPath}/objects/{fileName}</c>
     /// and parses every <c>[t:T,n:SCID]</c> root block as an <see cref="ActorInstance"/>.
@@ -129,7 +134,7 @@ public static class RegionObjects
     /// + template name + scid + raw node) but the type already serves as the shared
     /// placement record so we keep one shape across the runtime.</summary>
     public static (IReadOnlyList<ActorInstance> Placements, IReadOnlyList<string> Diagnostics) LoadPlacements(
-        TankReader tank, string regionPath, string fileName)
+        TankReader tank, string regionPath, string fileName, bool? multiplayer = null)
     {
         var diags = new List<string>();
         var norm = regionPath.TrimEnd('/');
@@ -167,17 +172,19 @@ public static class RegionObjects
 
             // SC-SP-FILTER — DS1 authors mode-exclusive twins (fh_r1 ships an
             // "SP Norick" with is_multi_player=false AND an "MP Norick" with
-            // is_single_player=false at the same bridge). SiegeFX is
-            // single-player: placements flagged is_single_player=false are
-            // the multiplayer variants and must not spawn, or both twins
-            // appear at once.
+            // is_single_player=false at the same bridge). A single-player game
+            // drops the is_single_player=false ones and a multiplayer game the
+            // is_multi_player=false ones, or both twins appear at once. In
+            // multiplayer that removes every hireable companion and pack-mule
+            // sale, as in the original: their multiplayer twins only talk.
+            string excludeFlag = (multiplayer ?? MultiplayerWorld) ? "is_multi_player" : "is_single_player";
             bool spExcluded = false;
             foreach (var c in node.Children)
             {
                 if (!string.Equals(c.Header, "common", StringComparison.OrdinalIgnoreCase)) continue;
                 foreach (var attr in c.Attributes)
                 {
-                    if (!string.Equals(attr.Name, "is_single_player", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!string.Equals(attr.Name, excludeFlag, StringComparison.OrdinalIgnoreCase)) continue;
                     if (attr.Value.Trim().Equals("false", StringComparison.OrdinalIgnoreCase)) spExcluded = true;
                 }
                 break;

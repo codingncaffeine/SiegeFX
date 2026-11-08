@@ -145,6 +145,14 @@ public sealed class Actor
         Combat.ResyncStats(newStats);
     }
 
+    /// <summary>Like <see cref="ResyncStats"/>, keeping the share of life the
+    /// actor has left (see <see cref="ActorCombatState.RescaleLife"/>).</summary>
+    public void RescaleLife(ActorStats newStats)
+    {
+        Stats = newStats;
+        Combat.RescaleLife(newStats);
+    }
+
     /// <summary>Phase 12-SC-2 — pin <paramref name="choreName"/> on top of the
     /// skrit blender for <paramref name="durationSec"/> seconds. No-op if the
     /// template doesn't ship that chore. Used by combat code so a swing actually

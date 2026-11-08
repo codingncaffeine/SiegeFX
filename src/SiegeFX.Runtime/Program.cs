@@ -433,6 +433,9 @@ static string? ResolveDs1Resources()
     }
 }
 
+// A co-op region (relaunched with SIEGEFX_MP_ROLE) loads the multiplayer
+// world: the original's multiplayer placements in place of the single-player ones.
+SiegeFX.Core.Assets.RegionObjects.MultiplayerWorld = Environment.GetEnvironmentVariable("SIEGEFX_MP_ROLE") is not null;
 using var host = new RenderHost(
     bootMode ? "SiegeFX" : "SiegeFX  —  RMB+WASD to fly, Shift to sprint, Esc to quit",
     meshPath: meshPath,

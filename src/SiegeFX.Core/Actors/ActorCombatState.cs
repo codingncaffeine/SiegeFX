@@ -218,4 +218,15 @@ public sealed class ActorCombatState
         if (CurrentLife > newStats.MaxLife) CurrentLife = newStats.MaxLife;
         if (CurrentMana > newStats.MaxMana) CurrentMana = newStats.MaxMana;
     }
+
+    /// <summary>New stats with a different MaxLife (multiplayer scaling as
+    /// players join or leave): a living actor keeps its share of its life, so
+    /// a monster at half life stays at half life.</summary>
+    public void RescaleLife(ActorStats newStats)
+    {
+        float share = _stats.MaxLife > 0f ? CurrentLife / _stats.MaxLife : 1f;
+        _stats = newStats;
+        if (CurrentLife > 0f) CurrentLife = MathF.Max(share * newStats.MaxLife, float.Epsilon);
+        if (CurrentMana > newStats.MaxMana) CurrentMana = newStats.MaxMana;
+    }
 }

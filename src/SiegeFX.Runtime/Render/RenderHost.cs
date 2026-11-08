@@ -2046,6 +2046,11 @@ public sealed class RenderHost : IDisposable
         // movement toward the formation slot behind the leader.
         public bool IsPartyMember;
         public int  PartyIndex;                       // 0 = leader/player
+        // Co-op [mp_scaling]: the template's own max life and experience
+        // value (captured at the first scaling) and the multipliers applied.
+        public float MpBaseMaxLife = -1f;
+        public int   MpBaseXp;
+        public float MpLifeApplied = 1f, MpXpApplied = 1f;
         // Phase 26 — true when the recruit resolved a weapon or spell it can
         // actually attack with. Casters whose only il_main is a lore book
         // (no damage, no spell) follow but don't swing for zero.
@@ -7046,6 +7051,45 @@ public sealed class RenderHost : IDisposable
         return Vector3.Distance(t, h) > Vector3.Distance(p, h);
     }
 
+    // Co-op [mp_scaling] (formulas.gas): a monster's life and experience value
+    // follow the number of players in the game, on every machine alike (life
+    // travels as an absolute number). Re-checked twice a second, so players
+    // joining or leaving and newly spawned monsters are covered; a living
+    // monster keeps its share of life when the scale changes.
+    private double _mpScaleCheckAt;
+    private int _mpScalePlayers;
+    private void MpApplyScaling()
+    {
+        if (_mpNetSession is not { } s || _playSeconds < _mpScaleCheckAt) return;
+        _mpScaleCheckAt = _playSeconds + 0.5;
+        var f = _formulas ?? _mpFormulas;
+        if (f is null) return;
+        int players = s.PlayerCount;
+        var (life, xp) = f.MpScaling(players);
+        int changed = 0;
+        foreach (var a in _actors)
+        {
+            if (a.IsPlayer || a.IsRemotePlayer || a.IsPartyMember || a.IsDead) continue;
+            var st = a.Actor.Stats;
+            if (!st.IsCombatant) continue;
+            if (a.MpBaseMaxLife < 0f) { a.MpBaseMaxLife = st.MaxLife; a.MpBaseXp = st.ExperienceValue; }
+            if (a.MpLifeApplied == life && a.MpXpApplied == xp) continue;
+            a.Actor.RescaleLife(st with
+            {
+                MaxLife = a.MpBaseMaxLife * life,
+                ExperienceValue = (int)MathF.Round(a.MpBaseXp * xp),
+            });
+            a.MpLifeApplied = life; a.MpXpApplied = xp;
+            changed++;
+        }
+        if (players != _mpScalePlayers || changed > 0)
+        {
+            if (players != _mpScalePlayers)
+                SiegeFX.Core.Net.NetLog.Info($"mp: monsters scaled for {players} player(s): life x{life:0.##}, experience x{xp:0.##} ({changed} rescaled)");
+            _mpScalePlayers = players;
+        }
+    }
+
     // SC-MP-INGAME — pump the in-region session each frame. EOS needs an explicit
     // callback tick + packet drain; the session drives snapshots/deltas on the dt
     // captured before the pause gate (co-op keeps syncing while a local menu is up).
@@ -7058,6 +7102,7 @@ public sealed class RenderHost : IDisposable
         MpPumpEos(_mpTransport);
         _mpNetSession?.Tick(_frameDtSeconds);
         MpClientLeash();
+        MpApplyScaling();
         // The time limit (Game Settings): the host ends the game for everyone.
         if (_mpNetSession is { IsHost: true } th && !_mpGameOver && th.Settings.TimeLimitMinutes > 0
             && th.GameSeconds >= th.Settings.TimeLimitMinutes * 60.0)
@@ -15409,6 +15454,8 @@ void main()
         _actorRuntime = spawner.Runtime;
         _actorBus     = spawner.MessageBus;
         _triggerRuntime = spawner.TriggerRuntime;
+        // A co-op game's rows from the first tick: the MP-only rows on, the SP-only off.
+        _triggerRuntime.IsMultiplayerSession = InMultiplayerGame;
         // SC-PCGEN — the authored jewelry generation tables (pcontent.gas
         // [modifiers] + the pcontent.skrit roll math). #ring/#amulet specs
         // roll REAL generated jewelry; pcgen_ names re-materialize on

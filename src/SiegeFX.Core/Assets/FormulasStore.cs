@@ -65,6 +65,21 @@ public sealed class FormulasStore
     public float XpFirstLevelFactor { get; private set; } = 0.10f;
     public float XpLaterLevelsFactor { get; private set; } = 0.025f;
 
+    /// <summary>DS1 <c>[mp_scaling]</c> — "based on the number of players in a
+    /// party the life and experience point worth of computer controlled gos
+    /// will be scaled": one value per player count, 1 to 8 (shipped: life
+    /// .35 .5 .8 1 2.15 3.1 4.17 5, xp .35 .59 .8 1 1.25 1.5 1.75 2; the game
+    /// is tuned for four players). Empty = no scaling.</summary>
+    public IReadOnlyList<float> MpLifeScale { get; private set; } = Array.Empty<float>();
+    public IReadOnlyList<float> MpXpScale { get; private set; } = Array.Empty<float>();
+
+    /// <summary>The life and experience multipliers for a multiplayer game of
+    /// <paramref name="players"/> (clamped to the table; 1 where none).</summary>
+    public (float Life, float Xp) MpScaling(int players) => (Pick(MpLifeScale, players), Pick(MpXpScale, players));
+
+    static float Pick(IReadOnlyList<float> t, int players) =>
+        t.Count == 0 ? 1f : t[Math.Clamp(players, 1, t.Count) - 1];
+
     private FormulasStore(
         float maxLifeBase, float maxLifeConstant, float maxLifeStr, float maxLifeDex, float maxLifeInt,
         float maxManaBase, float maxManaConstant, float maxManaStr, float maxManaDex, float maxManaInt,
@@ -216,6 +231,9 @@ public sealed class FormulasStore
         var limits = FindBlock(doc.Roots, "experience_limiting_factors");
         store.XpFirstLevelFactor  = ReadFloat(limits, "first_level",  store.XpFirstLevelFactor);
         store.XpLaterLevelsFactor = ReadFloat(limits, "later_levels", store.XpLaterLevelsFactor);
+        var mp = FindBlock(doc.Roots, "mp_scaling");
+        store.MpLifeScale = ReadFloatList(mp, "life");
+        store.MpXpScale = ReadFloatList(mp, "xp");
         return store;
     }
 
@@ -274,6 +292,26 @@ public sealed class FormulasStore
                 float.TryParse(a.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
                 return v;
         return fallback;
+    }
+
+    /// <summary>A <c>[[ a, b, c ]]</c> list; empty when absent or any entry is
+    /// not a positive number (a broken table must not scale anything).</summary>
+    private static IReadOnlyList<float> ReadFloatList(GasNode? node, string attr)
+    {
+        if (node is null) return Array.Empty<float>();
+        foreach (var a in node.Attributes)
+        {
+            if (!string.Equals(a.Name, attr, StringComparison.OrdinalIgnoreCase)) continue;
+            var list = new List<float>();
+            foreach (var tok in a.Value.Replace("[", "").Replace("]", "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (!float.TryParse(tok, NumberStyles.Float, CultureInfo.InvariantCulture, out var v) || !(v > 0f))
+                    return Array.Empty<float>();
+                list.Add(v);
+            }
+            return list;
+        }
+        return Array.Empty<float>();
     }
 
     private static string? ReadString(GasNode node, string attr)
