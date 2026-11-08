@@ -11189,6 +11189,19 @@ void main()
         finally { foreach (var a in asks) a.Dispose(); }
     }
 
+    private WindowsSessionEnd? _sessionEnd;
+    /// <summary>Windows is ending the session and ends the process when this
+    /// returns: the saves OnClosing makes, made now.</summary>
+    private void OnSessionEnding()
+    {
+        Console.WriteLine("[app] Windows is ending the session: saving now");
+        MpSaveCharacter("on logout");
+        MpHostAutoSave("on logout");
+        MpEndGameForAll();
+        OptionsPrefs.Save(_optionsMenu.Live);
+        Console.WriteLine("[app] saved; the session can end");
+    }
+
     private volatile bool _stopAsked;
     private void OnStopAsked(System.Runtime.InteropServices.PosixSignalContext ctx)
     {
@@ -11259,6 +11272,10 @@ void main()
         // frames of the running loop (see _windowIconFramesLeft in OnUpdate).
         _windowIcons = LoadWindowIcons();
         _windowIconFramesLeft = _windowIcons is null ? 0 : 240;
+
+        // Logging out of or shutting down Windows: what saves on close saves
+        // then too, before Windows ends the process.
+        _sessionEnd = WindowsSessionEnd.Hook(_window.Native?.Win32?.Hwnd ?? 0, OnSessionEnding);
 
         foreach (var kb in _input.Keyboards)
         {
