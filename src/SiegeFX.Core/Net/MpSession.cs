@@ -1,3 +1,5 @@
+using SiegeFX.Core.Actors;
+
 namespace SiegeFX.Core.Net;
 
 /// <summary>SC-MP-EOS P3 — host-authoritative session driver. Sits above
@@ -226,14 +228,14 @@ public sealed class MpSession : IDisposable
     /// <summary>Host: a client asks to take pile netId (peer, netId).</summary>
     public Action<int, uint>? OnLootTake;
     /// <summary>Host: a client dropped items at (x,y,z) (peer, x, y, z, entries).</summary>
-    public Action<int, float, float, float, List<(string Slot, string Ref)>>? OnLootDrop;
+    public Action<int, float, float, float, List<LootEntry>>? OnLootDrop;
     /// <summary>Client: the host announced an authoritative pile.</summary>
-    public Action<uint, float, float, float, List<(string Slot, string Ref)>>? OnLootSpawn;
+    public Action<uint, float, float, float, List<LootEntry>>? OnLootSpawn;
     /// <summary>Client: a pile resolved (netId, takerPlayer).</summary>
     public Action<uint, int>? OnLootGone;
     /// <summary>Both: an item was handed over (fromPlayer, targetPlayer, slot, ref).
     /// Fires on the machine whose player is the target (host relays).</summary>
-    public Action<int, int, string, string>? OnItemGive;
+    public Action<int, int, LootEntry>? OnItemGive;
     /// <summary>Host: a client asks to hire NPC scid (peer, scid).</summary>
     public Action<int, uint>? OnRecruitRequest;
     /// <summary>Both: the host granted a hire (scid, owningPlayer).</summary>
@@ -423,23 +425,36 @@ public sealed class MpSession : IDisposable
         return w.ToArray();
     }
 
-    static void WriteEntries(MpWriter w, IReadOnlyList<(string Slot, string Ref)> entries)
+    /// <summary>One item as it travels: its slot, template, a potion's fill
+    /// and a book's spells (a dropped half-empty potion stays half empty).</summary>
+    static void WriteEntry(MpWriter w, LootEntry e) =>
+        w.Str(e.Slot).Str(e.Reference, u16Len: true).F32(e.Fill).Str(e.BookSpells, u16Len: true);
+
+    static LootEntry ReadEntry(ref MpReader r)
+    {
+        string slot = r.Str(), rf = r.Str(u16Len: true);
+        float fill = r.F32();
+        string book = r.Str(u16Len: true);
+        return new LootEntry(slot, rf, float.IsFinite(fill) ? Math.Clamp(fill, 0f, 1f) : 1f, book);
+    }
+
+    static void WriteEntries(MpWriter w, IReadOnlyList<LootEntry> entries)
     {
         int n = Math.Min(entries.Count, byte.MaxValue);
         w.U8((byte)n);
-        for (int i = 0; i < n; i++) { w.Str(entries[i].Slot); w.Str(entries[i].Ref); }
+        for (int i = 0; i < n; i++) WriteEntry(w, entries[i]);
     }
-    static List<(string Slot, string Ref)> ReadEntries(ref MpReader r)
+    static List<LootEntry> ReadEntries(ref MpReader r)
     {
         int n = r.U8();
-        var list = new List<(string, string)>(n);
-        for (int i = 0; i < n && !r.Bad; i++) list.Add((r.Str(), r.Str()));
+        var list = new List<LootEntry>(n);
+        for (int i = 0; i < n && !r.Bad; i++) list.Add(ReadEntry(ref r));
         return list;
     }
 
     /// <summary>Host: announce an authoritative pile (toPeer -1 = everyone).</summary>
     public void SendLootSpawn(uint netId, float x, float y, float z,
-                              IReadOnlyList<(string Slot, string Ref)> entries, int toPeer = -1)
+                              IReadOnlyList<LootEntry> entries, int toPeer = -1)
     {
         if (!IsHost) return;
         var w = new MpWriter().U8((byte)MpMsg.LootSpawn).U32(netId).F32(x).F32(y).F32(z);
@@ -460,7 +475,7 @@ public sealed class MpSession : IDisposable
         Out(0, new MpWriter().U8((byte)MpMsg.LootTake).U32(netId).Span);
     }
 
-    public void SendLootDrop(float x, float y, float z, IReadOnlyList<(string Slot, string Ref)> entries)
+    public void SendLootDrop(float x, float y, float z, IReadOnlyList<LootEntry> entries)
     {
         if (IsHost) return;
         var w = new MpWriter().U8((byte)MpMsg.LootDrop).F32(x).F32(y).F32(z);
@@ -470,19 +485,19 @@ public sealed class MpSession : IDisposable
 
     /// <summary>Hand an item to another player. The host applies/relays;
     /// a client sends up for routing.</summary>
-    public void SendItemGive(int targetPlayer, string slot, string itemRef)
+    public void SendItemGive(int targetPlayer, LootEntry item)
     {
-        var w = new MpWriter().U8((byte)MpMsg.ItemGive)
-            .U8((byte)LocalPlayerId).U8((byte)targetPlayer).Str(slot).Str(itemRef, u16Len: true);
-        if (IsHost) RouteItemGive(LocalPlayerId, targetPlayer, slot, itemRef);
+        var w = new MpWriter().U8((byte)MpMsg.ItemGive).U8((byte)LocalPlayerId).U8((byte)targetPlayer);
+        WriteEntry(w, item);
+        if (IsHost) RouteItemGive(LocalPlayerId, targetPlayer, item);
         else Out(0, w.Span);
     }
 
-    void RouteItemGive(int from, int target, string slot, string itemRef)
+    void RouteItemGive(int from, int target, LootEntry item)
     {
-        if (target == LocalPlayerId) { OnItemGive?.Invoke(from, target, slot, itemRef); return; }
-        var w = new MpWriter().U8((byte)MpMsg.ItemGive)
-            .U8((byte)from).U8((byte)target).Str(slot).Str(itemRef, u16Len: true);
+        if (target == LocalPlayerId) { OnItemGive?.Invoke(from, target, item); return; }
+        var w = new MpWriter().U8((byte)MpMsg.ItemGive).U8((byte)from).U8((byte)target);
+        WriteEntry(w, item);
         Out(target, w.Span);
     }
 
@@ -1015,10 +1030,10 @@ public sealed class MpSession : IDisposable
             case MpMsg.ItemGive:
             {
                 int from = r.U8(), target = r.U8();
-                string slot = r.Str(); string itemRef = r.Str(u16Len: true);
-                if (r.Bad || string.IsNullOrEmpty(itemRef)) return;
-                if (IsHost) RouteItemGive(from, target, slot, itemRef);
-                else if (target == LocalPlayerId) OnItemGive?.Invoke(from, target, slot, itemRef);
+                var item = ReadEntry(ref r);
+                if (r.Bad || string.IsNullOrEmpty(item.Reference)) return;
+                if (IsHost) RouteItemGive(from, target, item);
+                else if (target == LocalPlayerId) OnItemGive?.Invoke(from, target, item);
                 break;
             }
             case MpMsg.PlayerHit when !IsHost:

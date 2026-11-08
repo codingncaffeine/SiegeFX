@@ -37,10 +37,11 @@ public enum MpMsg : byte
     // clients request takes/drops and mutate only on the host's answer, so two
     // players can never double-grab one pile.
     LootTake    = 19,  // client→host: request pile [netId u32]
-    LootDrop    = 20,  // client→host: player dropped items at [x f32][y f32][z f32][count u8][(slotLen u8,slot,refLen u8,ref)*]
-    LootSpawn   = 21,  // host→client: authoritative pile [netId u32][x][y][z][count u8][(slot,ref)*]
+    LootDrop    = 20,  // client→host: player dropped items at [x f32][y f32][z f32][count u8][entry*] (entry: below)
+    LootSpawn   = 21,  // host→client: authoritative pile [netId u32][x][y][z][count u8][entry*]
+                       // entry = [slot str][ref str u16][fill f32][book spells str u16]
     LootGone    = 22,  // host→client: pile resolved [netId u32][taker u8] — taker adds contents, everyone removes
-    ItemGive    = 23,  // any→host→target: hand an item to another player [from u8][target u8][slotLen slot][refLen ref]
+    ItemGive    = 23,  // any→host→target: hand an item to another player [from u8][target u8][entry]
     RecruitRequest = 24, // client→host: hire NPC companion [scid u32]
     RecruitGrant   = 25, // host→all: NPC joined a player's party [scid u32][player u8]
     PlayerHit      = 26, // host→one client: something hit that player [damage f32][attacker u8]
@@ -74,7 +75,7 @@ public enum MpGameEndReason : byte { HostLeft = 0, TimeLimit = 1 }
 /// human-readable reason.</summary>
 public static class MpProtocol
 {
-    public const ushort Version = 9;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
+    public const ushort Version = 10;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
                                         // v4: PlayerHit, PropBreak, ActorSpawn; v5: chores in the pose frames;
                                         // v6: Ready + Roster (the staging area's ready marks);
                                         // v7: weapon, shield and stance on the character card;
@@ -82,7 +83,8 @@ public static class MpProtocol
                                         //     lane replaces StateDelta + PlayerDelta; ClientState acknowledges
                                         // v9: the host's game rules (Settings), teams in the Roster, TeamPick,
                                         //     a password in JoinRequest, Pause, PvpHit, GameEnd's reason,
-                                        //     PlayerHit's attacker, the hero's body on the character card
+                                        //     PlayerHit's attacker, the hero's body on the character card;
+                                        // v10: loot entries carry a potion's fill and a book's spells
 }
 
 /// <summary>The JoinAccept world snapshot is the save JSON, indented: 130 kB

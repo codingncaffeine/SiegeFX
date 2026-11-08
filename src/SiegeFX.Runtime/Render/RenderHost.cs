@@ -6647,7 +6647,7 @@ public sealed class RenderHost : IDisposable
         // SC-MP-LOOT / GIVE / RECRUIT — host-authoritative piles, item
         // hand-offs, and companions for remote players. All callbacks fire
         // inside session.Tick on the render thread.
-        session.OnItemGive = (from, _, slot, itemRef) => MpOnItemGive(from, slot, itemRef);
+        session.OnItemGive = (from, _, item) => MpOnItemGive(from, item);
         session.OnRecruitGrant = MpOnRecruitGrant;
         session.OnPropBreak = MpOnPropBreak;
         session.OnPlayerHit = MpOnPlayerHit;   // monsters (host-run) and, with player-vs-player on, other players
@@ -7232,10 +7232,10 @@ public sealed class RenderHost : IDisposable
     // ── SC-MP-LOOT — host-authoritative loot piles ───────────────────────
     private uint _netPileSeq;
 
-    private static List<(string Slot, string Ref)> PileWireEntries(LootPile pile)
+    private static List<SiegeFX.Core.Actors.LootEntry> PileWireEntries(LootPile pile)
     {
-        var list = new List<(string, string)>(pile.Items.Count);
-        foreach (var it in pile.Items) list.Add((it.Slot ?? "", it.Reference));
+        var list = new List<SiegeFX.Core.Actors.LootEntry>(pile.Items.Count);
+        foreach (var it in pile.Items) list.Add(it with { Slot = it.Slot ?? "" });
         return list;
     }
 
@@ -7279,20 +7279,14 @@ public sealed class RenderHost : IDisposable
         _lootPiles.RemoveAt(idx);
     }
 
-    private void MpOnLootDropHost(float x, float y, float z, List<(string Slot, string Ref)> entries)
+    private void MpOnLootDropHost(float x, float y, float z, List<SiegeFX.Core.Actors.LootEntry> items)
     {
-        var items = new List<SiegeFX.Core.Actors.LootEntry>(entries.Count);
-        foreach (var (slot, rf) in entries)
-            items.Add(new SiegeFX.Core.Actors.LootEntry(slot, rf));
         AddLootPile(new LootPile(new Vector3(x, y, z), items));
         SiegeFX.Core.Net.NetLog.Info($"mp: a player left {items.Count} item(s) on the ground");
     }
 
-    private void MpOnLootSpawnClient(uint id, float x, float y, float z, List<(string Slot, string Ref)> entries)
+    private void MpOnLootSpawnClient(uint id, float x, float y, float z, List<SiegeFX.Core.Actors.LootEntry> items)
     {
-        var items = new List<SiegeFX.Core.Actors.LootEntry>(entries.Count);
-        foreach (var (slot, rf) in entries)
-            items.Add(new SiegeFX.Core.Actors.LootEntry(slot, rf));
         int idx = FindPileIndexByNetId(id);
         if (idx >= 0)
         {
@@ -7338,9 +7332,9 @@ public sealed class RenderHost : IDisposable
         return best;
     }
 
-    private void MpOnItemGive(int from, string slot, string itemRef)
+    private void MpOnItemGive(int from, SiegeFX.Core.Actors.LootEntry entry)
     {
-        var entry = new SiegeFX.Core.Actors.LootEntry(slot ?? "", itemRef);
+        string itemRef = entry.Reference;
         var working = new List<SiegeFX.Core.Actors.LootEntry>(_playerInventory) { entry };
         string nm = _mpPlayerNames.TryGetValue(from, out var n) && n.Length > 0 ? n : $"Player {from}";
         if (Hud.InventoryPanel.CanFitAll(working, TryGetItemGridSize))
@@ -43882,7 +43876,7 @@ void main()
                 target = origin;   // corpse spot is always legal ground
             var pile = new LootPile(origin,
                 new List<SiegeFX.Core.Actors.LootEntry>
-                { new(Slot: "", Reference: it.Reference, Fill: it.Fill) })
+                { it with { Slot = "" } })
             {
                 Throw = new LootThrow
                 {
@@ -43915,7 +43909,7 @@ void main()
         if (_mpNetSession is not null && RemoteAvatarNear(target) is { } recv)
         {
             string itemRef = _cursorItem.Value.Reference;
-            _mpNetSession.SendItemGive(recv.NetPlayerId, "", itemRef);
+            _mpNetSession.SendItemGive(recv.NetPlayerId, _cursorItem.Value with { Slot = "" });
             string rn = _mpPlayerNames.TryGetValue(recv.NetPlayerId, out var rname) && rname.Length > 0
                 ? rname : $"Player {recv.NetPlayerId}";
             _saveToastText = $"Gave an item to {rn}.";
@@ -43928,8 +43922,7 @@ void main()
         // Strip any es_* tag so the dropped pile is a plain inventory
         // entry. The Slot field comes back when the user picks it up
         // (auto-route currently doesn't re-equip; that lands later).
-        var entry = new SiegeFX.Core.Actors.LootEntry(Slot: "",
-            Reference: _cursorItem.Value.Reference, Fill: _cursorItem.Value.Fill);
+        var entry = _cursorItem.Value with { Slot = "" };
         var pile = new LootPile(origin, new List<SiegeFX.Core.Actors.LootEntry> { entry })
         {
             Throw = new LootThrow
