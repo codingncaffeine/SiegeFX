@@ -513,6 +513,12 @@ public sealed class NavMesh
     /// slot-starved fallback (see <see cref="ExtraLinks"/>).</summary>
     public int DoorSeamOverflowCount { get; }
 
+    /// <summary>SC-NAV-SEAM-BARRIER — overflow links the door stitcher dropped
+    /// because every candidate hop crossed a barrier (an Ignored nav face standing
+    /// above the floor — e.g. a wooden fence piece's boards between its two floor
+    /// strips) and the two ends were connected some other way anyway.</summary>
+    public int DoorSeamBarrierRejectCount { get; private init; }
+
     public int TriangleCount => Indices.Length / 3;
 
     // XZ uniform-grid spatial index. Built once at construction and queried by
@@ -742,7 +748,7 @@ public sealed class NavMesh
         // Runs BEFORE land↔water stitching so this pass's newly-paired
         // edges aren't counted as boundary candidates by the water pass.
         var extraLinksBuild = new Dictionary<int, List<int>>();
-        int doorSeams = StitchSnoDoorSeams(graph, layout, resolveSno, sourceSnodeGuid.ToArray(), indices, neighbors, vertsArr, extraLinksBuild, out int doorSeamOverflow);
+        int doorSeams = StitchSnoDoorSeams(graph, layout, resolveSno, sourceSnodeGuid.ToArray(), indices, neighbors, vertsArr, extraLinksBuild, out int doorSeamOverflow, out int doorSeamBarrierRejects);
         // Land↔water seam stitching: shoreline Floor and Water SNOs are authored in
         // separate meshes whose vertices don't fall inside the WeldToleranceUnits bucket,
         // so the manifold pass leaves them on disconnected components. Wire cross-kind
@@ -838,7 +844,7 @@ public sealed class NavMesh
             originZ,
             cellsX,
             cellsZ,
-            grid);
+            grid) { DoorSeamBarrierRejectCount = doorSeamBarrierRejects };
     }
 
     /// <summary>SC-NAV-CROSS-SNO-STITCH — door-anchored cross-SNO nav
@@ -867,6 +873,36 @@ public sealed class NavMesh
     // pairings (tread side edge vs. threshold edge). Matches the shoreline
     // stitcher's |cos θ| gate.
     private const float DoorSeamCollinearityCosMin = 0.85f;
+    // SC-NAV-SEAM-BARRIER — an Ignored edge crossing an overflow hop counts as a
+    // barrier when, at the crossing, it stands between these heights above the
+    // hop: above a kerb or a floor decal, below a lintel, arch or ceiling.
+    private const float BarrierMinRise = 0.25f;
+    private const float BarrierMaxRise = 2.0f;
+
+    /// <summary>SC-NAV-SEAM-BARRIER — does the hop <paramref name="p"/>→<paramref name="q"/>
+    /// cross (in XZ) one of the <paramref name="edges"/> (flat endpoint pairs) at a
+    /// point where the edge stands between <see cref="BarrierMinRise"/> and
+    /// <see cref="BarrierMaxRise"/> above the hop? A vertical fence board projects to
+    /// a line in XZ, so its top and diagonal edges are what register.</summary>
+    public static bool CrossesBarrier(Vector3 p, Vector3 q, Vector3[] edges)
+    {
+        float rx = q.X - p.X, rz = q.Z - p.Z;
+        for (int i = 0; i + 1 < edges.Length; i += 2)
+        {
+            var e0 = edges[i];
+            var e1 = edges[i + 1];
+            float sx = e1.X - e0.X, sz = e1.Z - e0.Z;
+            float denom = Cross2(rx, rz, sx, sz);
+            if (MathF.Abs(denom) < 1e-8f) continue; // parallel, or an edge seen end-on
+            float qpx = e0.X - p.X, qpz = e0.Z - p.Z;
+            float t = Cross2(qpx, qpz, sx, sz) / denom; // along the hop
+            float u = Cross2(qpx, qpz, rx, rz) / denom; // along the edge
+            if (t < 0f || t > 1f || u < 0f || u > 1f) continue;
+            float rise = (e0.Y + u * (e1.Y - e0.Y)) - (p.Y + t * (q.Y - p.Y));
+            if (rise >= BarrierMinRise && rise <= BarrierMaxRise) return true;
+        }
+        return false;
+    }
 
     private static int StitchSnoDoorSeams(
         RegionGraph graph,
@@ -877,9 +913,11 @@ public sealed class NavMesh
         int[] neighbors,
         Vector3[] verts,
         Dictionary<int, List<int>> extraLinks,
-        out int overflowLinks)
+        out int overflowLinks,
+        out int overflowBarrierRejects)
     {
         overflowLinks = 0;
+        overflowBarrierRejects = 0;
         int triCount = indices.Length / 3;
         // Index unwelded edges by snode guid. Each entry is (tri, slot,
         // midpoint, unit XZ direction, XZ length) — slot s is the edge
@@ -924,6 +962,56 @@ public sealed class NavMesh
         }
         Vector3 TriCentroid(int t) =>
             (verts[indices[3 * t + 0]] + verts[indices[3 * t + 1]] + verts[indices[3 * t + 2]]) / 3f;
+        // SC-NAV-SEAM-BARRIER — edges of a snode's Ignored (non-walkable) nav faces,
+        // lifted to the region frame on first use: the authored solid parts of a
+        // piece (fence boards, rails, wall stubs). Flat pairs of edge endpoints.
+        var barrierEdges = new Dictionary<uint, Vector3[]>();
+        var hops = new List<(int a, int b, float score)>();
+        // Hops that found no barrier-free pair: kept only if dropping them would
+        // cut the mesh apart (see the restore pass at the end).
+        var deferredHops = new List<(int a, int b, float score)>();
+        var hopCheckNodes = new HashSet<uint>();
+        // Barriers of both door snodes and of their door neighbours: at a fence
+        // corner the boards a hop crosses can belong to a third piece.
+        bool HopBlocked(Vector3 p, Vector3 q, RegionGraph.NodeInstance a, RegionGraph.NodeInstance b)
+        {
+            hopCheckNodes.Clear();
+            foreach (var end in (ReadOnlySpan<RegionGraph.NodeInstance>)[a, b])
+            {
+                if (hopCheckNodes.Add(end.Guid) && CrossesBarrier(p, q, BarrierEdges(end))) return true;
+                foreach (var d in end.Doors)
+                {
+                    if (!hopCheckNodes.Add(d.FarGuid) || !graph.TryGetNode(d.FarGuid, out var nb)) continue;
+                    if (CrossesBarrier(p, q, BarrierEdges(nb))) return true;
+                }
+            }
+            return false;
+        }
+        Vector3[] BarrierEdges(RegionGraph.NodeInstance n)
+        {
+            if (barrierEdges.TryGetValue(n.Guid, out var cached)) return cached;
+            var list = new List<Vector3>();
+            var nodeSno = resolveSno(n.MeshGuid);
+            if (nodeSno is not null && layout.TryGetTransform(n.Guid, out var xf))
+            {
+                foreach (var g in nodeSno.LogicalGroupings)
+                {
+                    if (g.Kind != SnoModel.FloorKind.Ignored) continue;
+                    foreach (var f in g.Faces)
+                    {
+                        var a = Vector3.Transform(f.A, xf);
+                        var b = Vector3.Transform(f.B, xf);
+                        var c = Vector3.Transform(f.C, xf);
+                        list.Add(a); list.Add(b);
+                        list.Add(b); list.Add(c);
+                        list.Add(c); list.Add(a);
+                    }
+                }
+            }
+            var arr = list.ToArray();
+            barrierEdges[n.Guid] = arr;
+            return arr;
+        }
         // Split a small tri set into its slot-connected local components.
         // Stepped pieces fragment internally: riser faces are degenerate in XZ
         // and dropped from the mesh, so each tread strip is its own island —
@@ -1064,8 +1152,7 @@ public sealed class NavMesh
                 foreach (var compB in LocalComponents(bNear))
                 {
                     if (AnyLink(compA, compB)) continue;
-                    int bestA = -1, bestB = -1;
-                    float bestScore = float.MaxValue;
+                    hops.Clear();
                     foreach (var tA in compA)
                     {
                         var ca = TriCentroid(tA);
@@ -1075,20 +1162,74 @@ public sealed class NavMesh
                             float dy = MathF.Abs(ca.Y - cb.Y);
                             if (dy > 1.0f) continue;
                             float ddx = ca.X - cb.X, ddz = ca.Z - cb.Z;
-                            float score = MathF.Sqrt(ddx * ddx + ddz * ddz) + dy;
-                            if (score < bestScore) { bestScore = score; bestA = tA; bestB = tB; }
+                            hops.Add((tA, tB, MathF.Sqrt(ddx * ddx + ddz * ddz) + dy));
                         }
                     }
-                    if (bestA < 0) continue;
-                    if (!extraLinks.TryGetValue(bestA, out var la)) extraLinks[bestA] = la = new List<int>();
-                    if (!la.Contains(bestB)) la.Add(bestB);
-                    if (!extraLinks.TryGetValue(bestB, out var lb)) extraLinks[bestB] = lb = new List<int>();
-                    if (!lb.Contains(bestA)) lb.Add(bestA);
+                    if (hops.Count == 0) continue;
+                    // SC-NAV-SEAM-BARRIER — the link is a straight hop between two
+                    // centroids; never let it jump a barrier either snode authors
+                    // between them. Field case: multiplayer_world town_center, the
+                    // wooden pig-pen fence by the co-op start (players walked
+                    // straight through it, and through house walls). Each
+                    // t_grs01_fence_generic_wood-* piece has a floor strip either
+                    // side of its Ignored boards, every door off it lands here (the
+                    // strips weld to their neighbours), and the nearest-centroid hop
+                    // tied one side of the fence to the other. Best-first, so a
+                    // barrier-free hop around an obstacle still wins over none.
+                    hops.Sort((x, y) => x.score.CompareTo(y.score));
+                    int bestA = -1, bestB = -1;
+                    foreach (var (hA, hB, _) in hops)
+                    {
+                        if (HopBlocked(TriCentroid(hA), TriCentroid(hB), node, farNode)) continue;
+                        bestA = hA;
+                        bestB = hB;
+                        break;
+                    }
+                    if (bestA < 0) { deferredHops.Add(hops[0]); continue; }
+                    AddExtraLink(extraLinks, bestA, bestB);
                     overflowLinks++;
                 }
             }
         }
+
+        // SC-NAV-SEAM-BARRIER restore — a hop that only crossed barriers is dropped
+        // when its two ends are joined some other way (the fence pen has its gate),
+        // but kept when it is the only thing holding the two pieces of mesh
+        // together: an over-eager barrier verdict must not strand floor that the
+        // pre-barrier stitcher left reachable.
+        if (deferredHops.Count > 0)
+        {
+            var parent = new int[triCount];
+            for (int i = 0; i < triCount; i++) parent[i] = i;
+            int Find(int x)
+            {
+                while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+                return x;
+            }
+            void Union(int x, int y) { x = Find(x); y = Find(y); if (x != y) parent[x] = y; }
+            for (int t = 0; t < triCount; t++)
+                for (int s = 0; s < 3; s++)
+                    if (neighbors[3 * t + s] >= 0) Union(t, neighbors[3 * t + s]);
+            foreach (var (t, links) in extraLinks)
+                foreach (var nb in links) Union(t, nb);
+            deferredHops.Sort((x, y) => x.score.CompareTo(y.score));
+            foreach (var (a, b, _) in deferredHops)
+            {
+                if (Find(a) == Find(b)) { overflowBarrierRejects++; continue; }
+                Union(a, b);
+                AddExtraLink(extraLinks, a, b);
+                overflowLinks++;
+            }
+        }
         return stitched;
+    }
+
+    private static void AddExtraLink(Dictionary<int, List<int>> extraLinks, int a, int b)
+    {
+        if (!extraLinks.TryGetValue(a, out var la)) extraLinks[a] = la = new List<int>();
+        if (!la.Contains(b)) la.Add(b);
+        if (!extraLinks.TryGetValue(b, out var lb)) extraLinks[b] = lb = new List<int>();
+        if (!lb.Contains(a)) lb.Add(a);
     }
 
     /// <summary>Wires cross-kind adjacencies for Floor↔Water boundary edges that visually
