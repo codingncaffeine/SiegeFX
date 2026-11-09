@@ -122,6 +122,50 @@ public static class AnimationRuntime
             skinOut[i] = mesh.InverseBindMatrices[i] * worldAnim[i];
     }
 
+    /// <summary>SC-PROP-REST-POSE — the whole-mesh offset a skinned prop's
+    /// rest clip puts on it: the root (parentless) bone's skin matrix at
+    /// <paramref name="timeSec"/>. DS1 draws a GO through its animation, so
+    /// a constant root track that differs from the mesh bind moves the entire
+    /// prop. Every shipped lever_glb_06 is the case: its press clips key
+    /// Bone01 one unit down mesh -Z from its bind, and the placements are
+    /// authored for that posed mesh (the MP teleporter buttons sit 1.15 above
+    /// the platform; the dm_r8a wall buttons 1.05 in front of the wall).
+    /// Drawn at bind, the button hung a unit off its surface.
+    ///
+    /// Only a root the clip HOLDS still counts: a root that travels during
+    /// the clip (statue_cav_rise_01 rises out of the floor) is motion, not an
+    /// authoring offset, and which end of it DS1 starts at is a state
+    /// question this helper doesn't answer. Returns false (offset = identity)
+    /// when the clip keys no root bone, the root moves, or it matches the
+    /// bind.</summary>
+    public static bool TryRootRestOffset(AspMesh mesh, PrsAnimation clip, out Matrix4x4 offset)
+    {
+        offset = Matrix4x4.Identity;
+        if (mesh.BoneCount == 0 || mesh.InverseBindMatrices.Length != mesh.BoneCount) return false;
+        int root = -1;
+        for (var i = 0; i < mesh.BoneCount; i++)
+            if (mesh.BoneParents[i] < 0) { root = i; break; }
+        if (root < 0) return false;
+        var map = GetBoneMap(mesh, clip);
+        if (map[root] < 0 || clip.BoneKeys[map[root]] is null) return false;
+        var m = ComputeSkinMatrices(mesh, clip, 0f)[root];
+        if (!NearlyEqual(m, ComputeSkinMatrices(mesh, clip, clip.AnimLength * 0.5f)[root])
+            || !NearlyEqual(m, ComputeSkinMatrices(mesh, clip, clip.AnimLength)[root]))
+            return false;
+        if (NearlyEqual(m, Matrix4x4.Identity)) return false;
+        offset = m;
+        return true;
+    }
+
+    static bool NearlyEqual(in Matrix4x4 a, in Matrix4x4 b)
+    {
+        const float Eps = 1e-3f;
+        return MathF.Abs(a.M11 - b.M11) < Eps && MathF.Abs(a.M12 - b.M12) < Eps && MathF.Abs(a.M13 - b.M13) < Eps
+            && MathF.Abs(a.M21 - b.M21) < Eps && MathF.Abs(a.M22 - b.M22) < Eps && MathF.Abs(a.M23 - b.M23) < Eps
+            && MathF.Abs(a.M31 - b.M31) < Eps && MathF.Abs(a.M32 - b.M32) < Eps && MathF.Abs(a.M33 - b.M33) < Eps
+            && MathF.Abs(a.M41 - b.M41) < Eps && MathF.Abs(a.M42 - b.M42) < Eps && MathF.Abs(a.M43 - b.M43) < Eps;
+    }
+
     /// <summary>Compose the per-bone animated world matrices (mesh-local) for the given
     /// clip at <paramref name="timeSec"/>. Returns one matrix per ASP bone: the bone's
     /// animated parent-space local transform walked up the hierarchy. Used by weapon/

@@ -423,6 +423,9 @@ public sealed partial class RenderHost : IDisposable
     private readonly List<StaticPropInstance> _chestProps = new();
     private readonly Dictionary<uint, StaticPropInstance> _chestsByScid = new();
     private StaticPropInstance? _pendingChestUse;
+    // SC-DOOR-USE-RANGE — a clicked door waits here until the acting
+    // character is inside its use range (walk-up-and-open, like chests).
+    private StaticPropInstance? _pendingDoorUse;
     private sealed class AutoTrapState
     {
         public uint Scid;
@@ -493,6 +496,15 @@ public sealed partial class RenderHost : IDisposable
         public int CarInstanceIdx = -1;
         public Vector3 PrevCarPos;
         public readonly List<ActorRenderState> Riders = new();
+        // SC-ELEVATOR-INSTANT — the hub teleporter's second car and its
+        // eight dock poses (InstantElevatorPlan.DockIndex); null otherwise.
+        public Matrix4x4[]? InstantPoses;
+        public SiegeFX.Core.Assets.InstantRide Ride;
+        public int Phase;              // 0 = rising at the old location, 1 = sinking at the new one
+        public bool ActionFired;       // this phase's actioninfo already sent
+        public int Car2InstanceIdx = -1;
+        public Vector3 PrevCar2Pos;
+        public readonly List<ActorRenderState> Riders2 = new();
     }
     // Delayed fade tuples from movingN_actioninfo's optional 6th field
     // ("...,in,4.5" = fire 4.5s after departure).
@@ -3385,6 +3397,8 @@ public sealed partial class RenderHost : IDisposable
             // we_req_activate at the gizmo from both lever states).
             if (_elevatorsByScid.TryGetValue(toScid, out var elv))
                 StartElevatorRide(elv);
+            else if (_pendingInstantElevators.ContainsKey(toScid))
+                RequestInstantElevator(toScid, startRide: true);
             // SC-STAIRWELL — rotate the hidden crypt stairwell.
             if (_stairwellsByScid.TryGetValue(toScid, out var sw))
                 StartStairwellRide(sw);
@@ -15013,24 +15027,35 @@ void main()
 
         // Center's stitch helper drives the new neighbor list. No file =
         // standalone region (test fixtures) → nothing to extend with.
+        // SC-ELEVATOR-INSTANT — a not-yet-loaded stitchless region (the
+        // multiplayer_world new_hub, reached only by teleporter) still
+        // streams in on its own; it lands as an island (see
+        // _islandRegionOffsets).
+        bool streamLoneCenter = !isInitial && !_loadedRegions.ContainsKey(center);
         var centerStitchPath = center + "/editor/stitch_helper.gas";
+        RegionStitchHelper? centerStitches = null;
         if (!mapReader.TryGetFile(centerStitchPath, out _))
         {
-            if (isInitial)
-                Console.WriteLine("  neighbor preload: no stitch_helper.gas — standalone region");
-            return newlyLoaded;
+            if (!streamLoneCenter)
+            {
+                if (isInitial)
+                    Console.WriteLine("  neighbor preload: no stitch_helper.gas — standalone region");
+                return newlyLoaded;
+            }
         }
-        RegionStitchHelper centerStitches;
-        try { centerStitches = RegionStitchHelper.Load(mapReader.ExtractToMemory(centerStitchPath)); }
-        catch (Exception ex)
+        else
         {
-            Console.WriteLine($"  neighbor preload: stitch parse failed for {center} ({ex.Message}) — skipping");
-            return newlyLoaded;
-        }
-        if (centerStitches.ByDestination.Count == 0)
-        {
-            if (isInitial) Console.WriteLine("  neighbor preload: 0 destination region(s) declared");
-            return newlyLoaded;
+            try { centerStitches = RegionStitchHelper.Load(mapReader.ExtractToMemory(centerStitchPath)); }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  neighbor preload: stitch parse failed for {center} ({ex.Message}) — skipping");
+                return newlyLoaded;
+            }
+            if (centerStitches.ByDestination.Count == 0 && !streamLoneCenter)
+            {
+                if (isInitial) Console.WriteLine("  neighbor preload: 0 destination region(s) declared");
+                return newlyLoaded;
+            }
         }
 
         // Map leaf names ("fh_r2") to full tank paths.
@@ -15047,7 +15072,7 @@ void main()
         // not currently in _loadedRegions.
         var toLoad = new List<string>();
         if (!_loadedRegions.ContainsKey(center)) toLoad.Add(center);
-        foreach (var destLeaf in centerStitches.ByDestination.Keys)
+        foreach (var destLeaf in centerStitches?.ByDestination.Keys ?? Enumerable.Empty<string>())
         {
             if (!pathByLeaf.TryGetValue(destLeaf, out var np)) continue;
             if (np == center) continue;
@@ -15125,7 +15150,20 @@ void main()
         foreach (var kv in _loadedRegions) entries.Add(kv.Value);
         var rootHint = (_worldRootRegion != null && _loadedRegions.ContainsKey(_worldRootRegion))
             ? _worldRootRegion : center;
-        var world = WorldLayout.Build(entries, ResolveModel, rootHint);
+        var world = WorldLayout.Build(entries, ResolveModel, rootHint, _islandRegionOffsets);
+        // SC-ELEVATOR-INSTANT — a region streamed on its own that no stitch
+        // from the loaded world reaches (the new_hub teleporter island, or a
+        // far teleporter destination) is pinned as an island so it gets
+        // world transforms at all.
+        if (!isInitial && _loadedRegions.ContainsKey(center) && !world.RegionOffsets.ContainsKey(center))
+        {
+            var sorted = pathByLeaf.Values.OrderBy(v => v, StringComparer.OrdinalIgnoreCase).ToList();
+            var offset = IslandRegionOffset(Math.Max(0, sorted.FindIndex(v => string.Equals(v, center, StringComparison.OrdinalIgnoreCase))));
+            _islandRegionOffsets[center] = offset;
+            Console.WriteLine($"  [island] '{LeafName(center)}' is not stitched to the loaded world — " +
+                              $"placed at ({offset.M41:F0},{offset.M42:F0},{offset.M43:F0})");
+            world = WorldLayout.Build(entries, ResolveModel, rootHint, _islandRegionOffsets);
+        }
         _worldLayout = world;
         // SC-SAVE-REGION (resolver) — a WORLD-WIDE position→region lookup
         // from the layout every streaming decision already trusts. The
@@ -16789,13 +16827,7 @@ void main()
                 if (!_elevatorsByScid.TryGetValue(es.Scid, out var el)) return false;
                 if (el.AtStop != es.AtStop)
                 {
-                    el.AtStop = es.AtStop;
-                    el.Moving = false;
-                    el.T = 0f;
-                    var pose = es.AtStop == 2 ? el.Stop2 : el.Stop1;
-                    el.PrevCarPos = pose.Translation;
-                    _elevatorNodeOverrides[el.Def.CarNodeGuid] = pose;
-                    UpdateElevatorCarInstance(el, pose);
+                    SnapElevatorToStop(el, es.AtStop);
                     structural = true;
                 }
                 return true;
@@ -17361,6 +17393,18 @@ void main()
                     var tex = ResolveAspTexture(asp);
                     var world = ComposePlacementWorld(asp, p.Placement);
 
+                    // SC-PROP-REST-POSE — a skinned prop whose rest clip
+                    // holds the root bone off the bind (the lever_glb_01-06
+                    // switch family: one unit down mesh -Z) is drawn by DS1
+                    // in that pose, and its placements are authored for it.
+                    // At bind, the MP teleporter button floated a unit above
+                    // the platform and wall switches stood a unit off the
+                    // wall. Applied before the scale: the MP towns' buttons
+                    // (template scale 2) sit on the platform only when the
+                    // root offset stays unscaled.
+                    if (RestPoseOffset(ts, template, asp) is { } restOffset)
+                        world = restOffset * world;
+
                     // Phase 17-SC-J — DS1 lets the placement override `aspect.scale_multiplier`
                     // (fh_r1's breakable farmhouse door bumps it to 1.5 so the destroyable
                     // variant reads visibly larger than the everyday wooden door using the
@@ -17801,6 +17845,8 @@ void main()
                                   $"template={kv.Key}  expected_tex={v.texName ?? "(none)"}");
             }
         }
+        // SC-ELEVATOR-INSTANT — objects on a car node ride the car.
+        SyncAllCarNodeProps();
     }
 
     /// <summary>Phase 21c-3 — restore the single-white-sun fallback that
@@ -22002,6 +22048,13 @@ void main()
             int carDoor = stop == 1 ? d.CarDoor1Id : d.CarDoor2Id;
             Add(d.CarNodeGuid, new SiegeFX.Core.Assets.RegionGraph.DoorLink(carDoor, connect, connectDoor));
             Add(connect, new SiegeFX.Core.Assets.RegionGraph.DoorLink(connectDoor, d.CarNodeGuid, carDoor));
+            // SC-ELEVATOR-INSTANT — the second car docks at the other location.
+            if (d.Instant is { } inst)
+            {
+                var dock = inst.Dock(1, SiegeFX.Core.Assets.InstantElevatorPlan.CarLocation(1, stop), 1);
+                Add(inst.Car2NodeGuid, new SiegeFX.Core.Assets.RegionGraph.DoorLink(dock.CarDoorId, dock.ConnectGuid, dock.ConnectDoorId));
+                Add(dock.ConnectGuid, new SiegeFX.Core.Assets.RegionGraph.DoorLink(dock.ConnectDoorId, inst.Car2NodeGuid, dock.CarDoorId));
+            }
         }
         // SC-STAIRWELL — each segment welds to the shaft at its CURRENT
         // configuration socket (the authored nodes.gas link describes only
@@ -22057,6 +22110,14 @@ void main()
         foreach (var def in defs)
         {
             if (_elevatorsByScid.ContainsKey(def.Scid)) continue; // streamed twice
+            if (def.Instant is not null)
+            {
+                // SC-ELEVATOR-INSTANT — placed once both locations are
+                // streamed; until then parked (a press streams the far end).
+                if (TryPlaceInstantElevator(def, Resolve)) placed++;
+                else { _pendingInstantElevators[def.Scid] = def; skipped++; }
+                continue;
+            }
             if (!TryGetNodeMeshGuid(def.CarNodeGuid, out var carMesh) ||
                 !TryGetNodeMeshGuid(def.Connect1Guid, out var c1Mesh) ||
                 !TryGetNodeMeshGuid(def.Connect2Guid, out var c2Mesh))
@@ -22241,15 +22302,22 @@ void main()
     /// <summary>Write <paramref name="pose"/> into the car node's render
     /// instance (found by snode guid, index cached). AABB recomputed so
     /// culling follows the platform.</summary>
-    private void UpdateElevatorCarInstance(ElevatorRuntime el, Matrix4x4 pose)
+    private void UpdateElevatorCarInstance(ElevatorRuntime el, Matrix4x4 pose) =>
+        UpdateCarNodeInstance(el.Def.CarNodeGuid, ref el.CarInstanceIdx, pose);
+
+    /// <summary>Car-node render pose + the objects placed on that node (the
+    /// hub teleporter's button rides its car). Shared by both cars of an
+    /// instant elevator.</summary>
+    private void UpdateCarNodeInstance(uint carGuid, ref int instanceIdx, Matrix4x4 pose)
     {
-        int idx = el.CarInstanceIdx;
-        if (idx < 0 || idx >= _regionInstances.Count || _regionInstances[idx].SnodeGuid != el.Def.CarNodeGuid)
+        MoveCarNodeProps(carGuid, pose);
+        int idx = instanceIdx;
+        if (idx < 0 || idx >= _regionInstances.Count || _regionInstances[idx].SnodeGuid != carGuid)
         {
             idx = -1;
             for (int i = 0; i < _regionInstances.Count; i++)
-                if (_regionInstances[i].SnodeGuid == el.Def.CarNodeGuid) { idx = i; break; }
-            el.CarInstanceIdx = idx;
+                if (_regionInstances[i].SnodeGuid == carGuid) { idx = i; break; }
+            instanceIdx = idx;
         }
         if (idx < 0) return; // car mesh not streamed — the ride still runs data-side
         var inst = _regionInstances[idx];
@@ -22260,10 +22328,12 @@ void main()
     /// <summary>Riders = player/party members standing on the car when it
     /// departs — nav-triangle snode match first (exact), AABB fallback for
     /// anyone whose follower is mid-air/off-mesh.</summary>
-    private void CaptureElevatorRiders(ElevatorRuntime el)
+    private void CaptureElevatorRiders(ElevatorRuntime el) =>
+        CaptureCarRiders(el.Def.CarNodeGuid, el.CarInstanceIdx, el.Riders);
+
+    private void CaptureCarRiders(uint carGuid, int carInstanceIdx, List<ActorRenderState> riders)
     {
-        el.Riders.Clear();
-        var carGuid = el.Def.CarNodeGuid;
+        riders.Clear();
         bool OnCar(SiegeFX.Core.Nav.NavFollower? f, Vector3 pos)
         {
             if (f is not null && _navMesh is not null)
@@ -22273,7 +22343,7 @@ void main()
                     _navMesh.SourceSnodeGuid[tri] == carGuid)
                     return true;
             }
-            int idx = el.CarInstanceIdx;
+            int idx = carInstanceIdx;
             if (idx >= 0 && idx < _regionInstances.Count)
             {
                 var inst = _regionInstances[idx];
@@ -22286,14 +22356,14 @@ void main()
         }
         if (_player is not null && !_player.IsDead &&
             OnCar(_playerFollower, _player.CurrentTransform.Translation))
-            el.Riders.Add(_player);
+            riders.Add(_player);
         foreach (var m in _party)
         {
             if (m.PartyIndex == 0 || m.IsDead) continue;
             if (OnCar(m.Brain?.Wander?.Follower, m.CurrentTransform.Translation))
-                el.Riders.Add(m);
+                riders.Add(m);
         }
-        CarryRiders(el.Riders);
+        CarryRiders(riders);
     }
 
     private SiegeFX.Core.Nav.NavFollower? RiderFollower(ActorRenderState r) =>
@@ -22350,6 +22420,7 @@ void main()
     private void StartElevatorRide(ElevatorRuntime el)
     {
         if (el.Moving) return;
+        if (el.Def.Instant is not null) { StartInstantElevatorRide(el); return; }
         el.TargetStop = el.AtStop == 1 ? 2 : 1;
         el.Moving = true;
         el.T = 0f;
@@ -23309,6 +23380,21 @@ void main()
             }
         }
 
+        // SC-DOOR-USE-RANGE — pending door walk-up (same shape as chests).
+        if (_pendingDoorUse is { } door)
+        {
+            if (door.IsDestroyed || door.DoorTargetOpen) _pendingDoorUse = null;
+            else if (ActingCharacter() is { IsDead: false } doorActor &&
+                     DoorInUseRange(door, doorActor.CurrentTransform.Translation))
+            {
+                _pendingDoorUse = null;
+                var ap = doorActor.CurrentTransform.Translation;
+                var dp = door.World.Translation;
+                Console.WriteLine($"[door] 0x{door.Scid:X8} reached: actor {MathF.Sqrt((ap.X - dp.X) * (ap.X - dp.X) + (ap.Z - dp.Z) * (ap.Z - dp.Z)):F1}u from the hinge");
+                UseDoor(door);
+            }
+        }
+
         // ALPHA-2C — pending chest walk-up (same shape as levers).
         if (_pendingChestUse is { } chest)
         {
@@ -23327,6 +23413,7 @@ void main()
             }
         }
 
+        ProcessInstantElevatorRequests();
         TickAutoTraps(dt);
         TickShrines(dt);
         TickPendingOutFades(dt);
@@ -23346,6 +23433,7 @@ void main()
         foreach (var el in _elevators)
         {
             if (!el.Moving) continue;
+            if (el.Def.Instant is not null) { TickInstantElevator(el, dt); continue; }
             el.T += dt / MathF.Max(0.25f, el.Def.DurationSeconds);
             float k = Math.Clamp(el.T, 0f, 1f);
             k = k * k * (3f - 2f * k); // ease both ends — reads as a winched platform
@@ -23368,48 +23456,7 @@ void main()
                 var final = el.AtStop == 1 ? el.Stop1 : el.Stop2;
                 UpdateElevatorCarInstance(el, final);
                 _elevatorNodeOverrides[el.Def.CarNodeGuid] = final;
-                var heldOrder = ReleaseRiders(el.Riders);
-                // Re-bake nav so the car floor welds into the arrival stop and
-                // riders can walk off. Same swap pattern as region streaming.
-                var nav = RebuildNavMesh();
-                if (nav is not null)
-                {
-                    _navMesh = nav;
-                    MarkAllObstacles();
-                    RehomeAllFollowers(nav);
-                    if (_player is not null && _playerFollower is not null)
-                    {
-                        var pos = _player.CurrentTransform.Translation;
-                        var speed = _playerFollower.Speed;
-                        _playerFollower = new SiegeFX.Core.Nav.NavFollower(nav, pos, speed)
-                        {
-                            Traversal = SiegeFX.Core.Nav.NavTraversal.Player,
-                            PartialPathFallback = true,
-                            DiagnosticLogging = true,
-                        };
-                    }
-                    // Party riders get a fresh follower on the new mesh at
-                    // their ridden position (their old follower still holds
-                    // the pre-ride mesh — see RebuildFollowerBrain remesh).
-                    foreach (var r in el.Riders)
-                    {
-                        if (ReferenceEquals(r, _player) || !r.IsPartyMember || r.IsDead) continue;
-                        var baseStats = r.Actor.Stats;
-                        var combatStats = InjectFollowerWeapon(r.Actor.Template, baseStats) ?? baseStats;
-                        RebuildFollowerBrain(r, combatStats, remesh: true);
-                    }
-                    // ALPHA-2 SHAFT RESCUE — anyone left standing where the
-                    // rebuilt mesh has no floor (the car departed under their
-                    // feet: its tris moved to the far stop, leaving an open
-                    // shaft) gets nudged to the nearest real floor. Without
-                    // this the follower's vertical re-bind gate correctly
-                    // refuses the shaft bottom 12u below — and the player
-                    // freezes over the hole with every click refused.
-                    RescueOffMeshAfterRebuild(nav);
-                }
-                el.Riders.Clear();
-                if (heldOrder is { } ho) _playerFollower?.SetTarget(ho);
-                Console.WriteLine($"[elevator] 0x{el.Def.Scid:X8} arrived at stop{el.AtStop}");
+                CompleteElevatorArrival(el, el.Riders);
             }
         }
 
@@ -23972,14 +24019,14 @@ void main()
             Console.WriteLine($"  auto-traps: {added} armed ({_autoTraps.Count} total)");
     }
 
-    // SC-DOORS-OPEN — a left-click that lands on/near a door opens it (DS1
+    // SC-DOORS-OPEN — a left-click that lands on/near a door picks it (DS1
     // doors are click-to-use, not proximity). The click ray is resolved
     // against the navmesh, so a tall door's base sits at ~hit; the door's
     // World.Translation is its hinge (the asp origin), and the leaf reaches
     // ~1.6u from there, so a ~2u radius covers a click anywhere on the leaf.
-    private void OpenDoorNear(Vector3 worldPoint)
+    private StaticPropInstance? PickDoorNear(Vector3 worldPoint)
     {
-        if (_doorProps.Count == 0) return;
+        if (_doorProps.Count == 0) return null;
         StaticPropInstance? best = null;
         float bestD2 = 2.0f * 2.0f;
         foreach (var d in _doorProps)
@@ -23990,8 +24037,23 @@ void main()
             float dd = dx * dx + dz * dz;
             if (dd < bestD2) { bestD2 = dd; best = d; }
         }
-        if (best is null) return;
+        return best;
+    }
 
+    /// <summary>SC-DOOR-USE-RANGE — a click on a door queues a walk-up-and-
+    /// open: the acting character walks to the click and the door opens
+    /// only once they are inside its [aspect] use_range (TickElevators). A
+    /// click that misses every door clears any pending open.</summary>
+    private void RequestDoorUseNear(Vector3 worldPoint) => _pendingDoorUse = PickDoorNear(worldPoint);
+
+    private bool DoorInUseRange(StaticPropInstance door, Vector3 actorPos) =>
+        SiegeFX.Core.Geometry.UseRange.DoorInRange(actorPos, door.World, door.Mesh.Min, door.Mesh.Max, door.DoorUseRange);
+
+    /// <summary>Use a door right now (range already satisfied, or a use the
+    /// host has accepted).</summary>
+    private void UseDoor(StaticPropInstance best)
+    {
+        if (best.IsDestroyed || best.DoorTargetOpen) return;
         // ALPHA-2E — use_toggle doors are scripted gates: clicking shows the
         // authored stuck/locked line; only a quest message opens them.
         if (best.DoorUseToggle)
@@ -25181,6 +25243,51 @@ void main()
             }
         }
         return false;
+    }
+
+    // SC-PROP-REST-POSE — per (template, mesh) rest offset, and the rest
+    // clips by basename (null = not found / no offset).
+    private readonly Dictionary<(string Template, AspMesh Mesh), Matrix4x4?> _restPoseOffsetCache = new();
+    private readonly Dictionary<string, SiegeFX.Core.Assets.PrsAnimation?> _restClipCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>SC-PROP-REST-POSE — the mesh-space offset DS1's rest pose puts
+    /// on a static skinned prop (see <see cref="SiegeFX.Core.Assets.PropRestPose"/>),
+    /// or null. Rigid-root props keep their bone-0 correction from
+    /// <see cref="ComposePlacementWorld"/> and are left alone.</summary>
+    private Matrix4x4? RestPoseOffset(SiegeFX.Core.Assets.TemplateStore store,
+        SiegeFX.Core.Assets.Template template, AspMesh asp)
+    {
+        if (asp.BindPose.Length < 2 || IsRigidRootProp(asp) || _playResolver is null) return null;
+        var key = (template.Name, asp);
+        if (_restPoseOffsetCache.TryGetValue(key, out var cached)) return cached;
+        Matrix4x4? result = null;
+        try
+        {
+            if (SiegeFX.Core.Assets.PropRestPose.TryRestOffset(store, template, asp, LoadRestClip, out var off))
+            {
+                result = off;
+                Console.WriteLine($"  [rest-pose] {template.Name} drawn in its rest pose (root offset {off.Translation})");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  [rest-pose] {template.Name}: {ex.Message}");
+        }
+        _restPoseOffsetCache[key] = result;
+        return result;
+    }
+
+    private SiegeFX.Core.Assets.PrsAnimation? LoadRestClip(string basename)
+    {
+        if (_restClipCache.TryGetValue(basename, out var hit)) return hit;
+        SiegeFX.Core.Assets.PrsAnimation? clip = null;
+        if (_playResolver is not null && _playResolver.TryLoadByBasename(basename, out var bytes))
+        {
+            try { clip = SiegeFX.Core.Assets.PrsAnimation.Load(bytes); }
+            catch { clip = null; }
+        }
+        _restClipCache[basename] = clip;
+        return clip;
     }
 
     private Matrix4x4 ComposePlacementWorld(AspMesh asp, SiegeFX.Core.Assets.NodePlacement p)
@@ -31601,10 +31708,10 @@ void main()
         // SC-NAV-PARTIAL-PATH — the whole-mesh fallback is for PLAYER orders
         // only (opt-in; ambient wanderers keep cheap fail-and-reroll).
         _playerFollower.PartialPathFallback = true;
-        // SC-DOORS-OPEN — clicking on/near a door opens it regardless of who
-        // is selected (retail: the first-selected character works doors; the
-        // ordered members walk to the click and pass through).
-        OpenDoorNear(hit);
+        // SC-DOORS-OPEN / SC-DOOR-USE-RANGE — clicking on/near a door queues
+        // a walk-up-and-open for the acting (first-selected) character
+        // below; it opens once they reach use range, never from afar.
+        _pendingDoorUse = null;
         // SC-FIRST-SELECTED (blindspot E3) — a member-only selection can
         // work levers/chests/usables too: the request latches queue the
         // same way, and their arrival checks test the ACTING character
@@ -31618,6 +31725,8 @@ void main()
             RequestLeverUseNear(near, dir, hit);
             // ALPHA-2C — same walk-up pattern for chests.
             RequestChestUseNear(hit);
+            // SC-DOOR-USE-RANGE — and for doors.
+            RequestDoorUseNear(hit);
             // ALPHA-2E — and for locked usables (Star Device).
             RequestLockedUseNear(hit);
             if (heroSelected)
@@ -44499,6 +44608,7 @@ void main()
         _chestProps.Clear();
         _chestsByScid.Clear();
         _pendingChestUse = null;
+        _pendingDoorUse = null;
         _autoTraps.Clear();
         // ALPHA-2D — shrines re-register with their regions.
         _shrinesByScid.Clear();
@@ -45862,13 +45972,7 @@ void main()
         {
             if (!_elevatorsByScid.TryGetValue(es.Scid, out var el)) return false;
             if (el.AtStop == es.AtStop) return false;
-            el.AtStop = es.AtStop;
-            el.Moving = false;
-            el.T = 0f;
-            var pose = es.AtStop == 2 ? el.Stop2 : el.Stop1;
-            el.PrevCarPos = pose.Translation;
-            _elevatorNodeOverrides[el.Def.CarNodeGuid] = pose;
-            UpdateElevatorCarInstance(el, pose);
+            SnapElevatorToStop(el, es.AtStop);
             return true;
         }
 
