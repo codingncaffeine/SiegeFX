@@ -29061,6 +29061,14 @@ void main()
         {
             // Re-sync staged from live so a re-Open starts clean.
             _optionsMenu.SyncStagedFromLive();
+            // Audio sliders apply live during drag (AudioStagedChanged). Cancel
+            // must restore the engine to the pre-edit Live values so the sound
+            // matches the slider positions on the next Open.
+            ApplyOptionsAudio();
+            // Input + Game tabs also apply runtime knobs live; restore them too.
+            ApplyOptionsRuntime();
+            // ALPHA-2V — Video/Advanced graphics knobs apply live as well.
+            ApplyGraphicsRuntime();
             _optionsMenu.ClearEdgeFlags();
         }
         else if (_optionsMenu.DefaultsRequestedThisFrame)
