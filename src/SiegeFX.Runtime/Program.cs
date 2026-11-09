@@ -48,6 +48,10 @@ System.Threading.Tasks.TaskScheduler.UnobservedTaskException += (_, e) =>
 // write so a forced quit still leaves a valid log. The per-user folders are
 // looked up with DoNotVerify (see SaveStore.DefaultSaveDirectory).
 var teePath = System.Environment.GetEnvironmentVariable("SIEGEFX_DEBUG_LOG_FILE");
+// The default session log stamps each line with the wall-clock time (to
+// line it up with a screen recording); a directed SIEGEFX_DEBUG_LOG_FILE
+// log stays unstamped for the test scripts that grep it.
+bool stampLog = string.IsNullOrWhiteSpace(teePath);
 if (string.IsNullOrWhiteSpace(teePath))
 {
     var logDir = System.IO.Path.Combine(
@@ -71,7 +75,7 @@ try
     if (!string.IsNullOrEmpty(teeDir)) System.IO.Directory.CreateDirectory(teeDir);
     var fs = new System.IO.FileStream(teePath, System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.Read);
     var fileWriter = new System.IO.StreamWriter(fs) { AutoFlush = true };
-    Console.SetOut(new SiegeFX.Runtime.TeeTextWriter(Console.Out, fileWriter));
+    Console.SetOut(new SiegeFX.Runtime.TeeTextWriter(Console.Out, fileWriter, stampLog));
     // ALPHA-PACKAGING — the bug-snapshot hotkey (F11) bundles this file.
     SiegeFX.Runtime.Render.RenderHost.SessionLogPath = teePath;
     Console.WriteLine($"[log] session log: {teePath}");
