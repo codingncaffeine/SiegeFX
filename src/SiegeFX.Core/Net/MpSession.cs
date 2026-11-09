@@ -290,7 +290,7 @@ public sealed class MpSession : IDisposable
     public MpSession(ISessionTransport transport, bool isHost, string localName)
     {
         _t = transport; IsHost = isHost; _localName = localName ?? "Player";
-        _t.PeerDisconnected += OnPeerGone;
+        _t.PeerDisconnected += QueuePeerGone;
         if (IsHost) _roster[0] = new MpRosterEntry(0, _localName, true, 0);
     }
 
@@ -335,6 +335,13 @@ public sealed class MpSession : IDisposable
         OnRoster?.Invoke(Roster);
         Broadcast(BuildRosterFrame());
     }
+
+    // Transports raise PeerDisconnected from their own threads (the LAN
+    // keepalive task, EOS callbacks). OnPeerGone fires OnPlayerLeft, whose
+    // handlers edit the render host's actor list, so it must run on the
+    // thread that ticks the session — queue it and drain it in Tick.
+    readonly System.Collections.Concurrent.ConcurrentQueue<int> _gonePeers = new();
+    void QueuePeerGone(int peer) => _gonePeers.Enqueue(peer);
 
     void OnPeerGone(int peer)
     {
@@ -546,6 +553,8 @@ public sealed class MpSession : IDisposable
     /// Call once per engine frame with the frame dt.</summary>
     public void Tick(double dt)
     {
+        while (_gonePeers.TryDequeue(out int gone))
+            OnPeerGone(gone);
         SecondsSinceHost += dt;
         // The game clock runs while a game is under way and not paused.
         if (!Paused && (IsHost ? InProgress is not null : _joined)) GameSeconds += dt;
@@ -1226,7 +1235,7 @@ public sealed class MpSession : IDisposable
 
     public void Dispose()
     {
-        _t.PeerDisconnected -= OnPeerGone;
+        _t.PeerDisconnected -= QueuePeerGone;
     }
 }
 
