@@ -28808,8 +28808,12 @@ void main()
         }
     }
 
+    /// <summary>God mode: the hero takes no damage, and life and mana stay
+    /// full. Set every update, so it follows the hero across a load or a new
+    /// player actor, and clears when switched off.</summary>
     private void TickDevGodMode()
     {
+        if (_player is not null) _player.Actor.Combat.Invulnerable = _devGodMode;
         if (!_devGodMode || _player is null || _player.IsDead) return;
         var st = _player.Actor.Stats;
         _player.Actor.Combat.Heal(st.MaxLife);
