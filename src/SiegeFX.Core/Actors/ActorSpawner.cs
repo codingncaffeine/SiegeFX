@@ -178,6 +178,17 @@ public sealed class ActorSpawner
             return null;
         }
 
+        // SC-NPC-ARMOR — worn body armor selects the pos_aN body mesh (plate =
+        // a3). Only for plain spawns: hero/avatar picks carry their own model.
+        if (DressArmoredBodies && overrides is null
+            && SiegeFX.Core.Assets.EquipmentResolver.ArmoredBodyModel(_store, modelName,
+                SiegeFX.Core.Assets.EquipmentResolver.CollectActorSlots(_store, template, inst.Node)) is { } armored
+            && GetOrLoadMesh(armored) is { } armoredMesh)
+        {
+            modelName = armored;
+            mesh = armoredMesh;
+        }
+
         // chore_default is every actor's idle. Its {prefix, stance list, suffix} triple
         // composes one PRS clip; the skrit lives alongside under `skrit = NAME`.
         var chorePrefix = _store.GetAttribute(template, "body", "chore_dictionary", "chore_prefix");
@@ -360,6 +371,21 @@ public sealed class ActorSpawner
         if (_layout is null) return local;
         if (!_layout.TryGetTransform(p.NodeGuid, out var nodeWorld)) return local;
         return local * nodeWorld;
+    }
+
+    /// <summary>SC-NPC-ARMOR — when true (default), a plain spawn whose worn
+    /// chest armor names another body type (plate = a3) spawns on that pos_aN
+    /// body mesh, as DS1 does. The host turns it off around the hero spawn,
+    /// whose armor is a live texture swap on a fixed body.</summary>
+    public bool DressArmoredBodies { get; set; } = true;
+
+    /// <summary>The model name a spawned actor's <see cref="Actor.Mesh"/> was
+    /// loaded from (meshes are cached per name), or null.</summary>
+    public string? ModelNameOf(AspMesh mesh)
+    {
+        foreach (var (name, m) in _meshCache)
+            if (ReferenceEquals(m, mesh)) return name;
+        return null;
     }
 
     AspMesh? GetOrLoadMesh(string modelName)
