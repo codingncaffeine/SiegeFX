@@ -506,7 +506,7 @@ public sealed class TriggerRuntime
                 // posts targeted at trig.Scid. Match is by message name (arg 0).
                 if (cond.Args.Count == 0) return false;
                 var name = cond.Args[0];
-                return state.ConsumeReceivedMessage(name);
+                return state.ConsumeReceivedMessage(name, MessageQualifier(cond));
             }
             default:
                 return false;
@@ -555,7 +555,7 @@ public sealed class TriggerRuntime
                 var scriptName = act.Args[0];
                 IReadOnlyList<string>? scriptArgs =
                     act.Args.Count > 1 ? act.Args.Skip(1).ToList() : null;
-                ctx.CallSfxScript(scriptName, scriptArgs, trig.Position);
+                ctx.CallSfxScript(scriptName, scriptArgs, trig.Position, trig.Scid);
                 return;
             }
             // ALPHA-2B — runtime camera-flag flips on a specific snode:
@@ -593,7 +593,10 @@ public sealed class TriggerRuntime
     /// message into every row's pending-message inbox; rows whose
     /// <c>receive_world_message</c> condition matches will consume the stamp on their
     /// next eval.</summary>
-    public void PostInboundMessage(uint targetScid, string name)
+    /// <param name="data">SC-ANIM-SFX — the message's qualifier, matched
+    /// against a <c>receive_world_message(name, N)</c> condition's N
+    /// (WE_ANIM_SFX carries its SFX note number). Null = none.</param>
+    public void PostInboundMessage(uint targetScid, string name, int? data = null)
     {
         // SC-TRIGGER-ARM — we_trigger_activate/_deactivate are ACTIVATION
         // messages, not inbox messages: they flip the instance's IsActive.
@@ -607,9 +610,14 @@ public sealed class TriggerRuntime
             if (_instances[i].Scid != targetScid) continue;
             if (arm) _instances[i].IsActive = true;
             else if (disarm) _instances[i].IsActive = false;
-            else _instances[i].DepositMessage(name);
+            else _instances[i].DepositMessage(name, data);
         }
     }
+
+    /// <summary>The integer second argument of a receive_world_message
+    /// condition, or null when it authors none.</summary>
+    internal static int? MessageQualifier(TriggerCall cond) =>
+        TryIntArg(cond, 1, out var q) ? q : null;
 
     static bool TryFloatArg(TriggerCall call, int idx, out float v)
     {
@@ -683,8 +691,20 @@ public struct TriggerRowState
     /// run more than a couple deep between ticks.</summary>
     InboundMessages _inbox;
 
-    public void DepositMessage(string name) => _inbox.Push(name);
-    public bool ConsumeReceivedMessage(string name) => _inbox.TryConsume(name);
+    /// <param name="data">SC-ANIM-SFX — the message's qualifier (WE_ANIM_SFX
+    /// carries its note number 1-4); null when the poster sends none.</param>
+    public void DepositMessage(string name, int? data = null) => _inbox.Push(new(name, data));
+    /// <param name="qualifier">The condition's second argument
+    /// (<c>receive_world_message("we_anim_sfx",1)</c>). A message and a
+    /// condition that both carry one must agree; either side without one
+    /// matches by name alone (the pre-qualifier behavior).</param>
+    public bool ConsumeReceivedMessage(string name, int? qualifier = null) => _inbox.TryConsume(name, qualifier);
+
+    readonly record struct Msg(string Name, int? Data)
+    {
+        public bool Matches(string name, int? qualifier) =>
+            Name == name && (qualifier is null || Data is null || Data == qualifier);
+    }
 
     struct InboundMessages
     {
@@ -692,23 +712,23 @@ public struct TriggerRowState
         // dropped — DS1's tightest trigger chain is never that deep, and a runaway
         // would be a content authoring bug we'd rather catch as "missed expected
         // message" than silently grow an unbounded queue.
-        string? _m0, _m1, _m2, _m3;
+        Msg? _m0, _m1, _m2, _m3;
 
-        public void Push(string name)
+        public void Push(Msg m)
         {
-            if (_m0 is null) { _m0 = name; return; }
-            if (_m1 is null) { _m1 = name; return; }
-            if (_m2 is null) { _m2 = name; return; }
-            if (_m3 is null) { _m3 = name; return; }
+            if (_m0 is null) { _m0 = m; return; }
+            if (_m1 is null) { _m1 = m; return; }
+            if (_m2 is null) { _m2 = m; return; }
+            if (_m3 is null) { _m3 = m; return; }
             // Inbox full — silently drop. Future SC can add an overflow counter.
         }
 
-        public bool TryConsume(string name)
+        public bool TryConsume(string name, int? qualifier)
         {
-            if (_m0 is not null && _m0 == name) { Compact(0); return true; }
-            if (_m1 is not null && _m1 == name) { Compact(1); return true; }
-            if (_m2 is not null && _m2 == name) { Compact(2); return true; }
-            if (_m3 is not null && _m3 == name) { Compact(3); return true; }
+            if (_m0 is { } a && a.Matches(name, qualifier)) { Compact(0); return true; }
+            if (_m1 is { } b && b.Matches(name, qualifier)) { Compact(1); return true; }
+            if (_m2 is { } c && c.Matches(name, qualifier)) { Compact(2); return true; }
+            if (_m3 is { } d && d.Matches(name, qualifier)) { Compact(3); return true; }
             return false;
         }
 
@@ -782,12 +802,28 @@ public sealed class TriggerInstance
 
     public ref TriggerRowState RowStateAt(int rowIndex) => ref _rowStates[rowIndex];
 
-    public void DepositMessage(string name)
+    public void DepositMessage(string name, int? data = null)
     {
         // Every row of the matrix sees the same inbox stream — DS1 trigger rows are
         // sibling listeners, not exclusive. Each row consumes (or doesn't) on its
-        // own evaluation pass.
-        for (int i = 0; i < _rowStates.Length; i++) _rowStates[i].DepositMessage(name);
+        // own evaluation pass. SC-ANIM-SFX — only rows that listen for this message
+        // get it: a row never consumes what it doesn't listen for, so a looping
+        // anim's WE_ANIM_SFX(2) used to pile up in the SFX1 row's 4-slot inbox and,
+        // once full, the inbox dropped the messages that row did want.
+        for (int i = 0; i < _rowStates.Length; i++)
+            if (Listens(Matrix.Rows[i], name, data)) _rowStates[i].DepositMessage(name, data);
+    }
+
+    static bool Listens(TriggerRow row, string name, int? data)
+    {
+        foreach (var c in row.Conditions)
+        {
+            if (!c.Verb.Equals("receive_world_message", StringComparison.OrdinalIgnoreCase)) continue;
+            if (c.Args.Count == 0 || c.Args[0] != name) continue;
+            var q = TriggerRuntime.MessageQualifier(c);
+            if (q is null || data is null || q == data) return true;
+        }
+        return false;
     }
 }
 
@@ -841,5 +877,8 @@ public class TriggerContext
     /// implementation is a no-op so the audit CLI's headless context can still
     /// drive trigger fan-out without dragging the Runtime project in. Live
     /// hosts override to dispatch into <c>SfxRuntime</c>.</summary>
-    public virtual void CallSfxScript(string scriptName, IReadOnlyList<string>? args, Vector3 origin) { }
+    /// <param name="ownerScid">The trigger's SCID. For an actor's own
+    /// [template_triggers] (the blacksmith's hammer sparks) the host plays the
+    /// script where that actor stands now, not where it spawned.</param>
+    public virtual void CallSfxScript(string scriptName, IReadOnlyList<string>? args, Vector3 origin, uint ownerScid) { }
 }

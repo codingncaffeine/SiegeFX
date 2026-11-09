@@ -560,6 +560,8 @@ static int CmdPrsInfo(string[] a)
     Console.WriteLine($"Length      : {prs.AnimLength:F4} s");
     Console.WriteLine($"Root travel : ({prs.RootTravel.X:F2}, {prs.RootTravel.Y:F2}, {prs.RootTravel.Z:F2})");
     Console.WriteLine($"Notes       : {prs.Notes.Count}");
+    foreach (var n in prs.Notes)
+        Console.WriteLine($"  t={n.Time:F3}  '{System.Text.Encoding.ASCII.GetString(BitConverter.GetBytes(n.Token))}' (0x{n.Token:X8})");
     Console.WriteLine($"Tracers     : {prs.TracerCount}");
 
     int bonesKeyed = 0, totalRot = 0, totalPos = 0;

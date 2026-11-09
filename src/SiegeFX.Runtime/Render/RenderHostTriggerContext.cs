@@ -78,9 +78,9 @@ internal sealed class RenderHostTriggerContext : TriggerContext
         _host.OnTriggerSetInterestRadius(radius);
     }
 
-    public override void CallSfxScript(string scriptName, IReadOnlyList<string>? args, Vector3 origin)
+    public override void CallSfxScript(string scriptName, IReadOnlyList<string>? args, Vector3 origin, uint ownerScid)
     {
-        _host.OnTriggerCallSfxScript(scriptName, args, origin);
+        _host.OnTriggerCallSfxScript(scriptName, args, origin, ownerScid);
     }
 
     public override void FadeNodes(string verb, IReadOnlyList<string> args)
