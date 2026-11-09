@@ -501,6 +501,9 @@ public sealed class HeroVariantSnapshot
     /// <summary>Two-digit zero-padded skin suffix (e.g. "07"). Null = no override.</summary>
     public string? SkinSuffix { get; set; }
 
+    /// <summary>Three-digit zero-padded hair suffix (e.g. "001"). Null = no override.</summary>
+    public string? HairSuffix { get; set; }
+
     /// <summary>Three-digit zero-padded pants suffix (e.g. "015"). Null = no override.</summary>
     public string? PantsSuffix { get; set; }
 

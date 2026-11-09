@@ -163,7 +163,8 @@ internal sealed class HeroVariantPicker
     {
         if (!HeroBodies.IsFarm(Gender)) return null;   // the dwarf and skeleton keep their own look
         if (BodyTypeIdx < 0 && SkinSuffix is null && HairSuffix is null
-            && PantsSuffix is null && ShirtIdx == 0) return null;
+            && PantsSuffix is null && ShirtIdx == 0 && FaceIdx == 0
+            && StyleIdx == 0 && ColorIdx == 0 && PantsIdx == 0) return null;
 
         var armorVersion = store.GetAttribute(template, "body", "armor_version");
         if (string.IsNullOrEmpty(armorVersion)) return null;
@@ -185,19 +186,23 @@ internal sealed class HeroVariantPicker
         // trampling Face's neighbour. Both buttons therefore drive a visible
         // change without runtime atlas composition (which broke face
         // details when we tried it).
+        // The composite indices (FaceIdx, ColorIdx) are the primary drivers —
+        // they are what the UI spinners modify. SkinSuffix/HairSuffix provide
+        // the base offset when set (e.g. from a saved character), but the
+        // composite indices always determine the final visual result.
         string? skinOverride = null;
-        if (SkinSuffix is not null)
         {
-            int faceIdx = 1;
-            int.TryParse(SkinSuffix, System.Globalization.NumberStyles.Integer,
-                System.Globalization.CultureInfo.InvariantCulture, out faceIdx);
-            int hairIdx = 1;
+            int faceBase = 0;
+            if (SkinSuffix is not null)
+                int.TryParse(SkinSuffix, System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out faceBase);
+            int hairBase = 0;
             if (HairSuffix is not null)
                 int.TryParse(HairSuffix, System.Globalization.NumberStyles.Integer,
-                    System.Globalization.CultureInfo.InvariantCulture, out hairIdx);
+                    System.Globalization.CultureInfo.InvariantCulture, out hairBase);
             const int SkinRange = 32;
             const int HairStride = 7;
-            int folded = ((faceIdx - 1) + (hairIdx - 1) * HairStride) % SkinRange;
+            int folded = ((faceBase + FaceIdx) + (hairBase + ColorIdx) * HairStride) % SkinRange;
             if (folded < 0) folded += SkinRange;
             int finalIdx = folded + 1;
             string finalSuffix = finalIdx.ToString(System.Globalization.CultureInfo.InvariantCulture).PadLeft(2, '0');
@@ -206,15 +211,18 @@ internal sealed class HeroVariantPicker
 
         // Pants atlas folds Shirt and Pants identically — DS1 packs both into
         // one b_c_pos_aN_NNN.raw with no separate shirt file.
+        // The composite indices (ShirtIdx, PantsIdx) are the primary drivers.
+        // PantsSuffix provides the base offset when set (e.g. from a saved
+        // character), but the composite indices always determine the final result.
         string? pantsOverride = null;
-        if (PantsSuffix is not null)
         {
-            int basePants = 1;
-            int.TryParse(PantsSuffix, System.Globalization.NumberStyles.Integer,
-                System.Globalization.CultureInfo.InvariantCulture, out basePants);
+            int basePants = 0;
+            if (PantsSuffix is not null)
+                int.TryParse(PantsSuffix, System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out basePants);
             const int PantsRange = 41;
             const int ShirtStride = 7;
-            int folded = ((basePants - 1) + ShirtIdx * ShirtStride) % PantsRange;
+            int folded = ((basePants + PantsIdx) + ShirtIdx * ShirtStride) % PantsRange;
             if (folded < 0) folded += PantsRange;
             int finalIdx = folded + 1;
             string finalSuffix = finalIdx.ToString(System.Globalization.CultureInfo.InvariantCulture).PadLeft(3, '0');
