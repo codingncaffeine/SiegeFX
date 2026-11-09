@@ -67,8 +67,9 @@ public sealed class Actor
     public ActorCombatState Combat { get; }
 
     /// <summary>SC-IDLE-FIDGET — the clip an undirected actor idles on: the
-    /// template's authored <c>initial_chore</c> when it loaded, else clip 0
-    /// (chore_default). DS1 authors <c>initial_chore = chore_fidget</c> on
+    /// template's authored <c>initial_chore</c> when it loaded, else
+    /// chore_fidget when chore_default is a frozen one-frame stance (see
+    /// <see cref="ActorIdle"/>), else clip 0 (chore_default). DS1 authors <c>initial_chore = chore_fidget</c> on
     /// actors whose default stance is a STATIC pose — the phrak's default
     /// <c>dfs</c> is a frozen glide; its fidget <c>dff</c> is the wing-flap
     /// hover. Falling back to clip 0 left idle flyers frozen mid-air.
@@ -80,20 +81,31 @@ public sealed class Actor
     /// <summary>Current blender-selected clip. Clamped to the legal range so the caller
     /// can index <see cref="Clips"/> blindly; defaults to <see cref="IdleClipIndex"/>
     /// before the first dispatch resolves.</summary>
-    public int CurrentClipIndex
+    public int CurrentClipIndex =>
+        ResolveClipIndex(Host.CurrentAnimIndex, Clips.Length, IdleClipIndex,
+                         Buried, Awakened, Host.IsOverrideActive);
+
+    /// <summary>The clip-pick rule behind <see cref="CurrentClipIndex"/>, kept
+    /// pure so it is testable without a mesh. <paramref name="h"/> is the
+    /// blender's index (-1 before the first dispatch).</summary>
+    public static int ResolveClipIndex(int h, int clipCount, int idleClipIndex,
+                                       bool buried, bool awakened, bool overrideActive)
     {
-        get
-        {
-            int idle = IdleClipIndex >= 0 && IdleClipIndex < Clips.Length ? IdleClipIndex : 0;
-            int h = Host.CurrentAnimIndex;
-            if (Buried && !Host.IsOverrideActive) return 0;
-            if (h < 0 || h >= Clips.Length) return idle;
-            // SC-BURROWER — once awake, an actor whose chore_default is its
-            // buried pose idles in its initial chore (the skrubb peeking
-            // from its mound) when the script asks for the default.
-            if (h == 0 && Awakened) return idle;
-            return h;
-        }
+        int idle = idleClipIndex >= 0 && idleClipIndex < clipCount ? idleClipIndex : 0;
+        if (buried && !overrideActive) return 0;
+        if (h < 0 || h >= clipCount) return idle;
+        // SC-BURROWER — once awake, an actor whose chore_default is its
+        // buried pose idles in its initial chore (the skrubb peeking
+        // from its mound) when the script asks for the default.
+        if (h == 0 && awakened) return idle;
+        // SC-IDLE-FIDGET — the chore_default skrit (infinite_loop) asks for
+        // index 0 the moment it starts, so the idle clip has to win over a
+        // skrit-driven 0 too. Before, IdleClipIndex only showed in the
+        // instant before the first dispatch, and an actor whose default is a
+        // frozen one-frame stance (the blacksmith's ds) never left it. An
+        // explicit override of clip 0 still shows clip 0.
+        if (h == 0 && !overrideActive) return idle;
+        return h;
     }
 
     /// <summary>SC-BURROWER — a startup_reveal monster before it wakes: it
