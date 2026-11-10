@@ -41971,15 +41971,12 @@ void main()
                     };
                     model = spin * prop.World;
                 }
-                // SC-DOORS-OPEN — apply door rotation per state, in LOCAL
-                // space (multiplied BEFORE the placement transform) so it
-                // pivots around the authored asp origin (the hinge, at
-                // local X=0). DS1 door .asp geometry is authored Z-up — the
-                // height runs along Z and the placement world bakes the
-                // Z-up→Y-up standup — so the vertical hinge axis in this
-                // pre-world frame is Z, not Y. Rotating around Y instead
-                // swept the leaf through the width×height plane: the door
-                // spun like a clock dial rather than swinging out.
+                // SC-DOORS-OPEN — apply door rotation per state.
+                // The door mesh origin sits at the hinge edge (local X=0).
+                // DS1 door .asp geometry is authored Z-up — the height runs
+                // along Z and the placement world bakes the Z-up→Y-up standup,
+                // so the vertical hinge axis in this pre-world mesh frame is Z,
+                // not Y.
                 if (prop.IsDoor && prop.DoorOpenFrac > 0.001f)
                 {
                     // Wall doors hinge on the vertical Z axis; bulkhead/storm
@@ -41989,7 +41986,35 @@ void main()
                     var swing = prop.DoorIsFlip
                         ? Matrix4x4.CreateRotationY(ang)
                         : Matrix4x4.CreateRotationZ(ang);
-                    model = swing * prop.World;
+
+                    // The door mesh may be centered (geometry symmetric around origin)
+                    // or hinged (geometry extends from one edge at the origin).
+                    // We detect which by checking if the mesh X-extents are symmetric
+                    // around 0 (centered) or asymmetric (hinged at one edge).
+                    float xMin = prop.Mesh.Min.X;
+                    float xMax = prop.Mesh.Max.X;
+                    bool isCentered = MathF.Abs(xMin + xMax) < 0.01f && (xMax - xMin) > 0.01f;
+                    if (isCentered)
+                    {
+                        float hingeX;
+                        if (prop.DoorSwingSign > 0)
+                        {
+                            hingeX = xMin;
+                        }
+                        else
+                        {
+                            hingeX = xMax;
+                        }
+                        var toHinge = Matrix4x4.CreateTranslation(-hingeX, 0f, 0f);
+                        var fromHinge = Matrix4x4.CreateTranslation(hingeX, 0f, 0f);
+                        var swingAtHinge = fromHinge * swing * toHinge;
+                        model = swingAtHinge * prop.World;
+                    }
+                    else
+                    {
+                        model = swing * prop.World;
+                    }
+
                 }
                 _meshShader.SetMatrix4("uModel", model);
                 prop.Mesh.Draw();
