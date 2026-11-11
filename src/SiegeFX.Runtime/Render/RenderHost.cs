@@ -5019,6 +5019,19 @@ public sealed partial class RenderHost : IDisposable
     private double _portraitRefreshAt = -1;
     private int _portraitChainLeft;
     private const int PortraitPx = 128;
+    // The live portrait's shape and framing: the frames' shape (gas rect
+    // 13,6,52,52 = 39×46), and how much of the head shows top to bottom
+    // (crown to chin), whatever the camera's distance.
+    private const float PortraitAspect = 39f / 46f;
+    private const float PortraitViewHeight = 0.24f;
+    private const float PortraitAmbient = 0.40f;
+    private static readonly Vector3 PortraitKey = new(0.55f, 0.50f, 0.44f);
+    // character_camera.gas [portrait_camera], per hero template: where the
+    // camera stands and aims in the head bone's frame (x up the head, y out
+    // of the face, z across it). The defaults are the farm heroes'.
+    private readonly Dictionary<string, (Vector3 Viewer, Vector3 Target)> _portraitCams = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly (Vector3 Viewer, Vector3 Target) PortraitCamDefault =
+        (new Vector3(0.5f, 3.0f, -0.5f), new Vector3(0.1f, 0f, 0f));
 
     /// <summary>SC-VIEW-ROTATE — render the full equipped character to the
     /// 256² view target at the current drag yaw. Same studio-lit FBO recipe
@@ -5110,7 +5123,7 @@ public sealed partial class RenderHost : IDisposable
         _skinShader.SetInt("uDirCount", 1);
         _skinShader.SetFloat("uAmbient", 0.52f);
         Span<Vector3> vdir = stackalloc Vector3[1];
-        vdir[0] = Vector3.Normalize(at - eye);
+        vdir[0] = Vector3.Normalize(eye - at);   // toward the light (the camera), as the world's
         Span<Vector3> vcol = stackalloc Vector3[1];
         vcol[0] = new Vector3(0.85f, 0.82f, 0.75f);
         _skinShader.SetVec3Array("uDirDir", vdir);
@@ -5185,6 +5198,35 @@ public sealed partial class RenderHost : IDisposable
     /// on the GL thread; scene lighting is swapped for a fixed studio key so
     /// a dark crypt doesn't produce a black portrait, then the lighting
     /// stamp is invalidated so the world pass re-uploads its own values.</summary>
+    // Per body mesh: the head bone's own axes that point out of the face and
+    // up the head (the bind pose faces the model's +Z, up +Y).
+    private readonly Dictionary<SiegeFX.Core.Assets.AspMesh, (Vector3 Face, Vector3 Up)> _portraitHeadAxes = new();
+
+    private (Vector3 Face, Vector3 Up) PortraitHeadAxes(SiegeFX.Core.Assets.AspMesh mesh, int headIdx)
+    {
+        if (_portraitHeadAxes.TryGetValue(mesh, out var known)) return known;
+        var rest = AnimationRuntime.ComputeAnimatedBoneWorlds(mesh, null, 0f);
+        Vector3 Best(Vector3 want, Vector3 not)
+        {
+            var best = want;
+            float bestDot = float.NegativeInfinity;
+            foreach (var a in new[] { Vector3.UnitX, -Vector3.UnitX, Vector3.UnitY, -Vector3.UnitY, Vector3.UnitZ, -Vector3.UnitZ })
+            {
+                if (MathF.Abs(Vector3.Dot(a, not)) > 0.5f) continue;
+                var d = Vector3.TransformNormal(a, rest[headIdx]);
+                if (d.LengthSquared() < 1e-8f) continue;
+                float dot = Vector3.Dot(Vector3.Normalize(d), want);
+                if (dot > bestDot) { bestDot = dot; best = a; }
+            }
+            return best;
+        }
+        var face = Best(Vector3.UnitZ, Vector3.Zero);
+        var axes = (face, Best(Vector3.UnitY, face));
+        _portraitHeadAxes[mesh] = axes;
+        Console.WriteLine($"[portrait] head bone axes: face {axes.face}, up {axes.Item2}");
+        return axes;
+    }
+
     private unsafe void RenderPlayerPortrait()
     {
         if (_gl is null || _skinShader is null || _player is null) return;
@@ -5248,11 +5290,7 @@ public sealed partial class RenderHost : IDisposable
             _boneWorldsScratch = new Matrix4x4[Math.Max(bones, 64)];
         AnimationRuntime.ComputeAnimatedBoneWorlds(mesh, clip, t, _boneWorldsScratch);
 
-        // Camera: the authored [portrait_camera] intent (character_camera.gas
-        // frames the head from ~3u in front of the face) executed in WORLD
-        // space with the world up-axis — the same conventions as the scene
-        // camera, so handedness/winding can never flip. Head position comes
-        // from the posed bone, facing from the player's live heading.
+        // Camera: placed from the posed head bone (see below).
         int headIdx = -1;
         for (int i = 0; i < mesh.BoneNames.Count; i++)
             if (mesh.BoneNames[i].EndsWith("bip01_head", StringComparison.OrdinalIgnoreCase))
@@ -5260,17 +5298,47 @@ public sealed partial class RenderHost : IDisposable
         var headMesh = headIdx >= 0 ? _boneWorldsScratch[headIdx].Translation
                                     : new Vector3(0f, 1.7f, 0f);
         var headWorld = Vector3.Transform(headMesh, _player.CurrentTransform);
+        // The original's [portrait_camera] (character_camera.gas): the camera
+        // stands and aims at offsets in the head bone's frame, with the head's
+        // up as its up, so the portrait looks at the face whatever the stance
+        // (an idle side-on, like the farm girl's, no longer shows a profile).
+        // The frame is rebuilt from the posed bone: the bone axes that face
+        // out of the face and up the head in the bind pose. The authored
+        // sideways offset turns the face a little to its left (the camera on
+        // the hero's right), as the original's portraits show; its sign in
+        // the bone frame is left to that, since the import's handedness may
+        // mirror it. The body's heading and the world up stand in when the
+        // head bone is missing.
         var face = _playerFacing.LengthSquared() > 0.01f
             ? Vector3.Normalize(new Vector3(_playerFacing.X, 0f, _playerFacing.Z))
             : Vector3.UnitZ;
-        // Tight FACE crop: same ~1.15u standoff (close-in would fisheye the
-        // nose) but a telephoto FOV so the head fills the 128² cell — the
-        // old 0.50 rad framed a whole bust with visible shoulders. Aim rides
-        // a touch above the head bone (neck pivot) to center the face.
-        var eye = headWorld + face * 1.15f + new Vector3(0f, 0.14f, 0f);
-        var at  = headWorld + new Vector3(0f, 0.08f, 0f);
-        var pvp = Matrix4x4.CreateLookAt(eye, at, Vector3.UnitY)
-                * Matrix4x4.CreatePerspectiveFieldOfView(0.34f, 1f, 0.05f, 50f);
+        var up = Vector3.UnitY;
+        if (headIdx >= 0)
+        {
+            var (faceAxis, upAxis) = PortraitHeadAxes(mesh, headIdx);
+            var bone = _boneWorldsScratch[headIdx] * _player.CurrentTransform;
+            var f = Vector3.TransformNormal(faceAxis, bone);
+            var u = Vector3.TransformNormal(upAxis, bone);
+            if (f.LengthSquared() > 1e-8f && u.LengthSquared() > 1e-8f)
+            {
+                f = Vector3.Normalize(f);
+                u = Vector3.Normalize(u - Vector3.Dot(u, f) * f);
+                if (!float.IsNaN(u.X)) { face = f; up = u; }
+            }
+        }
+        var right = Vector3.Cross(face, up);
+        right = right.LengthSquared() > 1e-8f ? Vector3.Normalize(right) : Vector3.UnitX;
+        var cam = _portraitCams.TryGetValue(_player.Actor.Template.Name, out var authored) ? authored : PortraitCamDefault;
+        var eye = headWorld + up * cam.Viewer.X + face * cam.Viewer.Y + right * MathF.Abs(cam.Viewer.Z);
+        var at  = headWorld + up * cam.Target.X + face * cam.Target.Y + right * cam.Target.Z;
+        // Framing as before: the head, crown to chin, fills the frame. The
+        // square texture is drawn stretched into the portrait frames (AWP
+        // 39×46, inventory header 24×28), so it renders at their shape and
+        // the face is not drawn tall.
+        float dist = MathF.Max(0.2f, Vector3.Distance(eye, at));
+        float fov = 2f * MathF.Atan(PortraitViewHeight * 0.5f / dist);
+        var pvp = Matrix4x4.CreateLookAt(eye, at, up)
+                * Matrix4x4.CreatePerspectiveFieldOfView(fov, PortraitAspect, 0.05f, 50f);
 
         _skinShader.Use();
         _skinShader.SetMatrix4("uViewProj", pvp);
@@ -5280,11 +5348,15 @@ public sealed partial class RenderHost : IDisposable
         // Fixed studio key so the portrait reads the same in a crypt as in a
         // meadow; stamp invalidated below so the world re-uploads its own.
         _skinShader.SetInt("uDirCount", 1);
-        _skinShader.SetFloat("uAmbient", 0.52f);
+        // The key comes from the camera (uDirDir points toward the light, as
+        // the world's do; it pointed away, leaving the face on ambient alone).
+        // Levels measured against the original's portrait: its face shows at
+        // about three quarters of the skin texture's brightness, a little warm.
+        _skinShader.SetFloat("uAmbient", PortraitAmbient);
         Span<Vector3> pdir = stackalloc Vector3[1];
-        pdir[0] = Vector3.Normalize(at - eye);
+        pdir[0] = Vector3.Normalize(eye - at);
         Span<Vector3> pcol = stackalloc Vector3[1];
-        pcol[0] = new Vector3(0.85f, 0.82f, 0.75f);
+        pcol[0] = PortraitKey;
         _skinShader.SetVec3Array("uDirDir", pdir);
         _skinShader.SetVec3Array("uDirColor", pcol);
         _skinShader.SetInt("uPointCount", 0);
@@ -10268,6 +10340,26 @@ public sealed partial class RenderHost : IDisposable
         _camReturnRate     = ReadAttr(cs, "return_degrees_per_second", _camReturnRate * 180f / MathF.PI) * MathF.PI / 180f;
         _camOffsetMax      = ReadAttr(cs, "camera_offset_maximum", _camOffsetMax);
         _camAzimuthDefault = ReadAttr(cc, "azimuth", _camAzimuthDefault);
+        if (Root("/ui/config/character_camera/character_camera.gas", "portrait_camera") is { } pcam)
+            foreach (var hero in pcam.Children)
+            {
+                Vector3 Vec(string name, Vector3 fallback)
+                {
+                    foreach (var a in hero.Attributes)
+                        if (a.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                        {
+                            var parts = a.Value.Split(',');
+                            if (parts.Length == 3
+                                && float.TryParse(parts[0].Trim().TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var x)
+                                && float.TryParse(parts[1].Trim().TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var y)
+                                && float.TryParse(parts[2].Trim().TrimEnd('f', 'F'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var z))
+                                return new Vector3(x, y, z);
+                        }
+                    return fallback;
+                }
+                _portraitCams[hero.Header] = (Vec("viewer_location_offset", PortraitCamDefault.Viewer),
+                                              Vec("target_position_offset", PortraitCamDefault.Target));
+            }
         _camDistanceDefault = ReadAttr(cc, "distance", _camDistanceDefault);
         Console.WriteLine($"  camera: azimuth {_camAzimuthDefault * 180f / MathF.PI:F1}°, " +
                           $"distance {_camDistanceDefault:F2}, track +{_camTrackHeight:F2}m " +
