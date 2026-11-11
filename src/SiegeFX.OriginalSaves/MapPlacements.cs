@@ -38,7 +38,25 @@ public static class MapPlacements
     public static SearchResult WithScids(TankReader map, string mapName, IReadOnlySet<uint> scids) =>
         Where(map, p => scids.Contains(p.Scid), mapName);
 
-    static SearchResult Where(TankReader map, Func<MapPlacement, bool> match, string? mapName = null)
+    /// <summary>The placements of map <paramref name="mapName"/> anchored to
+    /// one of <paramref name="nodes"/> whose template contains
+    /// <paramref name="templateFilter"/> (every template when null).</summary>
+    public static SearchResult OnNodes(TankReader map, string mapName, IReadOnlySet<uint> nodes, string? templateFilter) =>
+        Where(map, p => p.Node is uint n && nodes.Contains(n)
+                        && (templateFilter is null || p.Template.Contains(templateFilter, StringComparison.OrdinalIgnoreCase)),
+              mapName);
+
+    /// <summary>The instance blocks (the whole <c>[t:…,n:…]</c> node) of
+    /// map <paramref name="mapName"/>'s placements with these SCIDs.</summary>
+    public static IReadOnlyDictionary<uint, GasNode> Blocks(TankReader map, string mapName, IReadOnlySet<uint> scids)
+    {
+        var blocks = new Dictionary<uint, GasNode>();
+        Where(map, p => scids.Contains(p.Scid), mapName, blocks);
+        return blocks;
+    }
+
+    static SearchResult Where(TankReader map, Func<MapPlacement, bool> match, string? mapName = null,
+                              Dictionary<uint, GasNode>? blocks = null)
     {
         var mapDir = mapName is null ? null : $"/maps/{mapName}/";
         var matches = new List<MapPlacement>();
@@ -62,7 +80,9 @@ public static class MapPlacements
                 if (!TemplateStore.TryParseHeader(node.Header, out var tpl, out var n)) continue;
                 if (TryParseHex(n) is not uint id) continue;
                 var p = new MapPlacement(region, path[(o + "/objects/".Length)..], tpl, id, PlacementNode(node));
-                if (match(p)) matches.Add(p);
+                if (!match(p)) continue;
+                matches.Add(p);
+                blocks?.TryAdd(p.Scid, node);
             }
         }
         return new SearchResult(matches, files, regions.Count, errors);
