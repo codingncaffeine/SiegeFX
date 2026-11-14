@@ -9431,7 +9431,7 @@ public sealed partial class RenderHost : IDisposable
                 var look = new SiegeFX.Core.Save.HeroVariantSnapshot
                 {
                     Gender = HeroBodies.Word(pk.Gender),
-                    BodyTypeIdx = pk.BodyTypeIdx, SkinSuffix = pk.SkinSuffix, PantsSuffix = pk.PantsSuffix,
+                    BodyTypeIdx = pk.BodyTypeIdx, SkinSuffix = pk.SkinSuffix, HairSuffix = pk.HairSuffix, PantsSuffix = pk.PantsSuffix,
                     FaceIdx = pk.FaceIdx, StyleIdx = pk.StyleIdx, ColorIdx = pk.ColorIdx, ShirtIdx = pk.ShirtIdx, PantsIdx = pk.PantsIdx,
                 };
                 string name = panel.NewName.Trim();
@@ -9993,6 +9993,9 @@ public sealed partial class RenderHost : IDisposable
     // it needs _templateStore + _playResolver + _skinShader, all of which
     // come online during LoadPlayActors.
     private HeroPreviewRenderer? _heroPreview;
+    // The picker currently driving the hero preview (singleplayer or multiplayer).
+    // Set before EnsurePreview so ResolveActorTexture uses the correct one.
+    private HeroVariantPicker? _previewPicker;
     // Args captured on the first frame the creator is open so Begin can re-enter
     // the spawn path with the panel-mutated picker.
     private ActorSpawner? _pendingSpawner;
@@ -17083,8 +17086,13 @@ void main()
         {
             // SC-CD-COMPOSITE — the live creator preview composites its two slots
             // from the panel's current picks (Head/Hair/Face/Shirt/Pants).
-            var t = ResolveCreatorTexture(_creator.Picker, textureIndex);
-            if (t is not null) return t;
+            // Use _previewPicker so both singleplayer and multiplayer previews
+            // resolve textures from the correct picker.
+            if (_previewPicker is not null)
+            {
+                var t = ResolveCreatorTexture(_previewPicker, textureIndex);
+                if (t is not null) return t;
+            }
         }
         // SC-MP-PLAYERS — remote avatars composite their owner's streamed
         // appearance card, so friends see the character its player actually
@@ -27649,6 +27657,7 @@ void main()
             env["SIEGEFX_HERO_GENDER"] = v.Gender;
             if (v.BodyTypeIdx >= 0) env["SIEGEFX_HERO_BODY"] = (v.BodyTypeIdx + 1).ToString();
             if (!string.IsNullOrEmpty(v.SkinSuffix))  env["SIEGEFX_HERO_SKIN"]  = v.SkinSuffix;
+            if (!string.IsNullOrEmpty(v.HairSuffix))  env["SIEGEFX_HERO_HAIR"]  = v.HairSuffix;
             if (!string.IsNullOrEmpty(v.PantsSuffix)) env["SIEGEFX_HERO_PANTS"] = v.PantsSuffix;
             // SC-CD-PERSIST (load side) — the composite axes are the look
             // the body actually renders with. Forward the full set so EVERY
@@ -29874,6 +29883,7 @@ void main()
                         // Drawn inside the chrome (FrontendScene.DrawInBox),
                         // between the stone wall and the frame.
                         _heroPreview.Where = HeroPreviewRenderer.Placement.Creator;
+                        _previewPicker = _creator.Picker;
                         _heroPreview.EnsurePreview(_creator.Picker);
                         _heroPreview.Tick(dt);
                     }
@@ -29980,6 +29990,7 @@ void main()
                             var box = Hud.MpCharacterPanel.PreviewBox;
                             _heroPreview.Where = new HeroPreviewRenderer.Placement(box.X0, box.Y0, box.X1, box.Y1,
                                 (box.X0 + box.X1) / 2f, box.Y1 - 8, box.Y1 - box.Y0 - 22);
+                            _previewPicker = _mpStaging.Characters.Picker;
                             _heroPreview.EnsurePreview(_mpStaging.Characters.Picker);
                             _heroPreview.Tick(dt);
                             _heroPreview.Draw(viewportW, viewportH);
@@ -43575,6 +43586,7 @@ void main()
                         // Drawn inside the chrome (FrontendScene.DrawInBox),
                         // between the stone wall and the frame.
                         _heroPreview.Where = HeroPreviewRenderer.Placement.Creator;
+                        _previewPicker = _creator.Picker;
                         _heroPreview.EnsurePreview(_creator.Picker);
                         _heroPreview.Tick((float)dt);
                     }
