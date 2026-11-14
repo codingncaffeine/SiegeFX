@@ -25,6 +25,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SiegeFX.Core\SiegeFX.Core.csproj" />
     <ProjectReference Include="..\..\src\SiegeFX.OriginalSaves\SiegeFX.OriginalSaves.csproj" />
+    <!-- The game itself, for its data-free pieces (the HUD's scale rule). -->
+    <ProjectReference Include="..\..\src\SiegeFX.Runtime\SiegeFX.Runtime.csproj" />
   </ItemGroup>
 
 </Project>

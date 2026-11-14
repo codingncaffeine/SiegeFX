@@ -11331,6 +11331,7 @@ void main()
         _gl = GL.GetApi(_window);
         _input = _window.CreateInput();
         Hud.HudScale.ContentScale = ContentScaleNow();
+        LogVideoSurface();
 
         // SC-DISPLAY-MODE-TASKBAR — booting straight into borderless (prefs)
         // must cover the FULL monitor; the boot path sized from Silk's
@@ -44572,6 +44573,20 @@ void main()
     {
         _gl?.Viewport(size);
         Hud.HudScale.ContentScale = ContentScaleNow();
+        if (MathF.Abs(Hud.HudScale.ContentScale - _loggedContentScale) > 0.01f) LogVideoSurface();
+    }
+
+    /// <summary>One line in the session log naming the window, the framebuffer
+    /// and their ratio: the first thing a Mac display report needs (#28, #55
+    /// had to be worked out from the prefs).</summary>
+    private float _loggedContentScale = -1f;
+    private void LogVideoSurface()
+    {
+        var ws = _window.Size;
+        var fb = _window.FramebufferSize;
+        _loggedContentScale = Hud.HudScale.ContentScale;
+        Console.WriteLine($"[video] window {ws.X}x{ws.Y}, framebuffer {fb.X}x{fb.Y}, "
+                          + $"{_loggedContentScale:0.##} framebuffer pixels per point");
     }
 
     /// <summary>Framebuffer pixels per window point: 1 on Windows and Linux,
