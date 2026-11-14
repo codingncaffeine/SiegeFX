@@ -24,15 +24,25 @@ public static class HudScale
     /// reached. The User knob provides growth beyond it.</summary>
     public const float BaseMax = 1.6f;
 
+    /// <summary>Framebuffer pixels per window point: 1 on Windows and Linux,
+    /// 2 on a Retina Mac. The viewport the HUD lays out in is framebuffer
+    /// pixels, but <see cref="BaseMax"/> is a density the eye sees, so the
+    /// cap is taken in points: without this a Retina Mac drew the whole HUD
+    /// at half the size it has on every other screen (#55). Windows and
+    /// Linux never see a value other than 1, so nothing changes there.
+    /// Set by the render host whenever the window or framebuffer resizes.</summary>
+    public static float ContentScale = 1f;
+
     /// <summary>Height-proportional HUD scale (the house convention:
     /// gas-authored 640×480 coords × viewportH/480) clamped to
-    /// <see cref="BaseMax"/>, times the user knob. Works identically for
-    /// 16:9, 21:9 ultrawide, and 4K — width only widens the world view,
+    /// <see cref="BaseMax"/> points, times the user knob. Works identically
+    /// for 16:9, 21:9 ultrawide, and 4K — width only widens the world view,
     /// height drives UI size.</summary>
     public static float Hud(int viewportH)
     {
         float raw = viewportH / 480f;
-        return (raw < BaseMax ? raw : BaseMax) * User;
+        float cap = BaseMax * ContentScale;
+        return (raw < cap ? raw : cap) * User;
     }
 
     /// <summary>Modal-dialog scale (Options menu, Quest Log): the SAME

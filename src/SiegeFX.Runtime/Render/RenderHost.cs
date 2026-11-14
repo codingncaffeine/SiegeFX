@@ -11235,6 +11235,7 @@ void main()
         _window.Update  += OnUpdate;
         _window.Render  += OnRender;
         _window.Resize  += OnResize;
+        _window.FramebufferResize += OnFramebufferResize;
         // Phase 16b — release GL resources while the context is still alive.
         // Silk.NET's Run() returns after the GLFW window is destroyed, so the
         // outer Dispose() runs with no current context and DeleteTextures
@@ -11329,6 +11330,7 @@ void main()
         if (_diagMode) _diagBootStopwatch.Start();
         _gl = GL.GetApi(_window);
         _input = _window.CreateInput();
+        Hud.HudScale.ContentScale = ContentScaleNow();
 
         // SC-DISPLAY-MODE-TASKBAR — booting straight into borderless (prefs)
         // must cover the FULL monitor; the boot path sized from Silk's
@@ -14060,7 +14062,7 @@ void main()
                 // spins the character render.
                 if (_pdViewActive)
                 {
-                    _pdViewYaw += (pos.X - _pdViewLastX) * 0.02f;
+                    _pdViewYaw += (pos.X - _pdViewLastX) / Hud.HudScale.ContentScale * 0.02f;
                     _pdViewLastX = pos.X;
                 }
                 // SC-RMB-FORMATION — RMB-hold + horizontal mouse movement
@@ -14071,7 +14073,7 @@ void main()
                     if (_lastRmbMovePos is { } lastRm
                         && MathF.Abs(pos.X - _rmbDownPos.X) > RmbClickDriftPx)
                     {
-                        _formationRotOffset += (pos.X - lastRm.X) * 0.008f;
+                        _formationRotOffset += (pos.X - lastRm.X) / Hud.HudScale.ContentScale * 0.008f;
                         _rmbModalUsed = true;
                     }
                     _lastRmbMovePos = pos;
@@ -14080,8 +14082,10 @@ void main()
                 if (!_mouseLookActive) return;
                 if (_lastMousePos is { } last)
                 {
-                    float dx = pos.X - last.X;
-                    float dy = pos.Y - last.Y;
+                    // Deltas in points, so a hand movement turns the camera
+                    // the same amount on a Retina Mac as on any other screen.
+                    float dx = (pos.X - last.X) / Hud.HudScale.ContentScale;
+                    float dy = (pos.Y - last.Y) / Hud.HudScale.ContentScale;
                     if (_cameraMode == CameraMode.Chase)
                     {
                         // Phase 23-SC-OPTIONS-FOLD2-FOLD — route through Camera.YawIncrement
@@ -28448,6 +28452,7 @@ void main()
         Vector2 cursorPx, Func<ActorRenderState, bool> filter, float pxRadius = 26f)
     {
         if (_window is null || _actors.Count == 0) return null;
+        pxRadius *= Hud.HudScale.ContentScale; // the same reach in points on a Retina Mac
         var size = _window.FramebufferSize;
         if (size.X <= 0 || size.Y <= 0) return null;
         var vp = _camera.GetViewProjection((float)size.X / size.Y);
@@ -44540,7 +44545,12 @@ void main()
 
     private void OnResize(Vector2D<int> size)
     {
-        _gl?.Viewport(size);
+        // The viewport is framebuffer pixels, not the window size this event
+        // carries: on a Retina Mac the framebuffer is twice the window, and
+        // sizing the viewport to the window drew the game in the bottom-left
+        // quarter of the screen after every Options → OK (#55).
+        _gl?.Viewport(_window.FramebufferSize);
+        Hud.HudScale.ContentScale = ContentScaleNow();
         // ALPHA-2V — remember the last windowed size (free-resize freedom;
         // restored at boot + when leaving fullscreen). Fullscreen sizes are
         // display modes, not window memory, so they don't record — and
@@ -44553,6 +44563,24 @@ void main()
             _optionsMenu.Live.WindowW = size.X;
             _optionsMenu.Live.WindowH = size.Y;
         }
+    }
+
+    /// <summary>The framebuffer can change without the window (dragged to a
+    /// display of another density): keep the viewport and the HUD's point
+    /// cap in step with it.</summary>
+    private void OnFramebufferResize(Vector2D<int> size)
+    {
+        _gl?.Viewport(size);
+        Hud.HudScale.ContentScale = ContentScaleNow();
+    }
+
+    /// <summary>Framebuffer pixels per window point: 1 on Windows and Linux,
+    /// 2 on a Retina Mac. See <see cref="Hud.HudScale.ContentScale"/>.</summary>
+    private float ContentScaleNow()
+    {
+        var ws = _window.Size;
+        var fb = _window.FramebufferSize;
+        return ws.Y > 0 && fb.Y > 0 ? fb.Y / (float)ws.Y : 1f;
     }
 
     private bool _glDisposed;
