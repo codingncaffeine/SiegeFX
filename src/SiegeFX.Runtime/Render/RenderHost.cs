@@ -11227,6 +11227,10 @@ void main()
             WindowState = winState,
             WindowBorder = winBorder,
             Samples = msaa > 0 ? msaa : null,
+            // SIEGEFX_HIDDEN_WINDOW=1: a real window and GL context that is
+            // never shown, for running the whole game unattended (a crash
+            // reproduction, a soak test) on a desktop someone is using.
+            IsVisible = Environment.GetEnvironmentVariable("SIEGEFX_HIDDEN_WINDOW") != "1",
         };
         WindowIdentity.ApplyHints();
         _window = Window.Create(opts);

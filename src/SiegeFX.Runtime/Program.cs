@@ -4,6 +4,14 @@ using SiegeFX.Runtime.Render;
 // (see NativeLibraryFallback); must run before the first window or device.
 SiegeFX.Audio.NativeLibraryFallback.Install();
 
+// The console must never take the game down. It can vanish while the game
+// runs — on macOS a double-clicked SiegeFX gets a Terminal window that closes
+// its terminal when that first process exits, leaving the copy it relaunches
+// into the world with a console that fails every write (#56) — so both
+// streams go through a writer that drops output once the console is gone.
+Console.SetOut(new SiegeFX.Runtime.ConsoleTextWriter(Console.Out));
+Console.SetError(new SiegeFX.Runtime.ConsoleTextWriter(Console.Error));
+
 // Crash logger — dumps any unhandled exception (including ones the CLR would
 // otherwise report via its own stderr banner) to siegefx_crash.log next to the
 // DLL. test-all.bat's T23 prints this file after the process exits so the user
@@ -471,9 +479,7 @@ catch (Exception ex)
     // tick closes the console window before the stack prints. Also persist to
     // siegefx_crash.log so test-all.bat can surface the trace even if the
     // console scrolled past it or was closed too fast.
-    Console.Error.WriteLine();
-    Console.Error.WriteLine("!! SiegeFX.Runtime crashed:");
-    Console.Error.WriteLine(ex.ToString());
+    // The file first: it is the evidence, and the console may be what failed.
     try
     {
         System.IO.File.WriteAllText(crashLogPath,
@@ -481,6 +487,9 @@ catch (Exception ex)
             ex.ToString() + Environment.NewLine);
     }
     catch { }
+    Console.Error.WriteLine();
+    Console.Error.WriteLine("!! SiegeFX.Runtime crashed:");
+    Console.Error.WriteLine(ex.ToString());
     return 1;
 }
 return 0;
