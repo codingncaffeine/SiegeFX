@@ -451,15 +451,21 @@ internal sealed class HeroPreviewRenderer : IDisposable
 
     private static long HashPicker(HeroVariantPicker p)
     {
-        // 6-axis pack: gender(1) | bodyIdx(8) | skin(10) | hair(10) | shirt(8) |
-        // pants(10). Each subfield is sized for its real range; long has 64 bits
-        // total so this fits comfortably.
-        long h = (long)p.Gender;
-        h = (h << 8) | (long)(byte)(p.BodyTypeIdx & 0xFF);
-        h = (h << 10) | (ParseSuffixOrZero(p.SkinSuffix) & 0x3FF);
-        h = (h << 10) | (ParseSuffixOrZero(p.HairSuffix) & 0x3FF);
-        h = (h << 8)  | (long)(byte)(p.ShirtIdx & 0xFF);
-        h = (h << 10) | (ParseSuffixOrZero(p.PantsSuffix) & 0x3FF);
+        // Combine all picker axes into a long hash so any spinner change
+        // invalidates the cached preview actor. Use a simple multiplicative
+        // hash — each field is mixed in with a prime multiplier so the
+        // result changes whenever any field changes.
+        long h = 0;
+        h = h * 1000000007 + (long)p.Gender;
+        h = h * 1000000009 + p.BodyTypeIdx;
+        h = h * 1000000021 + p.StyleIdx;
+        h = h * 1000000033 + p.FaceIdx;
+        h = h * 1000000057 + p.ColorIdx;
+        h = h * 1000000069 + p.ShirtIdx;
+        h = h * 1000000081 + p.PantsIdx;
+        h = h * 1000000093 + ParseSuffixOrZero(p.SkinSuffix);
+        h = h * 1000000103 + ParseSuffixOrZero(p.HairSuffix);
+        h = h * 1000000113 + ParseSuffixOrZero(p.PantsSuffix);
         return h;
     }
 
