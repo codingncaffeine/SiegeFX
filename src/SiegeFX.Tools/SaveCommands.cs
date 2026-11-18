@@ -15,7 +15,10 @@ static class SaveCommands
         "                                                            only objects whose template or SCID matches, every value\n" +
         "       siegefx save locate  <World.dsmap> <0xSCID | template>  where a save object was placed in the map\n" +
         "       siegefx save retired <file> <World.dsmap> [--all]   map objects the game will not create again\n" +
-        "                                                            (smashed, killed, used up)";
+        "                                                            (smashed, killed, used up)\n" +
+        "       siegefx save placements <file> <World.dsmap> [--template=TEXT]\n" +
+        "                                                            every map placement in the save's loaded area:\n" +
+        "                                                            alive, retired, or never created (block shown)";
 
     public static int Dispatch(string[] a)
     {
@@ -31,6 +34,7 @@ static class SaveCommands
                                                  int.TryParse(Opt("depth"), out var d) ? d : int.MaxValue, Opt("find")),
             "locate" when files.Count == 2 => Locate(files[0], files[1]),
             "retired" when files.Count == 2 => Retired(OriginalSave.Open(files[0]), files[1], Flag("all")),
+            "placements" when files.Count == 2 => Placements(OriginalSave.Open(files[0]), files[1], Opt("template")),
             "diff" when files.Count == 2 => Diff(OriginalSave.Open(files[0]), OriginalSave.Open(files[1]), Flag("all"),
                                                  (Opt("ignore") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries), Opt("object")),
             _ => Fail(),
@@ -93,6 +97,59 @@ static class SaveCommands
                           (r.Errors.Count > 0 ? $"; {r.Errors.Count} file(s) unreadable:" : ""));
         foreach (var e in r.Errors.Take(5)) Console.WriteLine($"  {e}");
         return r.FilesScanned == 0 ? 3 : 0;
+    }
+
+    // ── placements ─────────────────────────────────────────────────────────
+    // Every placement the map anchors to a terrain node that was loaded when
+    // the game saved, sorted by what became of it: still in the world,
+    // retired (killed, smashed, used up), or never created. An actor on a
+    // loaded node that is neither saved nor retired never existed in this
+    // game, so its block is printed to show what kept it out. (Decor is
+    // never saved, so non-actors land in the third list too.)
+    static int Placements(OriginalSave s, string mapPath, string? templateFilter)
+    {
+        if (s.World is null) { Console.Error.WriteLine("no world in this file (a .dsparty)"); return 1; }
+        var loaded = OriginalWorldFacts.LoadedNodes(s.World);
+        var saved = OriginalWorldFacts.ObjectScids(s.World);
+        var retired = OriginalWorldFacts.RetiredScids(s.World);
+        using var tank = SiegeFX.Core.Tank.TankFile.Open(mapPath);
+        var r = MapPlacements.OnNodes(new SiegeFX.Core.Tank.TankReader(tank), s.Info.MapName, loaded, templateFilter);
+        if (r.FilesScanned == 0) { Console.Error.WriteLine($"{Path.GetFileName(mapPath)} has no regions of {s.Info.MapName}"); return 3; }
+        var alive = r.Matches.Where(p => saved.Contains(p.Scid) && !retired.Contains(p.Scid)).ToList();
+        var gone = r.Matches.Where(p => retired.Contains(p.Scid)).ToList();
+        var never = r.Matches.Where(p => !saved.Contains(p.Scid) && !retired.Contains(p.Scid)).ToList();
+        var blocks = MapPlacements.Blocks(new SiegeFX.Core.Tank.TankReader(tank), s.Info.MapName,
+                                          never.Select(p => p.Scid).ToHashSet());
+        Console.WriteLine($"{loaded.Count} loaded node(s); {r.Matches.Count} placement(s) on them" +
+                          (templateFilter is null ? "" : $" matching '{templateFilter}'") +
+                          $": {alive.Count} in the world, {gone.Count} retired, {never.Count} never created");
+        void List(string title, List<MapPlacement> list, bool block)
+        {
+            Console.WriteLine($"{title} ({list.Count}):");
+            foreach (var p in list.OrderBy(p => p.Template, StringComparer.Ordinal).ThenBy(p => p.Scid))
+            {
+                Console.WriteLine($"  0x{p.Scid:x8}  {p.Template,-28} {p.Region}/{p.File}");
+                if (block && blocks.TryGetValue(p.Scid, out var b)) Console.WriteLine("      " + Flatten(b));
+            }
+        }
+        List("in the world", alive, false);
+        List("retired", gone, false);
+        List("never created", never, true);
+        return 0;
+
+        // One line per instance block, placement position left out.
+        static string Flatten(SiegeFX.Core.Assets.GasNode n)
+        {
+            var parts = new List<string>();
+            foreach (var c in n.Children)
+            {
+                if (c.Header.Equals("placement", StringComparison.OrdinalIgnoreCase)) continue;
+                parts.Add($"[{c.Header}] {string.Join(" ", c.Attributes.Select(a => $"{a.Name}={a.Value}"))}" +
+                          (c.Children.Count > 0 ? " " + string.Join(" ", c.Children.Select(Flatten)) : ""));
+            }
+            foreach (var a in n.Attributes) parts.Add($"{a.Name}={a.Value}");
+            return parts.Count == 0 ? "(no instance fields)" : string.Join("  ", parts);
+        }
     }
 
     // ── retired ────────────────────────────────────────────────────────────
