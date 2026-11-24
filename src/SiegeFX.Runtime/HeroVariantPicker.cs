@@ -173,7 +173,7 @@ internal sealed class HeroVariantPicker
         if (!HeroBodies.IsFarm(Gender)) return null;   // the dwarf and skeleton keep their own look
         if (BodyTypeIdx < 0 && SkinSuffix is null && HairSuffix is null
             && PantsSuffix is null && ShirtIdx == 0 && FaceIdx == 0
-            && StyleIdx == 0 && ColorIdx == 0 && PantsIdx == 0) return null;
+            && StyleIdx == 0 && PantsIdx == 0) return null;
 
         var armorVersion = store.GetAttribute(template, "body", "armor_version");
         if (string.IsNullOrEmpty(armorVersion)) return null;
@@ -187,18 +187,9 @@ internal sealed class HeroVariantPicker
         if (BodyTypeIdx >= 0)
             modelOverride = $"m_c_{armorVersion}_pos_a{bodyChar}";
 
-        // Skin atlas folds Face + Hair together. Each shipped
-        // b_c_gah_*_skin_NN.raw is a baked face+hair+arms atlas, so face and
-        // hair colour vary together file-to-file. Face walks the atlas at
-        // stride 1; Hair walks at a coprime stride of 7 so clicking Hair
-        // jumps to a distant variant (different hair colour) without
-        // trampling Face's neighbour. Both buttons therefore drive a visible
-        // change without runtime atlas composition (which broke face
-        // details when we tried it).
-        // The composite indices (FaceIdx, ColorIdx) are the primary drivers —
-        // they are what the UI spinners modify. SkinSuffix/HairSuffix provide
-        // the base offset when set (e.g. from a saved character), but the
-        // composite indices always determine the final visual result.
+        // Legacy baked-atlas fallback. The renderer composites the creator's
+        // skin and per-head hair separately; the Head index selects a mesh,
+        // not a skin colour. Keep the old suffix offsets for explicit variants.
         string? skinOverride = null;
         {
             int faceBase = 0;
@@ -211,7 +202,7 @@ internal sealed class HeroVariantPicker
                     System.Globalization.CultureInfo.InvariantCulture, out hairBase);
             const int SkinRange = 32;
             const int HairStride = 7;
-            int folded = ((faceBase + FaceIdx) + (hairBase + ColorIdx) * HairStride) % SkinRange;
+            int folded = ((faceBase + FaceIdx) + hairBase * HairStride) % SkinRange;
             if (folded < 0) folded += SkinRange;
             int finalIdx = folded + 1;
             string finalSuffix = finalIdx.ToString(System.Globalization.CultureInfo.InvariantCulture).PadLeft(2, '0');

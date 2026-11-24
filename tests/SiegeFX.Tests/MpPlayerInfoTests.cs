@@ -8,10 +8,14 @@ namespace SiegeFX.Tests;
 /// other players would see the wrong hair).</summary>
 public class MpPlayerInfoTests
 {
-    [Fact]
-    public void CardRoundTripsWithHead()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void CardRoundTripsWithHead(byte gender)
     {
-        var card = new MpPlayerInfo(3, Gender: 1, Face: 7, Style: 2, Head: 4, Shirt: 5, Pants: 6,
+        var card = new MpPlayerInfo(3, Gender: gender, Face: 7, Style: 2, Head: 4, Shirt: 5, Pants: 6,
             "Wren", "Fighter", Str: 12, Dex: 11, Intel: 10, Melee: 3, Ranged: 1, NMagic: 0, CMagic: 2);
         var w = new MpWriter();
         card.WriteBody(w);

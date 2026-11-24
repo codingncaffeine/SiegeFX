@@ -9486,8 +9486,17 @@ public sealed partial class RenderHost : IDisposable
                 panel.Close();
                 break;
             case Hud.MpCharacterPanel.Action.OpenCreate:
-                panel.OpenCreate(new HeroVariantPicker { Gender = HeroGender.Boy, BodyTypeIdx = 0, SkinSuffix = "01", HairSuffix = "001", PantsSuffix = "001" });
+            {
+                panel.DefaultLook ??= DefaultLook;
+                panel.HairOnNewHead ??= HairOnNewHead;
+                var look = DefaultLook(HeroGender.Boy);
+                panel.OpenCreate(new HeroVariantPicker
+                {
+                    Gender = HeroGender.Boy, BodyTypeIdx = 0, SkinSuffix = "01", HairSuffix = "001", PantsSuffix = "001",
+                    FaceIdx = look.Face, StyleIdx = look.Hair, ShirtIdx = look.Shirt, PantsIdx = look.Pants,
+                });
                 break;
+            }
             case Hud.MpCharacterPanel.Action.CreateCancel:
             case Hud.MpCharacterPanel.Action.ImportCancel:
                 MpOpenCharacterSelect();
@@ -9499,7 +9508,7 @@ public sealed partial class RenderHost : IDisposable
                 {
                     Gender = HeroBodies.Word(pk.Gender),
                     BodyTypeIdx = pk.BodyTypeIdx, SkinSuffix = pk.SkinSuffix, HairSuffix = pk.HairSuffix, PantsSuffix = pk.PantsSuffix,
-                    FaceIdx = pk.FaceIdx, StyleIdx = pk.StyleIdx, ColorIdx = pk.ColorIdx, ShirtIdx = pk.ShirtIdx, PantsIdx = pk.PantsIdx,
+                    FaceIdx = pk.FaceIdx, StyleIdx = pk.StyleIdx, HeadIdx = pk.HeadIdx, ShirtIdx = pk.ShirtIdx, PantsIdx = pk.PantsIdx,
                 };
                 string name = panel.NewName.Trim();
                 string startClass = MpStartingClass(pk.Gender);
@@ -17084,7 +17093,7 @@ void main()
     }
 
     // Composite a hero texture slot from the picker: slot 0 = skin + hair overlay
-    // (recoloured by the Hair palette); slot 1 = clothing base + shirt + pants.
+    // in its own colours; slot 1 = clothing base + shirt + pants.
     // Cached by combo. Returns null on a base-load miss so the caller falls
     // through to the mesh's authored texture.
     private GlTexture? ResolveCreatorTexture(HeroVariantPicker picker, int slot)
@@ -17163,6 +17172,7 @@ void main()
     /// starts on the first.</summary>
     private (int Face, int Hair, int Shirt, int Pants) DefaultLook(HeroGender gender)
     {
+        if (!HeroBodies.IsFarm(gender)) return (0, 0, 0, 0);
         EnsureCreatorOptions(gender);
         var hairs = HairListFor(new HeroVariantPicker { Gender = gender });
         string tpl = gender == HeroGender.Girl ? "farmgirl" : "farmboy";
@@ -30177,6 +30187,8 @@ void main()
                                 (box.X0 + box.X1) / 2f, box.Y1 - 8, box.Y1 - box.Y0 - 22);
                             _previewPicker = _mpStaging.Characters.Picker;
                             _heroPreview.EnsurePreview(_mpStaging.Characters.Picker);
+                            _heroPreview.HeadMesh = HeadMeshFor(_mpStaging.Characters.Picker);
+                            _mpStaging.Characters.HeadCount = HeadChoiceCount(_mpStaging.Characters.Picker);
                             _heroPreview.Tick(dt);
                             _heroPreview.Draw(viewportW, viewportH);
                             _textRenderer.BeginPass();
@@ -31255,7 +31267,9 @@ void main()
     private List<string>? HeadMeshList(HeroVariantPicker? picker)
     {
         if (_templateStore is null || _playResolver is null) return null;
-        string tplName = picker?.Gender == HeroGender.Girl ? "farmgirl" : "farmboy";
+        var gender = picker?.Gender ?? HeroGender.Boy;
+        if (!HeroBodies.IsFarm(gender)) return null;
+        string tplName = HeroBodies.Template(gender);
         if (!_templateStore.TryGet(tplName, out var tpl) || tpl is null) return null;
         var av = _templateStore.GetAttribute(tpl, "body", "armor_version")?.Trim();
         if (string.IsNullOrEmpty(av)) return null;

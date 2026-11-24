@@ -69,6 +69,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="SiegeFX.Tests" />
     <!-- Pre-decoded RGBA icon frames (256/48/32/16) handed to
          IWindow.SetWindowIcon at load; see RenderHost.ApplyWindowIcon. -->
     <EmbeddedResource Include="Assets\siegefx_icon.bin">

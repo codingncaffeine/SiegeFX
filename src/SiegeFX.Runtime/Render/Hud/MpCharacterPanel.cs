@@ -55,6 +55,12 @@ internal sealed class MpCharacterPanel
     public string NewName { get; private set; } = "";
     public HeroVariantPicker Picker { get; private set; } = new() { Gender = HeroGender.Boy, BodyTypeIdx = -1 };
 
+    /// <summary>The same head choices, defaults and hair transitions as the
+    /// single-player creator, supplied by the renderer's asset lists.</summary>
+    public int HeadCount { get; set; }
+    public Func<HeroGender, (int Face, int Hair, int Shirt, int Pants)>? DefaultLook { get; set; }
+    public Func<HeroVariantPicker, HeroVariantPicker, int>? HairOnNewHead { get; set; }
+
     /// <summary>The host restricts players to new characters (Game Settings):
     /// only a character not yet played can be chosen, and nothing is imported.</summary>
     public bool NewOnly;
@@ -231,22 +237,48 @@ internal sealed class MpCharacterPanel
     }
 
     // Character / Head / Skin / Hair / Shirt / Pants, as the single-player
-    // creator maps them (Head = hairstyle, Skin = face, Hair = hair tint).
+    // creator maps them (Head = head mesh, Skin = face, Hair = hair overlay).
     void Spin(int row, int d)
     {
         var p = Picker;
-        Picker = new HeroVariantPicker
+        // Character: the original's multiplayer characters in turn
+        // (multiplayer.gas [characters]: farmboy, farmgirl, dwarf, skeleton_good).
+        var gender = row == 0 ? (HeroGender)(((int)p.Gender + d + 4) % 4) : p.Gender;
+        if (row == 0)
         {
-            // Character: the original's multiplayer characters in turn
-            // (multiplayer.gas [characters]: farmboy, farmgirl, dwarf, skeleton_good).
-            Gender = row == 0 ? (HeroGender)(((int)p.Gender + d + 4) % 4) : p.Gender,
+            var look = DefaultLook?.Invoke(gender) ?? (Face: 0, Hair: 0, Shirt: 0, Pants: 0);
+            Picker = new HeroVariantPicker
+            {
+                Gender = gender, BodyTypeIdx = p.BodyTypeIdx,
+                SkinSuffix = p.SkinSuffix, HairSuffix = p.HairSuffix, PantsSuffix = p.PantsSuffix,
+                FaceIdx = look.Face, StyleIdx = look.Hair, ShirtIdx = look.Shirt, PantsIdx = look.Pants,
+            };
+            return;
+        }
+        int head = p.HeadIdx;
+        if (row == 1)
+        {
+            head += d;
+            head = HeadCount > 0 ? ((head % HeadCount) + HeadCount) % HeadCount : Math.Max(0, head);
+        }
+        var next = new HeroVariantPicker
+        {
+            Gender = gender,
             BodyTypeIdx = p.BodyTypeIdx, SkinSuffix = p.SkinSuffix, HairSuffix = p.HairSuffix, PantsSuffix = p.PantsSuffix,
-            StyleIdx = p.StyleIdx + (row == 1 ? d : 0),
+            HeadIdx = head,
             FaceIdx = p.FaceIdx + (row == 2 ? d : 0),
-            ColorIdx = p.ColorIdx + (row == 3 ? d : 0),
+            StyleIdx = p.StyleIdx + (row == 3 ? d : 0),
             ShirtIdx = p.ShirtIdx + (row == 4 ? d : 0),
             PantsIdx = p.PantsIdx + (row == 5 ? d : 0),
         };
+        Picker = row == 1 ? new HeroVariantPicker
+        {
+            Gender = next.Gender, BodyTypeIdx = next.BodyTypeIdx,
+            SkinSuffix = next.SkinSuffix, HairSuffix = next.HairSuffix, PantsSuffix = next.PantsSuffix,
+            HeadIdx = next.HeadIdx, FaceIdx = next.FaceIdx,
+            StyleIdx = HairOnNewHead?.Invoke(p, next) ?? 0,
+            ShirtIdx = next.ShirtIdx, PantsIdx = next.PantsIdx,
+        } : next;
     }
 
     static readonly string[] SpinLabels = { "Character", "Head", "Skin", "Hair", "Shirt", "Pants" };

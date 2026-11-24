@@ -491,7 +491,7 @@ internal sealed class HeroPreviewRenderer : IDisposable
         h = h * 1000000009 + p.BodyTypeIdx;
         h = h * 1000000021 + p.StyleIdx;
         h = h * 1000000033 + p.FaceIdx;
-        h = h * 1000000057 + p.ColorIdx;
+        h = h * 1000000057 + p.HeadIdx;
         h = h * 1000000069 + p.ShirtIdx;
         h = h * 1000000081 + p.PantsIdx;
         h = h * 1000000093 + ParseSuffixOrZero(p.SkinSuffix);
