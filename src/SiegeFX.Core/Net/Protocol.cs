@@ -75,7 +75,7 @@ public enum MpGameEndReason : byte { HostLeft = 0, TimeLimit = 1 }
 /// human-readable reason.</summary>
 public static class MpProtocol
 {
-    public const ushort Version = 11;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
+    public const ushort Version = 12;   // v2: ClientInfo/PlayerInfo character cards; v3: Brotli JoinAccept snapshot;
                                         // v4: PlayerHit, PropBreak, ActorSpawn; v5: chores in the pose frames;
                                         // v6: Ready + Roster (the staging area's ready marks);
                                         // v7: weapon, shield and stance on the character card;
@@ -86,7 +86,8 @@ public static class MpProtocol
                                         //     PlayerHit's attacker, the hero's body on the character card;
                                         // v10: loot entries carry a potion's fill and a book's spells;
                                         // v11: the multiplayer world (the original's MP placements and
-                                        //      trigger rows) and [mp_scaling] monsters: every player must load the same world
+                                        //      trigger rows) and [mp_scaling] monsters: every player must load the same world;
+                                        // v12: the card's hair-color byte carries the creator's head
 }
 
 /// <summary>The JoinAccept world snapshot is the save JSON, indented: 130 kB
@@ -213,7 +214,8 @@ public readonly record struct MpPlayerState(byte Player, float X, float Y, float
 /// <summary>A player's character card — the DS1 in-game player panel row
 /// (in_game_player_panel_characters.gas: Player / Character / Class / STR /
 /// DEX / INT / four skill levels) plus the composite appearance axes so every
-/// machine can render the avatar the way its owner built it. Sent as
+/// machine can render the avatar the way its owner built it (Head is the
+/// creator's head choice, which also picks the list Style indexes). Sent as
 /// ClientInfo after joining and whenever it changes; the host stamps the
 /// player id and fans it out as PlayerInfo.</summary>
 /// <remarks>v7: the gear in hand — the wielded weapon's and the shield's
@@ -221,7 +223,7 @@ public readonly record struct MpPlayerState(byte Player, float X, float Y, float
 /// the template default), so the other machines draw the same weapon and
 /// play the swings rigged for it, not the bare-handed ones.</remarks>
 public readonly record struct MpPlayerInfo(
-    byte Player, byte Gender, byte Face, byte Style, byte Color, byte Shirt, byte Pants,
+    byte Player, byte Gender, byte Face, byte Style, byte Head, byte Shirt, byte Pants,
     string HeroName, string ClassName,
     ushort Str, ushort Dex, ushort Intel,
     byte Melee, byte Ranged, byte NMagic, byte CMagic,
@@ -229,7 +231,7 @@ public readonly record struct MpPlayerInfo(
 {
     public void WriteBody(MpWriter w)
     {
-        w.U8(Gender).U8(Face).U8(Style).U8(Color).U8(Shirt).U8(Pants)
+        w.U8(Gender).U8(Face).U8(Style).U8(Head).U8(Shirt).U8(Pants)
          .Str(HeroName ?? "").Str(ClassName ?? "")
          .U16(Str).U16(Dex).U16(Intel)
          .U8(Melee).U8(Ranged).U8(NMagic).U8(CMagic)
